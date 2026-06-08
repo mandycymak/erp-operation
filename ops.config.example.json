@@ -1,0 +1,17 @@
+{
+  "_comment": "Copy this file to ops.config.json (gitignored) and edit for your environment. 'auth' is 'integrated' (Windows) or 'sql' (then set user/password). Connection settings can be overridden with environment variables: DB_SERVER, DB_AUTH, DB_USER, DB_PASSWORD, DB_OPS_DB, DB_PORT. 'opsDb' is the new operational-state database created by setup-ops.ps1; the source station DBs in 'stations' are READ-ONLY and never altered. Every SQL connection uses Packet Size=512 (the VPN MTU black-holes default 8 KB TDS packets).",
+  "server": "18.136.126.101,1438",
+  "auth": "sql",
+  "user": "(only if auth=sql)",
+  "password": "(only if auth=sql)",
+  "opsDb": "pgsops",
+  "appName": "Control Tower",
+  "instanceName": "ERP Group",
+  "appSubtitle": "Operational control tower — live shipment milestones, worklist & cash-leak alerts",
+  "port": 8078,
+  "stations": [
+    { "code": "BKK", "name": "Bangkok",   "country": "TH", "database": "station_bkk" },
+    { "code": "SIN", "name": "Singapore", "country": "SG", "database": "station_sin" },
+    { "code": "HKG", "name": "Hong Kong", "country": "HK", "database": "station_hkg" }
+  ]
+}

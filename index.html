@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Control Tower</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1 id="appName">Control Tower</h1>
+  <span class="sub" id="appSub"></span>
+  <span class="spacer"></span>
+  <span class="muted" style="font-size:12px">Operator</span>
+  <select id="userPicker" title="View as operator (demo identity)"></select>
+  <button class="ghost" id="tasksBtn" title="My Tasks inbox">📥 My Tasks <span class="badge" id="taskBadge" style="display:none">0</span></button>
+  <button class="ghost" id="refreshBtn" title="Refresh">↻</button>
+</header>
+
+<div class="wrap">
+  <div class="col">
+    <div class="lens">
+      <div class="seg" id="lensSeg">
+        <button data-lens="mine" class="on">My work</button>
+        <button data-lens="user">Teammate</button>
+        <button data-lens="all">All</button>
+      </div>
+      <select id="teammate" style="display:none"></select>
+      <span class="spacer"></span>
+      <span class="muted" id="wlCount" style="font-size:12px"></span>
+    </div>
+    <div id="worklist"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="side">
+    <div class="panel" id="tasksPanel">
+      <h3>📥 My Tasks <span class="badge" id="taskBadge2" style="display:none">0</span></h3>
+      <div style="font-size:12px" class="muted">Reminders others sent me, and ones I'm waiting on.</div>
+      <div id="tasksBody"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="drawer-bg" id="drawerBg"></div>
+<aside class="drawer" id="drawer">
+  <div class="dh">
+    <span class="dot" id="dLight"></span>
+    <strong id="dJob">—</strong>
+    <span class="muted" id="dLane" style="font-size:12px"></span>
+    <span class="spacer"></span>
+    <button class="ghost" id="closeDrawer">✕</button>
+  </div>
+  <div class="body" id="drawerBody"></div>
+</aside>
+
+<script src="ops.js"></script>
+</body>
+</html>

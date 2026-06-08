@@ -1,0 +1,23 @@
+# Secrets — NEVER commit. Only *.example.json templates are tracked.
+ops.config.json
+users.json
+roles.json
+admin-hide.json
+
+# Per-user / shared operational state
+ops-lists/
+user-lists/
+
+# Audit + run logs, watermarks
+*-audit.log
+*.log
+.watermark
+
+# Generated / local
+data.js
+
+# OS / editor cruft
+Thumbs.db
+.DS_Store
+*.swp
+.vs/

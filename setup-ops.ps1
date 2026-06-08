@@ -1,0 +1,168 @@
+<#
+  setup-ops.ps1
+  Creates the operational-state database (default 'pgsops') with the 6 control-tower
+  tables and indexes that power the listener + UI (see BLUEPRINT.md §1, §2, §4):
+    milestone_baselines · shipment_alerts · milestone_def · milestone_evidence_map
+    detention_watch · milestone_event_log
+  Idempotent: safe to re-run (creates DB/tables/indexes only if missing).
+  Source station databases are NEVER modified — all writes go to pgsops only.
+#>
+param([string]$ConfigPath = (Join-Path $PSScriptRoot "ops.config.json"))
+$ErrorActionPreference = "Stop"
+$cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+function EnvOrConfig($name, $cfgVal) { $v = [Environment]::GetEnvironmentVariable($name); if ($v -and $v.Trim() -ne "") { $v } else { $cfgVal } }
+$server   = EnvOrConfig "DB_SERVER"   $cfg.server
+$auth     = EnvOrConfig "DB_AUTH"     $cfg.auth
+$user     = EnvOrConfig "DB_USER"     $cfg.user
+$password = EnvOrConfig "DB_PASSWORD" $cfg.password
+$opsDb    = EnvOrConfig "DB_OPS_DB"   $cfg.opsDb
+$authClause = if ($auth -eq 'sql') { "User ID=$user;Password=$password" } else { "Integrated Security=True" }
+
+# Packet Size=512: VPN tunnel MTU is small; default 8192-byte TDS packets stall on multi-packet responses.
+function ConnStr($db) { "Server=$server;Database=$db;$authClause;TrustServerCertificate=True;Connect Timeout=30;Packet Size=512" }
+function ExecSql($db, $sql) {
+  $cn = New-Object System.Data.SqlClient.SqlConnection (ConnStr $db); $cn.Open()
+  try { $c = $cn.CreateCommand(); $c.CommandText = $sql; $c.CommandTimeout = 120; [void]$c.ExecuteNonQuery() } finally { $cn.Close() }
+}
+
+Write-Host "Creating operational database [$opsDb] on $server ..." -ForegroundColor Cyan
+ExecSql "master" "IF DB_ID('$opsDb') IS NULL CREATE DATABASE [$opsDb]"
+
+# --- 1.1 milestone_baselines — monthly 3-year averages per [lane x carrier x mode x milestone] (reference only) ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.milestone_baselines') IS NULL
+CREATE TABLE dbo.milestone_baselines (
+  id              int IDENTITY(1,1) PRIMARY KEY,
+  lane            nvarchar(40)  NOT NULL,   -- pol_country+'-'+pod_country (coarse) or port-pair
+  carrier         nvarchar(12)  NOT NULL,   -- liner (sea) / airline (air); '*' = all carriers fallback
+  mode            char(3)       NOT NULL,   -- 'Sea' | 'Air'
+  milestone_code  nvarchar(12)  NOT NULL,   -- 'M1'..'M11', 'DET','DEM'
+  anchor_event    nvarchar(20)  NOT NULL,   -- 'booking' | 'etd' | 'eta' | 'atd' (what avg_days is measured from)
+  avg_days        decimal(7,2)  NOT NULL,   -- mean anchor->completion
+  p50_days        decimal(7,2)  NULL,
+  p90_days        decimal(7,2)  NULL,       -- the alert "expected" window (robust)
+  sample_size     int           NOT NULL,
+  window_from     date          NOT NULL,   -- 3-year window start
+  computed_at     datetime2     NOT NULL
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='UX_baseline' AND object_id=OBJECT_ID('dbo.milestone_baselines'))
+  CREATE UNIQUE INDEX UX_baseline ON dbo.milestone_baselines(lane,carrier,mode,milestone_code);
+"@
+
+# --- 1.2 shipment_alerts — one row per active shipment (the lightweight UI/KPI table; UI reads ONLY this) ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.shipment_alerts') IS NULL
+CREATE TABLE dbo.shipment_alerts (
+  job_no          nvarchar(24) NOT NULL,    -- station+blno/hawb composite (stable key)
+  station         nvarchar(8)  NOT NULL,
+  mode            char(3)      NOT NULL,     -- 'Sea'|'Air'
+  cargo_type      nvarchar(8)  NULL,         -- 'FCL'|'LCL'|'Consol'
+  bound           nvarchar(8)  NOT NULL,     -- 'Export'|'Import'
+  lane            nvarchar(40) NULL,
+  carrier         nvarchar(12) NULL,
+  cust_code       nvarchar(12) NULL,
+  agent_code      nvarchar(12) NULL,
+  salesman        nvarchar(20) NULL,
+  pic_user        nvarchar(20) NULL,         -- operator / person-in-charge (ERP crtuser or PIC table)
+  created_by      nvarchar(20) NULL,         -- booking creator
+  last_updated_by nvarchar(20) NULL,         -- last ERP updater (for "the update is me")
+  anchor_date     date NULL,                 -- booking/job date
+  etd date NULL, eta date NULL, atd date NULL, ata date NULL,
+  job_status      nvarchar(10) NOT NULL,     -- 'active'|'closed'|'void' (void/closed get aged out)
+  worst_light     char(1) NOT NULL,          -- 'G'|'A'|'R' (precomputed rollup for fast dashboards)
+  open_amber      int NOT NULL DEFAULT 0,
+  open_red        int NOT NULL DEFAULT 0,
+  next_due        date NULL,                 -- earliest pending milestone due-date
+  auto_done       int NOT NULL DEFAULT 0,    -- automation-score numerator support
+  manual_done     int NOT NULL DEFAULT 0,    -- manual "tick & confirm" count
+  milestone_checklist nvarchar(max) NULL,    -- JSON (see BLUEPRINT 1.3)
+  updated_at      datetime2 NOT NULL,
+  CONSTRAINT PK_shipment_alerts PRIMARY KEY (job_no)
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_pic'   AND object_id=OBJECT_ID('dbo.shipment_alerts'))
+  CREATE INDEX IX_alerts_pic   ON dbo.shipment_alerts(pic_user)  INCLUDE(worst_light,next_due,job_status);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_light' AND object_id=OBJECT_ID('dbo.shipment_alerts'))
+  CREATE INDEX IX_alerts_light ON dbo.shipment_alerts(worst_light, next_due) INCLUDE(station,mode,bound);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_lane'  AND object_id=OBJECT_ID('dbo.shipment_alerts'))
+  CREATE INDEX IX_alerts_lane  ON dbo.shipment_alerts(lane, carrier);
+"@
+
+# --- 2.1 milestone_def — config-driven matrix: qualify/complete rules + SLA per [milestone x bound] ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.milestone_def') IS NULL
+CREATE TABLE dbo.milestone_def (
+  milestone_code  nvarchar(12) NOT NULL,
+  bound           nvarchar(8)  NOT NULL,   -- 'Export'|'Import'|'Both'
+  name            nvarchar(60) NOT NULL,
+  seq             int          NOT NULL,
+  phase_anchor    nvarchar(12) NOT NULL,   -- booking|etd|atd|eta|delivery
+  qualify_rule    nvarchar(max) NOT NULL,  -- JSON (see BLUEPRINT 2.2)
+  complete_rule   nvarchar(max) NOT NULL,  -- JSON (see BLUEPRINT 2.2)
+  sla_type        nvarchar(12) NOT NULL,   -- 'baseline'|'fixed'|'none'
+  sla_offset_val  int NULL,                -- e.g. 3
+  sla_offset_unit nvarchar(6) NULL,        -- 'day'|'hour'
+  sla_direction   nvarchar(8) NULL,        -- 'before'|'after'
+  sla_anchor      nvarchar(12) NULL,       -- 'onboard'|'flight_dep'|'atd'|'ata'
+  active          bit NOT NULL DEFAULT 1,
+  CONSTRAINT PK_milestone_def PRIMARY KEY (milestone_code, bound)
+);
+"@
+
+# --- 2.1 milestone_evidence_map — admin-mapped doc-type/log entry that satisfies a milestone (retroactive auto-close) ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.milestone_evidence_map') IS NULL
+CREATE TABLE dbo.milestone_evidence_map (
+  id int IDENTITY(1,1) PRIMARY KEY,
+  milestone_code nvarchar(12) NOT NULL,
+  bound          nvarchar(8)  NOT NULL,
+  source_kind    nvarchar(16) NOT NULL,    -- 'erp_field'|'pic_doctype'|'print_log'|'send_log'|'edi_log'|'status_eq'
+  source_table   nvarchar(40) NULL,        -- real ERP table (admin-mapped)
+  source_field   nvarchar(40) NULL,        -- real ERP column / doc_type value
+  match_value    nvarchar(40) NULL,        -- e.g. 'Customs','RCL','Surrendered'
+  active bit NOT NULL DEFAULT 1
+);
+-- module_match (added in place): the ERP moduleTypeCode (e.g. 'SEA'|'AIR') a PIC doctype is scoped to; NULL = any module.
+IF COL_LENGTH('dbo.milestone_evidence_map','module_match') IS NULL
+  ALTER TABLE dbo.milestone_evidence_map ADD module_match nvarchar(8) NULL;
+"@
+
+# --- 2.6 detention_watch — post-delivery DET/DEM tracking per [job x container x kind], days-over vs free-time ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.detention_watch') IS NULL
+CREATE TABLE dbo.detention_watch (
+  job_no        nvarchar(24) NOT NULL,
+  container_no  nvarchar(15) NOT NULL,
+  dest_port     nvarchar(8)  NOT NULL,
+  carrier       nvarchar(12) NULL,
+  kind          char(3) NOT NULL,        -- 'DET' (to consignee) | 'DEM' (empty return)
+  free_days     int NULL,                -- from free_time_config (port x carrier)
+  free_until    date NULL,               -- last_free_date
+  event_date    date NULL,               -- gate-out / empty-return actual (NULL = still running)
+  days_over     int NULL,                -- computed: max(0, ref_date - free_until)
+  est_charge    decimal(12,2) NULL,      -- days_over * daily_rate (config)
+  light         char(1) NOT NULL,        -- A when approaching free_until, R when over
+  origin_station nvarchar(8) NULL,       -- so both offices get the alert
+  updated_at    datetime2 NOT NULL,
+  CONSTRAINT PK_detention_watch PRIMARY KEY (job_no, container_no, kind)
+);
+"@
+
+# --- 4.1 milestone_event_log — append-only state-transition log that powers the KPIs cheaply ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.milestone_event_log') IS NULL
+CREATE TABLE dbo.milestone_event_log (
+  id bigint IDENTITY(1,1) PRIMARY KEY,
+  job_no nvarchar(24) NOT NULL, milestone_code nvarchar(12) NOT NULL,
+  station nvarchar(8) NULL, pic_user nvarchar(20) NULL, mode char(3) NULL,
+  from_state nvarchar(12) NULL, to_state nvarchar(12) NULL,   -- pending->done / amber->done / amber->red / pending->bypassed
+  from_light char(1) NULL, to_light char(1) NULL,
+  done_by nvarchar(20) NULL,                                  -- 'auto'|'system_seq'|<username>
+  reason nvarchar(200) NULL, occurred_at datetime2 NOT NULL
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_evt_pic_time' AND object_id=OBJECT_ID('dbo.milestone_event_log'))
+  CREATE INDEX IX_evt_pic_time ON dbo.milestone_event_log(pic_user, occurred_at) INCLUDE(to_state,from_light,to_light,done_by);
+"@
+
+Write-Host "Operational database [$opsDb] ready (6 tables + indexes):" -ForegroundColor Green
+Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch, milestone_event_log" -ForegroundColor Green
+Write-Host "Next: map the alias/evidence fields to real ERP columns, then run listener-engine.ps1 -Mode Sea on the pilot station." -ForegroundColor Cyan
