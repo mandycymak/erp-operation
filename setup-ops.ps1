@@ -17,15 +17,26 @@ $user     = EnvOrConfig "DB_USER"     $cfg.user
 $password = EnvOrConfig "DB_PASSWORD" $cfg.password
 $opsDb    = EnvOrConfig "DB_OPS_DB"   $cfg.opsDb
 $authClause = if ($auth -eq 'sql') { "User ID=$user;Password=$password" } else { "Integrated Security=True" }
+# Optional separate OPS connection (two-server mode): pgsops can live on a different server than the read-only
+# source ERP. Falls back to the source connection when not configured (single-server, backward compatible).
+$opsServer   = EnvOrConfig "DB_OPS_SERVER"   $cfg.opsServer;   if (-not ("$opsServer".Trim()))   { $opsServer = $server }
+$opsAuth     = EnvOrConfig "DB_OPS_AUTH"     $cfg.opsAuth;     if (-not ("$opsAuth".Trim()))     { $opsAuth = $auth }
+$opsUser     = EnvOrConfig "DB_OPS_USER"     $cfg.opsUser;     if (-not ("$opsUser".Trim()))     { $opsUser = $user }
+$opsPassword = EnvOrConfig "DB_OPS_PASSWORD" $cfg.opsPassword; if (-not ("$opsPassword".Trim())) { $opsPassword = $password }
+$opsAuthClause = if ($opsAuth -eq 'sql') { "User ID=$opsUser;Password=$opsPassword" } else { "Integrated Security=True" }
 
 # Packet Size=512: VPN tunnel MTU is small; default 8192-byte TDS packets stall on multi-packet responses.
-function ConnStr($db) { "Server=$server;Database=$db;$authClause;TrustServerCertificate=True;Connect Timeout=30;Packet Size=512" }
+# master + the ops DB route to the OPS server; everything else to the source server.
+function ConnStr($db) {
+  if ($db -eq $opsDb -or $db -eq 'master') { "Server=$opsServer;Database=$db;$opsAuthClause;TrustServerCertificate=True;Connect Timeout=30;Packet Size=512" }
+  else { "Server=$server;Database=$db;$authClause;TrustServerCertificate=True;Connect Timeout=30;Packet Size=512" }
+}
 function ExecSql($db, $sql) {
   $cn = New-Object System.Data.SqlClient.SqlConnection (ConnStr $db); $cn.Open()
   try { $c = $cn.CreateCommand(); $c.CommandText = $sql; $c.CommandTimeout = 120; [void]$c.ExecuteNonQuery() } finally { $cn.Close() }
 }
 
-Write-Host "Creating operational database [$opsDb] on $server ..." -ForegroundColor Cyan
+Write-Host "Creating operational database [$opsDb] on $opsServer ..." -ForegroundColor Cyan
 ExecSql "master" "IF DB_ID('$opsDb') IS NULL CREATE DATABASE [$opsDb]"
 
 # --- 1.1 milestone_baselines — monthly 3-year averages per [lane x carrier x mode x milestone] (reference only) ---
@@ -87,6 +98,26 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_lane'  AND object
   CREATE INDEX IX_alerts_lane  ON dbo.shipment_alerts(lane, carrier);
 "@
 
+# --- 1.2b shipment_alerts enrichment (added in place): operator-facing display fields for the
+#     arrival-driven worklist (consignee/shipper name+contact, vessel/voyage, cargo profile) and the
+#     precomputed arrival bucket/sort. All populated off the request path by seed-alerts.ps1. ---
+ExecSql $opsDb @"
+IF COL_LENGTH('dbo.shipment_alerts','consignee_name')  IS NULL ALTER TABLE dbo.shipment_alerts ADD consignee_name  nvarchar(120) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','shipper_name')    IS NULL ALTER TABLE dbo.shipment_alerts ADD shipper_name    nvarchar(120) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','cust_contact')    IS NULL ALTER TABLE dbo.shipment_alerts ADD cust_contact    nvarchar(80)  NULL;
+IF COL_LENGTH('dbo.shipment_alerts','cust_phone')      IS NULL ALTER TABLE dbo.shipment_alerts ADD cust_phone      nvarchar(40)  NULL;
+IF COL_LENGTH('dbo.shipment_alerts','cust_email')      IS NULL ALTER TABLE dbo.shipment_alerts ADD cust_email      nvarchar(120) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','vessel_voyage')   IS NULL ALTER TABLE dbo.shipment_alerts ADD vessel_voyage   nvarchar(60)  NULL;
+IF COL_LENGTH('dbo.shipment_alerts','container_summary') IS NULL ALTER TABLE dbo.shipment_alerts ADD container_summary nvarchar(80) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','container_count') IS NULL ALTER TABLE dbo.shipment_alerts ADD container_count int NULL;
+IF COL_LENGTH('dbo.shipment_alerts','total_weight')    IS NULL ALTER TABLE dbo.shipment_alerts ADD total_weight    decimal(12,2) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','total_cbm')       IS NULL ALTER TABLE dbo.shipment_alerts ADD total_cbm       decimal(12,2) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','arrival_state')   IS NULL ALTER TABLE dbo.shipment_alerts ADD arrival_state   nvarchar(14)  NULL;
+IF COL_LENGTH('dbo.shipment_alerts','sort_key')        IS NULL ALTER TABLE dbo.shipment_alerts ADD sort_key        date          NULL;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_arrival' AND object_id=OBJECT_ID('dbo.shipment_alerts'))
+  CREATE INDEX IX_alerts_arrival ON dbo.shipment_alerts(bound, arrival_state, sort_key);
+"@
+
 # --- 2.1 milestone_def — config-driven matrix: qualify/complete rules + SLA per [milestone x bound] ---
 ExecSql $opsDb @"
 IF OBJECT_ID('dbo.milestone_def') IS NULL
@@ -106,6 +137,9 @@ CREATE TABLE dbo.milestone_def (
   active          bit NOT NULL DEFAULT 1,
   CONSTRAINT PK_milestone_def PRIMARY KEY (milestone_code, bound)
 );
+-- mode (added in place): which transport mode a milestone applies to ('Sea'|'Air'|'Both'); evaluator filters by it.
+IF COL_LENGTH('dbo.milestone_def','mode') IS NULL
+  ALTER TABLE dbo.milestone_def ADD mode nvarchar(6) NOT NULL DEFAULT 'Sea';
 "@
 
 # --- 2.1 milestone_evidence_map — admin-mapped doc-type/log entry that satisfies a milestone (retroactive auto-close) ---

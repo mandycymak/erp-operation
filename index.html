@@ -20,6 +20,14 @@
 <div class="wrap">
   <div class="col">
     <div class="lens">
+      <div class="seg" id="modeSeg">
+        <button data-tmode="Sea">🚢 Sea</button>
+        <button data-tmode="Air">✈ Air</button>
+      </div>
+      <div class="seg" id="boundSeg">
+        <button data-bound="Import">Import</button>
+        <button data-bound="Export">Export</button>
+      </div>
       <div class="seg" id="lensSeg">
         <button data-lens="mine" class="on">My work</button>
         <button data-lens="user">Teammate</button>
@@ -27,6 +35,7 @@
       </div>
       <select id="teammate" style="display:none"></select>
       <span class="spacer"></span>
+      <button class="ghost" id="collapseAll" style="font-size:12px">⊖ Collapse all</button>
       <span class="muted" id="wlCount" style="font-size:12px"></span>
     </div>
     <div id="worklist"><div class="empty">Loading…</div></div>

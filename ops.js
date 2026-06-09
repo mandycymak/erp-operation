@@ -6,7 +6,8 @@ const el = (t, c, h) => { const e = document.createElement(t); if (c) e.classNam
 const esc = s => ('' + (s ?? '')).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
 const arr = v => Array.isArray(v) ? v : (v == null ? [] : [v]);   // coerce PS single/empty -> array
 
-const state = { user: localStorage.getItem('opsUser') || '', roster: [], lens: 'mine', teammate: '' };
+const state = { user: localStorage.getItem('opsUser') || '', roster: [], lens: 'mine', teammate: '', bound: localStorage.getItem('opsBound') || 'Import', tmode: localStorage.getItem('opsMode') || 'Sea' };
+let allCollapsed = false;   // collapse-all toggle for vessel groups
 
 async function api(path, opts) {
   opts = opts || {};
@@ -23,8 +24,13 @@ async function init() {
   const rost = await api('/api-ops/roster'); state.roster = arr(rost.users).map(u => u.username);
   if (!state.user && state.roster.length) state.user = state.roster[0];
   buildUserPicker(); buildTeammate();
-  wireLens();
+  wireLens(); wireBound(); wireMode();
   $('#refreshBtn').onclick = refreshAll;
+  $('#collapseAll').onclick = () => {
+    allCollapsed = !allCollapsed;
+    document.querySelectorAll('.vgroup').forEach(g => g.classList.toggle('collapsed', allCollapsed));
+    $('#collapseAll').textContent = allCollapsed ? '⊕ Expand all' : '⊖ Collapse all';
+  };
   $('#tasksBtn').onclick = () => $('#tasksPanel').scrollIntoView({ behavior: 'smooth' });
   $('#closeDrawer').onclick = closeDrawer; $('#drawerBg').onclick = closeDrawer;
   refreshAll();
@@ -48,43 +54,135 @@ function wireLens() {
     loadWorklist();
   });
 }
+function wireBound() {
+  document.querySelectorAll('#boundSeg button').forEach(b => {
+    if (b.dataset.bound === state.bound) b.classList.add('on'); else b.classList.remove('on');
+    b.onclick = () => {
+      document.querySelectorAll('#boundSeg button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on'); state.bound = b.dataset.bound; localStorage.setItem('opsBound', state.bound);
+      loadWorklist();
+    };
+  });
+}
+function wireMode() {
+  document.querySelectorAll('#modeSeg button').forEach(b => {
+    if (b.dataset.tmode === state.tmode) b.classList.add('on'); else b.classList.remove('on');
+    b.onclick = () => {
+      document.querySelectorAll('#modeSeg button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on'); state.tmode = b.dataset.tmode; localStorage.setItem('opsMode', state.tmode);
+      loadWorklist();
+    };
+  });
+}
 function refreshAll() { loadWorklist(); loadTasks(); }
 
 // ---------- worklist ----------
+// arrival-driven buckets, by bound. Rows arrive already server-sorted (bound, arrival rank, sort_key).
+const BUCKETS = {
+  Import: [
+    { key: 'arrived', title: '🚢 Arrived — deliver now' },
+    { key: 'arriving', title: '⏳ Arriving — prepare' },
+    { key: 'planning', title: '🗓 Planning' },
+  ],
+  Export: [
+    { key: 'no_space', title: '⛔ No space (carrier)' },
+    { key: 'customs_window', title: '📋 Customs window (ETD−3)' },
+    { key: 'cargo_pending', title: '📦 Cargo not ready' },
+    { key: 'on_track', title: '✅ On track' },
+  ],
+};
 async function loadWorklist() {
   const wl = $('#worklist'); wl.innerHTML = '<div class="empty">Loading…</div>';
   let q = '/api-ops/worklist?lens=' + encodeURIComponent(state.lens);
   if (state.lens === 'user') q += '&user=' + encodeURIComponent(state.teammate || state.user);
   const data = await api(q);
-  const rows = arr(data.rows);
-  $('#wlCount').textContent = rows.length + ' shipment' + (rows.length === 1 ? '' : 's');
-  if (!rows.length) { wl.innerHTML = '<div class="empty">No shipments for this lens.</div>'; return; }
-  // bucket: Critical = Red; This Week = Amber or open notes; Monitor = the rest
-  const crit = rows.filter(r => r.worst === 'R');
-  const week = rows.filter(r => r.worst === 'A' || (r.worst !== 'R' && r.hasNotes));
-  const mon = rows.filter(r => r.worst !== 'R' && !(r.worst === 'A' || r.hasNotes));
+  const rows = arr(data.rows).filter(r => (r.bound || 'Import') === state.bound && (r.mode || 'Sea') === state.tmode);
+  const word = (state.tmode === 'Air' ? 'air ' : 'sea ') + state.bound.toLowerCase();
   wl.innerHTML = '';
-  wl.appendChild(bucket('🔴 Today / Critical', crit));
-  wl.appendChild(bucket('🟠 This Week', week));
-  wl.appendChild(bucket('🗂 Monitor', mon));
+  if (!rows.length) { $('#wlCount').textContent = '0 ' + word + ' shipments'; wl.innerHTML = '<div class="empty">No ' + esc(word) + ' shipments for this lens.</div>'; return; }
+  const buckets = BUCKETS[state.bound] || BUCKETS.Import;
+  const ord = {}; buckets.forEach((b, i) => ord[b.key] = i);
+  // group rows by vessel/voyage; derive ONE status per vessel (most-advanced state across its shipments,
+  // so a vessel isn't split across buckets just because ATA is filled on only some of its bills)
+  const gmap = new Map();
+  rows.forEach(r => { const k = r.vesselVoyage || '(no vessel / voyage)'; if (!gmap.has(k)) gmap.set(k, { vv: k, rows: [] }); gmap.get(k).rows.push(r); });
+  const gList = [...gmap.values()].map(g => {
+    let best = 99, sk = '';
+    g.rows.forEach(r => { const o = (ord[r.arrivalState] != null ? ord[r.arrivalState] : 9); if (o < best) best = o; if (r.sortKey && (!sk || r.sortKey < sk)) sk = r.sortKey; });
+    g.key = (buckets[best] && buckets[best].key) || 'other'; g.sortKey = sk;
+    return g;
+  });
+  const conv = state.tmode === 'Air' ? 'flight' : 'vessel';
+  $('#wlCount').textContent = rows.length + ' ' + word + ' · ' + gList.length + ' ' + conv + (gList.length === 1 ? '' : 's');
+  buckets.forEach(bk => {
+    const gs = gList.filter(g => g.key === bk.key).sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0));
+    if (!gs.length) return;
+    const ships = gs.reduce((a, g) => a + g.rows.length, 0);
+    const sec = el('div', 'bucket');
+    sec.appendChild(el('div', 'bh', esc(bk.title) + ' <span class="cnt">' + gs.length + ' ' + conv + (gs.length === 1 ? '' : 's') + ' · ' + ships + ' shp</span>'));
+    gs.forEach(g => sec.appendChild(vesselGroup(g)));
+    wl.appendChild(sec);
+  });
 }
-function bucket(title, rows) {
-  const b = el('div', 'bucket');
-  b.appendChild(el('div', 'bh', esc(title) + ' <span class="cnt">' + rows.length + '</span>'));
-  if (!rows.length) { b.appendChild(el('div', 'empty', 'Nothing here.')); return b; }
-  rows.forEach(r => b.appendChild(card(r)));
-  return b;
+function vesselGroup(g) {
+  const rs = g.rows;
+  const worst = rs.some(r => r.worst === 'R') ? 'R' : (rs.some(r => r.worst === 'A') ? 'A' : 'G');
+  const sample = rs.find(r => r.arrivalState === g.key) || rs[0];
+  const totalCont = rs.reduce((a, r) => a + (r.containerCount || 0), 0);
+  const isAir = (rs[0] && rs[0].mode === 'Air');
+  const icon = isAir ? '✈' : '🚢';
+  const unit = isAir ? '' : (totalCont ? ' · ' + totalCont + ' ctr' : '');
+  const box = el('div', 'vgroup' + (allCollapsed ? ' collapsed' : ''));
+  const head = el('div', 'vhead ' + worst);
+  head.innerHTML = '<span class="vtoggle">▾</span><span class="vname">' + icon + ' ' + esc(g.vv) + '</span>' +
+    arrivalChip(sample) + '<span class="vmeta">' + rs.length + ' shp' + unit + '</span>';
+  const list = el('div', 'vlist');
+  rs.forEach(r => list.appendChild(miniCard(r)));
+  head.onclick = () => box.classList.toggle('collapsed');
+  box.appendChild(head); box.appendChild(list);
+  return box;
 }
-function card(r) {
-  const c = el('div', 'card ' + r.worst);
-  const noteInd = r.hasNotes ? '<span class="note-ind">💬 notes</span>' : '';
+function fmtNum(s) { const n = parseFloat(s); return isNaN(n) ? '' : Math.round(n).toLocaleString(); }
+function cargoProfile(r) {   // Air -> pieces + weight; FCL -> containers; LCL -> weight (+cbm)
+  if (r.cargoType === 'AIR') {
+    const w = fmtNum(r.totalWeight);
+    return esc([r.containerSummary || '', w ? w + ' kg' : ''].filter(Boolean).join(' · '));
+  }
+  if (r.cargoType === 'LCL') {
+    const w = fmtNum(r.totalWeight); const cbm = parseFloat(r.totalCbm);
+    let s = w ? w + ' kg' : '';
+    if (!isNaN(cbm) && cbm > 0) s += (s ? ' · ' : '') + cbm.toFixed(2) + ' cbm';
+    return esc(s);
+  }
+  return r.containerSummary ? esc(r.containerSummary).replace(/(\d+)x/g, '$1×') : '';
+}
+function arrivalChip(r) {
+  switch (r.arrivalState) {
+    case 'arrived': return '<span class="chip arrived">Arrived ' + esc(r.ata || '') + '</span>';
+    case 'arriving': return '<span class="chip transit">In transit' + (r.eta ? ' · ETA ' + esc(r.eta) : (r.etd ? ' · dep ' + esc(r.etd) : '')) + '</span>';
+    case 'planning': return '<span class="chip plan">Planning</span>';
+    case 'no_space': return '<span class="chip nospace">No space</span>';
+    case 'customs_window': return '<span class="chip transit">Customs' + (r.etd ? ' · ETD ' + esc(r.etd) : '') + '</span>';
+    case 'cargo_pending': return '<span class="chip plan">Cargo pending</span>';
+    case 'on_track': return '<span class="chip arrived">On track</span>';
+    default: return '';
+  }
+}
+// compact per-shipment row inside a vessel group — vessel + arrival status live on the group header,
+// so each row shows only what differs: job, consignee, cargo profile, lane, and its own severity.
+function miniCard(r) {
+  const c = el('div', 'mcard ' + r.worst);
+  const isImport = (r.bound || 'Import') === 'Import';
+  const who = isImport ? (r.consigneeName || r.custCode) : (r.shipperName || r.custCode);
+  const cargo = cargoProfile(r);
+  const sev = r.openRed ? '<span class="pill R">' + r.openRed + 'R</span>' : (r.openAmber ? '<span class="pill A">' + r.openAmber + 'A</span>' : '');
+  const note = r.hasNotes ? '<span class="note-ind">💬</span>' : '';
   c.innerHTML =
-    '<div class="top"><span class="job">' + esc(r.jobNo) + '</span>' +
-    '<span class="pill ' + r.worst + '"><span class="dot ' + r.worst + '"></span>' + (r.openRed ? r.openRed + 'R ' : '') + (r.openAmber ? r.openAmber + 'A' : (r.worst === 'G' ? 'on track' : '')) + '</span>' +
-    noteInd + '</div>' +
-    '<div class="lane">' + esc(r.bound) + ' · ' + esc(r.cargoType || '—') + ' · ' + esc(r.lane) + '</div>' +
-    '<div class="meta"><span>PIC ' + esc(r.picUser || '—') + '</span><span>carrier ' + esc(r.carrier || '—') + '</span>' +
-    (r.nextDue ? '<span>next due ' + esc(r.nextDue) + '</span>' : '') + (r.etd ? '<span>ETD ' + esc(r.etd) + '</span>' : '') + '</div>';
+    '<span class="mjob">' + esc(r.jobNo) + '</span>' +
+    '<span class="mwho">' + esc(who || '—') + '</span>' +
+    (cargo ? '<span class="mcargo">' + cargo + '</span>' : '') +
+    '<span class="mlane">' + esc(r.lane || '') + '</span>' +
+    '<span class="mspacer"></span>' + sev + note;
   c.onclick = () => openShipment(r.jobNo);
   return c;
 }
@@ -106,19 +204,97 @@ function renderShipment(job, data) {
   const head = el('div', 'muted', 'ETD ' + (sh.etd || '—') + ' · ETA ' + (sh.eta || '—') + ' · ATD ' + (sh.atd || '—') +
     ' &nbsp;|&nbsp; auto ' + (roll.automation ? roll.automation.auto : 0) + ' · manual ' + (roll.automation ? roll.automation.manual : 0));
   head.style.marginBottom = '8px'; body.appendChild(head);
+  const actions = el('div'); actions.style.cssText = 'margin-bottom:10px';
+  const rb = el('button', 'ghost', '🔔 Remind me'); rb.style.fontSize = '12px'; rb.onclick = () => remindMe(job);
+  actions.appendChild(rb); body.appendChild(actions);
 
   // milestones
   arr(chk.milestones).forEach(m => body.appendChild(milestoneRow(job, m)));
 
-  // notes
+  // arrangements (who to contact + trucker/broker/warehouse tasks)
+  body.appendChild(arrangementsPanel(job, sh, arr(data.notes)));
+
+  // notes (plain notes only — arrangement-kind notes live in the panel above)
+  const plain = arr(data.notes).filter(n => n.kind !== 'arrangement');
   const nx = el('div', 'notes');
   nx.appendChild(el('h3', null, '💬 Notes & reminders'));
   nx.appendChild(composer(job, null));
   const list = el('div', 'notelist');
-  arr(data.notes).forEach(n => list.appendChild(noteItem(n)));
-  if (!arr(data.notes).length) list.appendChild(el('div', 'empty', 'No notes yet.'));
+  plain.forEach(n => list.appendChild(noteItem(n)));
+  if (!plain.length) list.appendChild(el('div', 'empty', 'No notes yet.'));
   nx.appendChild(list);
   body.appendChild(nx);
+}
+const ARR_TYPES = [
+  { key: 'customer', label: '👤 Customer' },
+  { key: 'trucker', label: '🚚 Trucker' },
+  { key: 'broker', label: '🛃 Customs broker' },
+  { key: 'warehouse', label: '🏭 Warehouse' },
+];
+function arrPlaceholder(t) { return ({ customer: 'customer contact person', trucker: 'trucker company', broker: 'broker name', warehouse: 'warehouse' })[t] || 'party'; }
+function arrangementsPanel(job, sh, notes) {
+  const wrap = el('div', 'arrange');
+  wrap.appendChild(el('h3', null, '📦 Arrangements'));
+  const isImport = (sh.bound || 'Import') === 'Import';
+  const who = isImport ? sh.consignee_name : sh.shipper_name;
+  const bits = [];
+  if (sh.cust_contact) bits.push(esc(sh.cust_contact));
+  if (sh.cust_phone) bits.push('<a href="tel:' + esc(sh.cust_phone) + '">📞 ' + esc(sh.cust_phone) + '</a>');
+  if (sh.cust_email) bits.push('<a href="mailto:' + esc(sh.cust_email) + '">✉ ' + esc(sh.cust_email) + '</a>');
+  const contact = el('div', 'contact');
+  contact.innerHTML = '<span class="lbl">' + (isImport ? 'Consignee' : 'Shipper') + '</span> <b>' + esc(who || '—') + '</b>' +
+    (bits.length ? ' · ' + bits.join(' · ') : ' <span class="mut">(no contact on file)</span>');
+  wrap.appendChild(contact);
+  const byType = {};
+  arr(notes).filter(n => n.kind === 'arrangement').forEach(n => { (byType[n.arrType] = byType[n.arrType] || []).push(n); });
+  ARR_TYPES.forEach(t => {
+    const row = el('div', 'arr-row');
+    const items = byType[t.key] || [];
+    let html = '<div class="arr-head"><span class="arr-label">' + t.label + '</span>' +
+      '<button class="tick ghost arr-add" data-type="' + t.key + '">+ reminder</button></div>';
+    if (items.length) {
+      html += '<div class="arr-items">' + items.map(n =>
+        '<div class="arr-item' + (n.status === 'done' ? ' done' : '') + '" data-id="' + esc(n.id) + '">' +
+        (n.party ? '<b>' + esc(n.party) + '</b> ' : '') + '<span>' + esc(n.note) + '</span>' +
+        (n.contact ? ' <span class="mut">' + esc(n.contact) + '</span>' : '') +
+        ' <span class="arr-st ' + esc(n.arrStatus || 'todo') + '">' + esc(n.arrStatus || 'todo') + '</span>' +
+        (n.status === 'done' ? ' <span class="mut">✔ ' + esc(n.doneBy) + '</span>' : '<button class="tick ghost arr-done" data-id="' + esc(n.id) + '">done</button>') +
+        '</div>').join('') + '</div>';
+    }
+    row.innerHTML = html;
+    wrap.appendChild(row);
+  });
+  wrap.querySelectorAll('.arr-add').forEach(btn => btn.onclick = () => openArrangeForm(job, btn.dataset.type, wrap));
+  wrap.querySelectorAll('.arr-done').forEach(btn => btn.onclick = async () => {
+    await api('/api-ops/note-done', { method: 'POST', body: { id: btn.dataset.id, done: true } });
+    const d = await api('/api-ops/shipment?job=' + encodeURIComponent(job)); renderShipment(job, d); loadTasks();
+  });
+  return wrap;
+}
+function openArrangeForm(job, type, wrap) {
+  const existing = wrap.querySelector('.arr-form'); if (existing) existing.remove();
+  const f = el('div', 'arr-form');
+  f.innerHTML =
+    '<input class="ai party" placeholder="' + arrPlaceholder(type) + '">' +
+    '<input class="ai contact" placeholder="contact / phone (optional)">' +
+    '<input class="ai note" placeholder="reminder, e.g. confirm pickup from terminal → warehouse">' +
+    '<select class="ai status"><option value="todo">to-do</option><option value="arranged">arranged</option><option value="confirmed">confirmed</option></select>' +
+    '<input class="ai ment" placeholder="@mention a colleague (optional)">';
+  const bar = el('div'); bar.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+  const save = el('button', 'primary', 'Save'); const cancel = el('button', 'ghost', 'Cancel');
+  bar.appendChild(save); bar.appendChild(cancel); f.appendChild(bar); wrap.appendChild(f);
+  cancel.onclick = () => f.remove();
+  save.onclick = async () => {
+    const party = f.querySelector('.party').value.trim();
+    const contact = f.querySelector('.contact').value.trim();
+    const note = f.querySelector('.note').value.trim();
+    const arr_status = f.querySelector('.status').value;
+    const mentions = extractMentions(f.querySelector('.ment').value);
+    if (!note && !party) return;
+    save.disabled = true;
+    await api('/api-ops/notes', { method: 'POST', body: { job_no: job, kind: 'arrangement', arr_type: type, party, contact, arr_status, note: note || ('Arrange ' + type), mentions } });
+    const d = await api('/api-ops/shipment?job=' + encodeURIComponent(job)); renderShipment(job, d); loadTasks(); loadWorklist();
+  };
 }
 function milestoneRow(job, m) {
   const tracked = m.tracked !== false && m.state !== 'n/a';
@@ -141,9 +317,65 @@ function milestoneRow(job, m) {
   }
   return row;
 }
+// custom in-page text dialog (replaces native prompt() so there's no "localhost:8078 says" chrome)
+function askText({ title, message, placeholder, okLabel }) {
+  return new Promise(resolve => {
+    const bg = el('div', 'modal-bg');
+    const box = el('div', 'modal');
+    box.innerHTML = '<h3>' + esc(title || '') + '</h3>' + (message ? '<p class="modal-msg">' + esc(message) + '</p>' : '');
+    const ta = el('textarea'); ta.placeholder = placeholder || ''; box.appendChild(ta);
+    const bar = el('div', 'modal-bar');
+    const cancel = el('button', 'ghost', 'Cancel');
+    const ok = el('button', 'primary', okLabel || 'Confirm');
+    bar.appendChild(cancel); bar.appendChild(ok); box.appendChild(bar);
+    bg.appendChild(box); document.body.appendChild(bg);
+    setTimeout(() => ta.focus(), 30);
+    const done = val => { bg.remove(); document.removeEventListener('keydown', onKey); resolve(val); };
+    ok.onclick = () => done(ta.value);
+    cancel.onclick = () => done(null);
+    bg.onclick = e => { if (e.target === bg) done(null); };
+    const onKey = e => { if (e.key === 'Escape') done(null); else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) done(ta.value); };
+    document.addEventListener('keydown', onKey);
+  });
+}
+// dated self-reminder dialog: a note + optional follow-up date
+function askReminder() {
+  return new Promise(resolve => {
+    const bg = el('div', 'modal-bg');
+    const box = el('div', 'modal');
+    box.innerHTML = '<h3>🔔 Remind me</h3><p class="modal-msg">A note to yourself about what to follow up on this shipment. Set a date to chase it (optional).</p>';
+    const ta = el('textarea'); ta.placeholder = 'e.g. chase trucker to confirm terminal pickup → warehouse'; box.appendChild(ta);
+    const drow = el('div', 'modal-date');
+    drow.innerHTML = '<span class="muted">Follow up on</span>';
+    const date = el('input'); date.type = 'date'; drow.appendChild(date); box.appendChild(drow);
+    const bar = el('div', 'modal-bar');
+    const cancel = el('button', 'ghost', 'Cancel');
+    const ok = el('button', 'primary', '🔔 Set reminder');
+    bar.appendChild(cancel); bar.appendChild(ok); box.appendChild(bar);
+    bg.appendChild(box); document.body.appendChild(bg);
+    setTimeout(() => ta.focus(), 30);
+    const done = val => { bg.remove(); document.removeEventListener('keydown', onKey); resolve(val); };
+    ok.onclick = () => { const t = ta.value.trim(); if (!t) { ta.focus(); return; } done({ note: t, date: date.value || '' }); };
+    cancel.onclick = () => done(null);
+    bg.onclick = e => { if (e.target === bg) done(null); };
+    const onKey = e => { if (e.key === 'Escape') done(null); };
+    document.addEventListener('keydown', onKey);
+  });
+}
+async function remindMe(job) {
+  const r = await askReminder();
+  if (!r) return;
+  await api('/api-ops/notes', { method: 'POST', body: { job_no: job, kind: 'reminder', note: r.note, remind_on: r.date, mentions: [] } });
+  const d = await api('/api-ops/shipment?job=' + encodeURIComponent(job)); renderShipment(job, d); loadTasks();
+}
 async function promptBypass(job, code, name) {
-  const reason = prompt('Tick & Confirm "' + code + ' ' + name + '" complete.\nReason (e.g. filed via portal, hard-copy received):', '');
-  if (reason === null) return;
+  const reason = await askText({
+    title: 'Mark complete · ' + code + ' ' + name,
+    message: 'Confirm this step is done. Add a short note if you like (e.g. filed via portal, hard-copy received).',
+    placeholder: 'Note (optional)',
+    okLabel: '✓ Confirm done'
+  });
+  if (reason === null) return;   // cancelled
   await closeMilestone(job, code, true, reason);
 }
 async function closeMilestone(job, code, done, reason) {
@@ -223,25 +455,36 @@ function noteItem(n) {
 // ---------- My Tasks ----------
 async function loadTasks() {
   const data = await api('/api-ops/my-tasks');
-  const assigned = arr(data.assigned), mine = arr(data.mine);
-  const n = data.assignedOpen || assigned.length;
+  const assigned = arr(data.assigned), mine = arr(data.mine), today = data.today || '';
+  const n = (data.assignedOpen || assigned.length) + (data.dueNow || 0);   // from others + my due/overdue
   ['#taskBadge', '#taskBadge2'].forEach(s => { const b = $(s); if (n > 0) { b.textContent = n; b.style.display = ''; } else b.style.display = 'none'; });
   const body = $('#tasksBody'); body.innerHTML = '';
-  body.appendChild(el('div', 'muted', 'Assigned to me'));
+  body.appendChild(el('div', 'muted', '🔔 Reminders from others'));
   if (!assigned.length) body.appendChild(el('div', 'empty', 'Nothing waiting on you.'));
-  assigned.forEach(t => body.appendChild(taskCard(t, true)));
-  body.appendChild(el('div', 'muted', 'Raised by me')); body.lastChild.style.marginTop = '8px';
-  if (!mine.length) body.appendChild(el('div', 'empty', "You haven't raised any."));
-  mine.forEach(t => body.appendChild(taskCard(t, false)));
+  assigned.forEach(t => body.appendChild(taskCard(t, true, today)));
+  const h = el('div', 'muted', '📌 My follow-ups'); h.style.marginTop = '10px'; body.appendChild(h);
+  if (!mine.length) body.appendChild(el('div', 'empty', 'No reminders set. Open a shipment → 🔔 Remind me.'));
+  mine.forEach(t => body.appendChild(taskCard(t, false, today)));
 }
-function taskCard(t, ack) {
+function taskCard(t, fromOthers, today) {
   const d = el('div', 'task');
-  const kindTag = (t.kind && t.kind !== 'note') ? '<span class="kind ' + esc(t.kind) + '">' + esc(t.kind) + '</span> ' : '';
-  d.innerHTML = '<div class="who">' + kindTag + esc(t.job_no) + ' · from <strong>' + esc(t.user) + '</strong></div><div>' + esc(t.note) + '</div>';
-  const row = el('div', 'row');
-  const open = el('button', 'ghost', 'Open'); open.onclick = () => openShipment(t.job_no); row.appendChild(open);
-  if (ack) { const a = el('button', 'primary', '✓ Acknowledge'); a.onclick = async () => { await api('/api-ops/note-done', { method: 'POST', body: { id: t.id, done: true } }); loadTasks(); }; row.appendChild(a); }
-  d.appendChild(row); return d;
+  const who = t.consignee || t.job_no;
+  let due = '';
+  if (t.remindOn) {
+    const cls = (today && t.remindOn < today) ? ' over' : (today && t.remindOn === today ? ' now' : '');
+    const lbl = cls === ' over' ? ' · overdue' : (cls === ' now' ? ' · today' : '');
+    due = '<span class="due' + cls + '">🔔 ' + esc(t.remindOn) + lbl + '</span>';
+  }
+  const kindTag = t.arrType ? '<span class="kind">' + esc(t.arrType) + '</span> ' : '';
+  const ctx = [t.cargo, t.vesselVoyage, t.lane].filter(Boolean).map(esc).join(' · ');
+  d.innerHTML =
+    '<button class="tk-done" title="Mark done">✓</button>' +
+    '<div class="tk-head">' + kindTag + '<strong>' + esc(who) + '</strong>' + due + '</div>' +
+    '<div class="tk-sub mut">' + esc(t.job_no) + (fromOthers ? ' · from ' + esc(t.user) : '') + (ctx ? ' · ' + ctx : '') + '</div>' +
+    '<div class="tk-note">' + esc(t.note) + '</div>';
+  d.onclick = () => openShipment(t.job_no);   // whole card opens the shipment
+  d.querySelector('.tk-done').onclick = async e => { e.stopPropagation(); await api('/api-ops/note-done', { method: 'POST', body: { id: t.id, done: true } }); loadTasks(); };
+  return d;
 }
 
 init();

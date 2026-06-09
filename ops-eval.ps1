@@ -26,6 +26,25 @@ function New-ShipContext($b){
     broker=("$($b.broker)").Trim(); customer_pickup=(D $b.customer_pickup); wh_code=("$($b.wh_code)").Trim()
     ad_date=(D $b.ad_date); ware_date=(D $b.ware_date); pd_date=(D $b.pd_date)
     departure1=(D $b.departure1); crtdate=(D $b.crtdate)
+    ref=$b.ref; vessel_1=("$($b.vessel_1)").Trim(); voyage_1=("$($b.voyage_1)").Trim()
+  }
+}
+
+# Air variant: build the field-context from one awbhead row. Pure (no DB). mode='Air'.
+function New-AirContext($b){
+  function D($x){ if($null -eq $x -or "$x" -eq ''){$null}else{[datetime]$x} }
+  @{
+    mode='Air'
+    bound = switch("$($b.bound)"){ 'O'{'Export'} 'I'{'Import'} default {'Other'} }
+    cargo_type='AIR'
+    jobn=$b.jobn; hawb=("$($b.hawb)").Trim(); mawb=("$($b.mawb)").Trim()
+    picuser=("$($b.picuser)").Trim(); crtuser=("$($b.crtuser)").Trim(); upduser=("$($b.upduser)").Trim(); status=$b.status
+    declaration= if($b.declaration_complete -eq $true){'1'}else{'0'}
+    pol=$b.pol; pod=$b.pod; carr=("$($b.carr)").Trim(); flight1=("$($b.flight1)").Trim()
+    shpr_code=("$($b.shpr_code)").Trim(); cgne_code=("$($b.cgne_code)").Trim()
+    atd_date=(D $b.atd_date); ata_date=(D $b.ata_date)
+    inform_cnee=(D $b.inform_cnee); cnee_pickup=(D $b.cnee_pickup); customer_pickup=(D $b.customer_pickup)
+    comp_date=(D $b.comp_date); crtdate=(D $b.crtdate); ref=$b.ref
   }
 }
 
@@ -73,7 +92,7 @@ function _PlannedDue($S,$d){
     if("$($d.sla_offset_unit)" -eq 'hour'){ return $base.AddHours($off) } else { return $base.AddDays($off) }
   } elseif("$($d.sla_type)" -eq 'baseline'){
     if("$($d.phase_anchor)" -in 'booking','etd'){
-      $etd = if($S.ship.departure1){$S.ship.departure1}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null}
+      $etd = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.atd_date } elseif($S.ship.departure1){$S.ship.departure1}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null}
       if($etd -is [datetime]){ return $etd.AddDays(-$S.lead) }
     }
     return $null
@@ -93,7 +112,7 @@ function _Light($S,$due){
 function Eval-Milestones($S,$defs,$manual){
   if(-not $manual){ $manual=@{} }
   $items=@(); $amber=0; $red=0; $auto=0; $man=0; $nextDue=$null
-  foreach($d in @($defs | Where-Object { $_.bound -eq $S.bound } | Sort-Object seq)){
+  foreach($d in @($defs | Where-Object { $_.bound -eq $S.bound -and ("$($_.mode)" -eq "$($S.ship.mode)" -or "$($_.mode)" -eq 'Both' -or "$($_.mode)" -eq '') } | Sort-Object seq)){
     $code=$d.milestone_code
     $row=[ordered]@{ code=$code; name=$d.name; seq=[int]$d.seq; phase_anchor=$d.phase_anchor; tracked=$true; state='pending'; light='G'; done_by=''; done_at=''; due=''; basis='' }
     # manual bypass overlay wins (operator ticked it) — even with no ERP data

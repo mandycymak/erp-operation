@@ -18,7 +18,13 @@ $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.au
 $user=EnvOrConfig "DB_USER" $cfg.user; $password=EnvOrConfig "DB_PASSWORD" $cfg.password
 $opsDb=EnvOrConfig "DB_OPS_DB" $cfg.opsDb
 $authClause = if ($auth -eq 'sql') { "User ID=$user;Password=$password" } else { "Integrated Security=True" }
-$cs = "Server=$server;Database=$opsDb;$authClause;TrustServerCertificate=True;Connect Timeout=30;Packet Size=512"
+# seeds only pgsops -> connect to the OPS server (two-server mode; falls back to source)
+$opsServer=EnvOrConfig "DB_OPS_SERVER" $cfg.opsServer; if(-not ("$opsServer".Trim())){ $opsServer=$server }
+$opsAuth=EnvOrConfig "DB_OPS_AUTH" $cfg.opsAuth; if(-not ("$opsAuth".Trim())){ $opsAuth=$auth }
+$opsUser=EnvOrConfig "DB_OPS_USER" $cfg.opsUser; if(-not ("$opsUser".Trim())){ $opsUser=$user }
+$opsPassword=EnvOrConfig "DB_OPS_PASSWORD" $cfg.opsPassword; if(-not ("$opsPassword".Trim())){ $opsPassword=$password }
+$authClause = if ($opsAuth -eq 'sql') { "User ID=$opsUser;Password=$opsPassword" } else { "Integrated Security=True" }
+$cs = "Server=$opsServer;Database=$opsDb;$authClause;TrustServerCertificate=True;Connect Timeout=30;Packet Size=512"
 $script:cn = New-Object System.Data.SqlClient.SqlConnection $cs; $script:cn.Open()
 # VPN tunnel is flaky ("semaphore timeout" / transport errors); retry transient failures, reopening if the connection broke.
 function Test-Transient($ex){ $m="$($ex.Message)"; $m -match 'semaphore timeout|transport-level|timeout period|deadlock|not currently available|forcibly closed' }
@@ -44,9 +50,9 @@ function CEQ($f,$v){ @{ kind='field_eq'; field=$f; value=$v } }
 function CIN($f,$set){ @{ kind='field_in'; field=$f; set=$set } }
 function CEV(){ @{ kind='evidence' } }
 function CMODE($v){ @{ kind='mode_eq'; value=$v } }
-function Def($code,$bound,$name,$seq,$anchor,$qual,$comp,$slatype,$offval,$offunit,$dir,$slaanchor){
+function Def($code,$bound,$name,$seq,$anchor,$qual,$comp,$slatype,$offval,$offunit,$dir,$slaanchor,$mode='Sea'){
   [pscustomobject]@{ code=$code;bound=$bound;name=$name;seq=$seq;anchor=$anchor;qual=$qual;comp=$comp;
-    slatype=$slatype;offval=$offval;offunit=$offunit;dir=$dir;slaanchor=$slaanchor }
+    slatype=$slatype;offval=$offval;offunit=$offunit;dir=$dir;slaanchor=$slaanchor;mode=$mode }
 }
 
 # milestone_def rows (pscustomobjects so nested rule arrays don't flatten)
@@ -76,21 +82,37 @@ $defs = @(
  (Def 'M7'  'Import' 'Warehouse Service'           8 'delivery' (Rule 'AND' @((CNN 'wh_code')))   (Rule 'OR' @((CNN 'ad_date'),(CNN 'ware_date')))                           'baseline' $null $null $null $null)
  (Def 'M8'  'Import' 'Final Delivery'              9 'delivery' (Rule 'AND' @((CNN 'pd_date')))   (Rule 'OR' @((CNN 'goods_delivery'),(CNN 'ad_date'),(CNN 'comp_date')))     'baseline' $null $null $null $null)
  (Def 'M9'  'Import' 'Invoice to Buyer'           10 'delivery' (Always)                          (Rule 'OR' @((CEV)))                                                       'fixed' 3 'day' 'after' 'ata_date')
+ # ---- AIR EXPORT (rules over real awbhead columns; mode='Air') ----
+ (Def 'A1' 'Export' 'Booking Confirmed'         1 'booking'  (Always)  (Rule 'OR' @((CNN 'hawb'),(CNN 'mawb'),(CNN 'picuser'),(CEV)))  'baseline' $null $null $null $null 'Air')
+ (Def 'A2' 'Export' 'Flight / Space Confirmed'  2 'etd'      (Always)  (Rule 'OR' @((CNN 'flight1'),(CEV)))                           'baseline' $null $null $null $null 'Air')
+ (Def 'A3' 'Export' 'Customs Declaration'       3 'etd'      (Always)  (Rule 'OR' @((CEQ 'declaration' '1'),(CEV)))                  'fixed' 1 'day' 'before' 'atd_date' 'Air')
+ (Def 'A4' 'Export' 'AWB Issued'                4 'etd'      (Always)  (Rule 'OR' @((CNN 'mawb'),(CNN 'hawb'),(CEV)))                'baseline' $null $null $null $null 'Air')
+ (Def 'A5' 'Export' 'Uplift / Departure (ATD)'  5 'atd'      (Always)  (Rule 'OR' @((CNN 'atd_date')))                               'baseline' $null $null $null $null 'Air')
+ (Def 'A6' 'Export' 'Post-Departure Invoice'    6 'atd'      (Always)  (Rule 'OR' @((CEV)))                                          'fixed' 3 'day' 'after' 'atd_date' 'Air')
+ (Def 'A7' 'Export' 'Arrival Confirmed'         7 'delivery' (Always)  (Rule 'OR' @((CNN 'ata_date'),(CNN 'comp_date')))            'baseline' $null $null $null $null 'Air')
+ # ---- AIR IMPORT ----
+ (Def 'A1' 'Import' 'Pre-Alert / Booking'       1 'booking'  (Always)  (Rule 'OR' @((CNN 'mawb'),(CNN 'hawb'),(CEV)))                'baseline' $null $null $null $null 'Air')
+ (Def 'A2' 'Import' 'Flight Departed'           2 'eta'      (Always)  (Rule 'OR' @((CNN 'atd_date')))                               'none' $null $null $null $null 'Air')
+ (Def 'A3' 'Import' 'Arrival (ATA)'             3 'eta'      (Always)  (Rule 'OR' @((CNN 'ata_date')))                               'baseline' $null $null $null $null 'Air')
+ (Def 'A4' 'Import' 'Arrival Notice'            4 'eta'      (Always)  (Rule 'OR' @((CNN 'inform_cnee'),(CEV)))                      'baseline' $null $null $null $null 'Air')
+ (Def 'A5' 'Import' 'Import Customs'            5 'eta'      (Always)  (Rule 'OR' @((CEQ 'declaration' '1'),(CEV)))                  'baseline' $null $null $null $null 'Air')
+ (Def 'A6' 'Import' 'Pickup / Delivery'         6 'delivery' (Always)  (Rule 'OR' @((CNN 'cnee_pickup'),(CNN 'customer_pickup')))    'baseline' $null $null $null $null 'Air')
+ (Def 'A7' 'Import' 'Invoice to Buyer'          7 'delivery' (Always)  (Rule 'OR' @((CEV)))                                          'fixed' 3 'day' 'after' 'ata_date' 'Air')
 )
 
 $mergeSql = @"
 MERGE dbo.milestone_def AS t
 USING (SELECT @code code,@bound bound) s ON t.milestone_code=s.code AND t.bound=s.bound
 WHEN MATCHED THEN UPDATE SET name=@name,seq=@seq,phase_anchor=@anchor,qualify_rule=@qual,complete_rule=@comp,
-  sla_type=@slatype,sla_offset_val=@offval,sla_offset_unit=@offunit,sla_direction=@dir,sla_anchor=@slaanchor,active=1
-WHEN NOT MATCHED THEN INSERT(milestone_code,bound,name,seq,phase_anchor,qualify_rule,complete_rule,sla_type,sla_offset_val,sla_offset_unit,sla_direction,sla_anchor,active)
-  VALUES(@code,@bound,@name,@seq,@anchor,@qual,@comp,@slatype,@offval,@offunit,@dir,@slaanchor,1);
+  sla_type=@slatype,sla_offset_val=@offval,sla_offset_unit=@offunit,sla_direction=@dir,sla_anchor=@slaanchor,mode=@mode,active=1
+WHEN NOT MATCHED THEN INSERT(milestone_code,bound,name,seq,phase_anchor,qualify_rule,complete_rule,sla_type,sla_offset_val,sla_offset_unit,sla_direction,sla_anchor,mode,active)
+  VALUES(@code,@bound,@name,@seq,@anchor,@qual,@comp,@slatype,@offval,@offunit,@dir,@slaanchor,@mode,1);
 "@
 foreach($d in $defs){
   Exec $mergeSql @{ code=$d.code; bound=$d.bound; name=$d.name; seq=$d.seq; anchor=$d.anchor; qual=$d.qual; comp=$d.comp;
-    slatype=$d.slatype; offval=$d.offval; offunit=$d.offunit; dir=$d.dir; slaanchor=$d.slaanchor }
+    slatype=$d.slatype; offval=$d.offval; offunit=$d.offunit; dir=$d.dir; slaanchor=$d.slaanchor; mode=$d.mode }
 }
-Write-Host "Seeded milestone_def: $($defs.Count) rows (Export + Import)." -ForegroundColor Green
+Write-Host "Seeded milestone_def: $($defs.Count) rows (Sea + Air, Export + Import)." -ForegroundColor Green
 
 # ---- starter evidence map: documentTypeCode / EDI -> milestone (SECONDARY close path) ----
 function Ev($code,$bound,$kind,$table,$field,$val,$mod){ [pscustomobject]@{code=$code;bound=$bound;kind=$kind;table=$table;field=$field;val=$val;mod=$mod} }

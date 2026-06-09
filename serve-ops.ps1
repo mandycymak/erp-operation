@@ -15,8 +15,13 @@ function EnvOrConfig($n,$v){ $e=[Environment]::GetEnvironmentVariable($n); if($e
 $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.auth
 $user=EnvOrConfig "DB_USER" $cfg.user; $password=EnvOrConfig "DB_PASSWORD" $cfg.password; $opsDb=EnvOrConfig "DB_OPS_DB" $cfg.opsDb
 if($Port -le 0){ if($env:DB_PORT -and $env:DB_PORT.Trim()){ $Port=[int]$env:DB_PORT } else { $Port=[int]$cfg.port } }
-$authClause= if($auth -eq 'sql'){"User ID=$user;Password=$password"}else{"Integrated Security=True"}
-$ConnStr="Server=$server;Database=$opsDb;$authClause;TrustServerCertificate=True;Connect Timeout=30;Packet Size=512"
+# the web service reads ONLY pgsops, so it connects to the OPS server (may differ from the source ERP; falls back to source)
+$opsServer=EnvOrConfig "DB_OPS_SERVER" $cfg.opsServer; if(-not ("$opsServer".Trim())){ $opsServer=$server }
+$opsAuth=EnvOrConfig "DB_OPS_AUTH" $cfg.opsAuth; if(-not ("$opsAuth".Trim())){ $opsAuth=$auth }
+$opsUser=EnvOrConfig "DB_OPS_USER" $cfg.opsUser; if(-not ("$opsUser".Trim())){ $opsUser=$user }
+$opsPassword=EnvOrConfig "DB_OPS_PASSWORD" $cfg.opsPassword; if(-not ("$opsPassword".Trim())){ $opsPassword=$password }
+$authClause= if($opsAuth -eq 'sql'){"User ID=$opsUser;Password=$opsPassword"}else{"Integrated Security=True"}
+$ConnStr="Server=$opsServer;Database=$opsDb;$authClause;TrustServerCertificate=True;Connect Timeout=30;Packet Size=512"
 $AppName= if($cfg.appName){$cfg.appName}else{"Control Tower"}
 $AppSubtitle= if($cfg.appSubtitle){$cfg.appSubtitle}else{""}
 $InstanceName= if($cfg.instanceName){$cfg.instanceName}else{""}
@@ -79,13 +84,13 @@ function Write-Notes($arr){
   $parts = @($arr | Where-Object { $_ -and $_.id } | ForEach-Object { $_ | ConvertTo-Json -Depth 8 -Compress })
   [System.IO.File]::WriteAllText($NotesPath, '[' + ($parts -join ',') + ']', (New-Object System.Text.UTF8Encoding($false)))
 }
-function Note-Proj($r){ [pscustomobject]@{ id=[string]$r.id; created=[string]$r.created; user=[string]$r.user; job_no=[string]$r.job_no; milestone_code=[string]$r.milestone_code; kind=$(if($r.kind){"$($r.kind)"}else{'note'}); note=[string]$r.note; mentions=@($r.mentions|Where-Object{$_}); status=$(if($r.status){"$($r.status)"}else{'open'}); doneBy=[string]$r.doneBy; doneAt=[string]$r.doneAt } }
+function Note-Proj($r){ [pscustomobject]@{ id=[string]$r.id; created=[string]$r.created; user=[string]$r.user; job_no=[string]$r.job_no; milestone_code=[string]$r.milestone_code; kind=$(if($r.kind){"$($r.kind)"}else{'note'}); note=[string]$r.note; mentions=@($r.mentions|Where-Object{$_}); status=$(if($r.status){"$($r.status)"}else{'open'}); doneBy=[string]$r.doneBy; doneAt=[string]$r.doneAt; arrType=[string]$r.arr_type; party=[string]$r.party; contact=[string]$r.contact; arrStatus=[string]$r.arr_status; remindOn=[string]$r.remind_on } }
 function Save-Note($ctx,$me){
   $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
   if(-not $j -or -not $j.job_no){ return @{error='invalid payload'} }
   $arr=@(Read-Notes)
   $ment=@(@($j.mentions)|Where-Object{ $_ -and "$_".Trim() -ne '' }|ForEach-Object{"$_".Trim()}|Select-Object -Unique)
-  $rec=[pscustomobject]@{ id=[guid]::NewGuid().ToString(); created=(Get-Date).ToString('o'); user=$me; job_no="$($j.job_no)"; milestone_code="$($j.milestone_code)"; kind=$(if($j.kind){"$($j.kind)"}else{'note'}); note="$($j.note)"; mentions=$ment; status='open'; doneBy=''; doneAt='' }
+  $rec=[pscustomobject]@{ id=[guid]::NewGuid().ToString(); created=(Get-Date).ToString('o'); user=$me; job_no="$($j.job_no)"; milestone_code="$($j.milestone_code)"; kind=$(if($j.kind){"$($j.kind)"}else{'note'}); note="$($j.note)"; mentions=$ment; status='open'; doneBy=''; doneAt=''; arr_type="$($j.arr_type)"; party="$($j.party)"; contact="$($j.contact)"; arr_status=$(if($j.arr_status){"$($j.arr_status)"}else{''}); remind_on="$($j.remind_on)" }
   Write-Notes ($arr + $rec)
   @{ ok=$true; record=(Note-Proj $rec) }
 }
@@ -101,7 +106,7 @@ function Save-NoteDone($ctx,$me){
   $out=@()
   foreach($r in $arr){
     if($r -and "$($r.id)" -eq $id){ $found=$true
-      $r=[pscustomobject]@{ id=[string]$r.id; created=[string]$r.created; user=[string]$r.user; job_no=[string]$r.job_no; milestone_code=[string]$r.milestone_code; kind=$(if($r.kind){"$($r.kind)"}else{'note'}); note=[string]$r.note; mentions=@($r.mentions|Where-Object{$_}); status=$(if($done){'done'}else{'open'}); doneBy=$(if($done){$me}else{''}); doneAt=$(if($done){(Get-Date).ToString('o')}else{''}) }
+      $r=[pscustomobject]@{ id=[string]$r.id; created=[string]$r.created; user=[string]$r.user; job_no=[string]$r.job_no; milestone_code=[string]$r.milestone_code; kind=$(if($r.kind){"$($r.kind)"}else{'note'}); note=[string]$r.note; mentions=@($r.mentions|Where-Object{$_}); status=$(if($done){'done'}else{'open'}); doneBy=$(if($done){$me}else{''}); doneAt=$(if($done){(Get-Date).ToString('o')}else{''}); arr_type=[string]$r.arr_type; party=[string]$r.party; contact=[string]$r.contact; arr_status=[string]$r.arr_status; remind_on=[string]$r.remind_on }
     }
     $out += $r
   }
@@ -109,13 +114,40 @@ function Save-NoteDone($ctx,$me){
   Write-Notes $out
   @{ ok=$true; id=$id; status=$(if($done){'done'}else{'open'}) }
 }
-# "My Tasks" inbox: assigned = OPEN notes others @-mentioned me on; mine = OPEN notes I authored. Disjoint.
-function Handle-MyTasks($me){
+# Project a note + its shipment context into a My-Tasks card (consignee/lane/vessel for at-a-glance).
+function Task-Proj($n,$info){
+  $s=$info["$($n.job_no)"]; $who=''; $lane=''; $vv=''; $astate=''; $cargo=''; $bound=''
+  if($s){
+    $bound="$($s.bound)"
+    $who= if($bound -eq 'Import'){ "$($s.consignee_name)" } else { "$($s.shipper_name)" }
+    $lane="$($s.lane)"; $vv="$($s.vessel_voyage)"; $astate="$($s.arrival_state)"
+    $cargo= if("$($s.cargo_type)" -eq 'LCL'){ if($s.total_weight){ "$($s.total_weight) kg" } else { '' } } else { "$($s.container_summary)" }
+  }
+  [pscustomobject]@{ id=[string]$n.id; job_no=[string]$n.job_no; user=[string]$n.user; kind=$(if($n.kind){"$($n.kind)"}else{'note'});
+    note=[string]$n.note; mentions=@($n.mentions|Where-Object{$_}); created=[string]$n.created; remindOn=[string]$n.remind_on;
+    arrType=[string]$n.arr_type; consignee=[string]$who; lane=[string]$lane; vesselVoyage=[string]$vv; arrivalState=[string]$astate; cargo=[string]$cargo; bound=[string]$bound }
+}
+# "My Tasks" = follow-ups only (excludes bypass/reopen completion records). fromOthers = OPEN notes
+# others @-mentioned me on; mine = OPEN notes I authored. Each enriched with shipment info; mine sorted by due date.
+function Handle-MyTasks($cn,$me){
   $arr=Read-Notes
-  $open=@($arr|Where-Object{ $_ -and (-not $_.status -or "$($_.status)" -eq 'open') })
-  $assigned=@($open|Where-Object{ (@($_.mentions) -contains $me) -and ("$($_.user)" -ne $me) }|Sort-Object{"$($_.created)"} -Descending|ForEach-Object{ Note-Proj $_ })
-  $mine=@($open|Where-Object{ "$($_.user)" -eq $me }|Sort-Object{"$($_.created)"} -Descending|ForEach-Object{ Note-Proj $_ })
-  @{ assigned=$assigned; mine=$mine; assignedOpen=@($assigned).Count }
+  $open=@($arr|Where-Object{ $_ -and (-not $_.status -or "$($_.status)" -eq 'open') -and ("$($_.kind)" -ne 'bypass') -and ("$($_.kind)" -ne 'reopen') })
+  $assigned=@($open|Where-Object{ (@($_.mentions) -contains $me) -and ("$($_.user)" -ne $me) })
+  $mine=@($open|Where-Object{ "$($_.user)" -eq $me })
+  # one batched lookup of shipment context for all referenced jobs
+  $jobs=@(@($assigned+$mine)|ForEach-Object{ "$($_.job_no)" }|Where-Object{$_}|Select-Object -Unique)
+  $info=@{}
+  if($jobs.Count){
+    $p=@{}; $ins=@(); $i=0; foreach($j in $jobs){ $ins+="@j$i"; $p["j$i"]=$j; $i++ }
+    $rows=@(RunQ $cn "SELECT job_no,bound,consignee_name,shipper_name,lane,vessel_voyage,arrival_state,cargo_type,CONVERT(varchar(20),total_weight) total_weight,container_summary FROM dbo.shipment_alerts WHERE job_no IN ($($ins -join ','))" $p)
+    foreach($r in $rows){ $info["$($r.job_no)"]=$r }
+  }
+  $byDue={ @{Expression={ "$($_.remindOn)" -eq '' }}, @{Expression={ "$($_.remindOn)" }}, @{Expression={ "$($_.created)" };Descending=$true} }
+  $assignedT=@($assigned|ForEach-Object{ Task-Proj $_ $info }|Sort-Object (& $byDue))
+  $mineT=@($mine|ForEach-Object{ Task-Proj $_ $info }|Sort-Object (& $byDue))
+  $today=(Get-Date).ToString('yyyy-MM-dd')
+  $dueNow=@($mineT|Where-Object{ $_.remindOn -and "$($_.remindOn)" -le $today }).Count
+  @{ assigned=$assignedT; mine=$mineT; assignedOpen=@($assignedT).Count; dueNow=$dueNow; today=$today }
 }
 # jobs the user is involved in via notes (authored or mentioned) — folded into the worklist "mine" lens
 function My-NoteJobs($me){ @(Read-Notes|Where-Object{ $_ -and (("$($_.user)" -eq $me) -or (@($_.mentions) -contains $me)) }|ForEach-Object{"$($_.job_no)"}|Where-Object{$_}|Select-Object -Unique) }
@@ -140,9 +172,16 @@ function Handle-Worklist($cn,$qs,$me){
   }
   if($qs['station']){ $w+=" AND station=@st "; $p['st']=$qs['station'] }
   if($qs['mode']){ $w+=" AND mode=@md "; $p['md']=$qs['mode'] }
-  $rows=@(RunQ $cn "SELECT job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,last_updated_by,CONVERT(varchar(10),anchor_date,23) anchor_date,CONVERT(varchar(10),etd,23) etd,CONVERT(varchar(10),eta,23) eta,CONVERT(varchar(10),atd,23) atd,worst_light,open_amber,open_red,CONVERT(varchar(10),next_due,23) next_due,auto_done,manual_done FROM dbo.shipment_alerts $w ORDER BY CASE worst_light WHEN 'R' THEN 0 WHEN 'A' THEN 1 ELSE 2 END, next_due" $p)
+  $sel="SELECT job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,last_updated_by," +
+    "CONVERT(varchar(10),anchor_date,23) anchor_date,CONVERT(varchar(10),etd,23) etd,CONVERT(varchar(10),eta,23) eta," +
+    "CONVERT(varchar(10),atd,23) atd,CONVERT(varchar(10),ata,23) ata,worst_light,open_amber,open_red," +
+    "CONVERT(varchar(10),next_due,23) next_due,auto_done,manual_done,consignee_name,shipper_name,cust_contact,cust_phone," +
+    "cust_email,vessel_voyage,container_summary,container_count,total_weight,total_cbm,arrival_state," +
+    "CONVERT(varchar(10),sort_key,23) sort_key FROM dbo.shipment_alerts $w " +
+    "ORDER BY bound, CASE arrival_state WHEN 'arrived' THEN 0 WHEN 'no_space' THEN 0 WHEN 'arriving' THEN 1 WHEN 'customs_window' THEN 1 WHEN 'planning' THEN 2 WHEN 'cargo_pending' THEN 2 WHEN 'on_track' THEN 3 ELSE 9 END, sort_key, CASE worst_light WHEN 'R' THEN 0 WHEN 'A' THEN 1 ELSE 2 END"
+  $rows=@(RunQ $cn $sel $p)
   $noteJobs=@{}; try{ Read-Notes|Where-Object{ $_ -and (-not $_.status -or "$($_.status)" -eq 'open') }|ForEach-Object{ $noteJobs["$($_.job_no)"]=1 } }catch{}
-  @{ lens=$lens; who=$who; rows=@($rows|ForEach-Object{ [pscustomobject]@{ jobNo=[string]$_.job_no; station=[string]$_.station; mode=[string]$_.mode; cargoType=[string]$_.cargo_type; bound=[string]$_.bound; lane=[string]$_.lane; carrier=[string]$_.carrier; custCode=[string]$_.cust_code; salesman=[string]$_.salesman; picUser=[string]$_.pic_user; createdBy=[string]$_.created_by; anchor=[string]$_.anchor_date; etd=[string]$_.etd; eta=[string]$_.eta; atd=[string]$_.atd; worst=[string]$_.worst_light; openAmber=[int]$_.open_amber; openRed=[int]$_.open_red; nextDue=[string]$_.next_due; autoDone=[int]$_.auto_done; manualDone=[int]$_.manual_done; hasNotes=[bool]$noteJobs["$($_.job_no)"] } }) }
+  @{ lens=$lens; who=$who; rows=@($rows|ForEach-Object{ [pscustomobject]@{ jobNo=[string]$_.job_no; station=[string]$_.station; mode=[string]$_.mode; cargoType=[string]$_.cargo_type; bound=[string]$_.bound; lane=[string]$_.lane; carrier=[string]$_.carrier; custCode=[string]$_.cust_code; salesman=[string]$_.salesman; picUser=[string]$_.pic_user; createdBy=[string]$_.created_by; anchor=[string]$_.anchor_date; etd=[string]$_.etd; eta=[string]$_.eta; atd=[string]$_.atd; ata=[string]$_.ata; worst=[string]$_.worst_light; openAmber=[int]$_.open_amber; openRed=[int]$_.open_red; nextDue=[string]$_.next_due; autoDone=[int]$_.auto_done; manualDone=[int]$_.manual_done; consigneeName=[string]$_.consignee_name; shipperName=[string]$_.shipper_name; custContact=[string]$_.cust_contact; custPhone=[string]$_.cust_phone; custEmail=[string]$_.cust_email; vesselVoyage=[string]$_.vessel_voyage; containerSummary=[string]$_.container_summary; containerCount=[int]$_.container_count; totalWeight=[string]$_.total_weight; totalCbm=[string]$_.total_cbm; arrivalState=[string]$_.arrival_state; sortKey=[string]$_.sort_key; hasNotes=[bool]$noteJobs["$($_.job_no)"] } }) }
 }
 function Handle-Shipment($cn,$qs){
   $job="$($qs['job'])".Trim(); if(-not $job){ return @{error='job required'} }
@@ -200,7 +239,7 @@ $listener=New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://${Hostname}:$Port/")
 try{ $listener.Start() }catch{ Write-Host "Failed to bind http://${Hostname}:$Port/ -- $($_.Exception.Message)" -ForegroundColor Red; throw }
 Write-Host "$AppName service running at http://${Hostname}:$Port/  (Ctrl+C to stop)" -ForegroundColor Green
-Write-Host "Serving from $Root  |  ops DB [$opsDb] on $server" -ForegroundColor DarkGray
+Write-Host "Serving from $Root  |  ops DB [$opsDb] on $opsServer" -ForegroundColor DarkGray
 
 while($listener.IsListening){
   $ctx=$listener.GetContext(); $path=$ctx.Request.Url.AbsolutePath
@@ -210,13 +249,13 @@ while($listener.IsListening){
     elseif($path -eq "/api-ops/me"){ Send-Json $ctx @{ user=$me; authOn=$script:AuthOn } }
     elseif($path -eq "/api-ops/notes"){ if($ctx.Request.HttpMethod -eq 'POST'){ Send-Json $ctx (Save-Note $ctx $me) } else { Send-Json $ctx (Handle-NoteList $ctx.Request.QueryString) } }
     elseif($path -eq "/api-ops/note-done"){ Send-Json $ctx (Save-NoteDone $ctx $me) }
-    elseif($path -eq "/api-ops/my-tasks"){ Send-Json $ctx (Handle-MyTasks $me) }
     elseif($path -like "/api-ops/*"){
       $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
       try{
         $qs=$ctx.Request.QueryString
         switch($path){
           "/api-ops/roster"          { Send-Json $ctx (Handle-Roster $cn) }
+          "/api-ops/my-tasks"        { Send-Json $ctx (Handle-MyTasks $cn $me) }
           "/api-ops/worklist"        { Send-Json $ctx (Handle-Worklist $cn $qs $me) }
           "/api-ops/shipment"        { Send-Json $ctx (Handle-Shipment $cn $qs) }
           "/api-ops/milestone-close" { Send-Json $ctx (Save-MilestoneClose $cn $ctx $me) }

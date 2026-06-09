@@ -1,5 +1,8 @@
 # Secrets — NEVER commit. Only *.example.json templates are tracked.
 ops.config.json
+ops.config.*.json
+.env
+.env.*
 users.json
 roles.json
 admin-hide.json
