@@ -159,6 +159,17 @@ function Handle-Roster($cn){
   $all=@($ops+$noteUsers|Where-Object{$_ -and $_ -ne '(open)'}|Select-Object -Unique|Sort-Object)
   @{ users=@($all|ForEach-Object{ [pscustomobject]@{ username=$_; displayName=$_; email='' } }) }
 }
+# company picker: every company that appears (in any role) on an active shipment, with its resolved name.
+function Handle-Companies($cn){
+  $rows=@(RunQ $cn "SELECT c.code, c.name FROM dbo.company_dim c WHERE EXISTS (SELECT 1 FROM dbo.shipment_alerts a WHERE a.job_status='active' AND c.code IN (a.cust_code,a.shipper_code,a.consignee_code,a.agent_code,a.ctrl_code)) ORDER BY CASE WHEN NULLIF(c.name,'') IS NULL THEN 1 ELSE 0 END, c.name, c.code" @{})
+  @{ companies=@($rows|ForEach-Object{ [pscustomobject]@{ code=[string]$_.code; name=$(if("$($_.name)".Trim()){"$($_.name)".Trim()}else{"$($_.code)"}) } }) }
+}
+# POL/POD pickers: distinct loading/discharge port codes on active shipments (with mode so the UI can scope).
+function Handle-Ports($cn){
+  $pol=@(RunQ $cn "SELECT DISTINCT pol code, mode FROM dbo.shipment_alerts WHERE job_status='active' AND NULLIF(pol,'') IS NOT NULL" @{})
+  $pod=@(RunQ $cn "SELECT DISTINCT pod code, mode FROM dbo.shipment_alerts WHERE job_status='active' AND NULLIF(pod,'') IS NOT NULL" @{})
+  @{ pol=@($pol|ForEach-Object{ [pscustomobject]@{ code=[string]$_.code; mode=[string]$_.mode } }); pod=@($pod|ForEach-Object{ [pscustomobject]@{ code=[string]$_.code; mode=[string]$_.mode } }) }
+}
 function Handle-Worklist($cn,$qs,$me){
   $lens="$($qs['lens'])"; if(-not $lens){ $lens='mine' }
   $who= if($lens -eq 'user' -and $qs['user']){ "$($qs['user'])".Trim() } else { $me }
@@ -172,16 +183,25 @@ function Handle-Worklist($cn,$qs,$me){
   }
   if($qs['station']){ $w+=" AND station=@st "; $p['st']=$qs['station'] }
   if($qs['mode']){ $w+=" AND mode=@md "; $p['md']=$qs['mode'] }
+  # date window on sort_key (the per-shipment operationally-relevant date: ATA/ETA arriving, ETD/cargo-ready
+  # for export). NULL-keyed rows are kept so a window never silently hides a shipment that lacks a date.
+  if($qs['from']){ $w+=" AND (sort_key IS NULL OR sort_key>=@from) "; $p['from']="$($qs['from'])" }
+  if($qs['to']){   $w+=" AND (sort_key IS NULL OR sort_key<=@to) ";   $p['to']="$($qs['to'])" }
+  # company filter: match the picked code against ANY role the company may play on a shipment
+  if($qs['company']){ $w+=" AND @co IN (cust_code,shipper_code,consignee_code,agent_code,ctrl_code) "; $p['co']="$($qs['company'])" }
+  if($qs['pol']){ $w+=" AND pol=@pol "; $p['pol']="$($qs['pol'])" }
+  if($qs['pod']){ $w+=" AND pod=@pod "; $p['pod']="$($qs['pod'])" }
   $sel="SELECT job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,last_updated_by," +
     "CONVERT(varchar(10),anchor_date,23) anchor_date,CONVERT(varchar(10),etd,23) etd,CONVERT(varchar(10),eta,23) eta," +
     "CONVERT(varchar(10),atd,23) atd,CONVERT(varchar(10),ata,23) ata,worst_light,open_amber,open_red," +
     "CONVERT(varchar(10),next_due,23) next_due,auto_done,manual_done,consignee_name,shipper_name,cust_contact,cust_phone," +
     "cust_email,vessel_voyage,container_summary,container_count,total_weight,total_cbm,arrival_state," +
+    "house_bill,master_bill,incoterm,cust_ref,container_no,liner_so,CONVERT(varchar(10),cargo_ready,23) cargo_ready," +
     "CONVERT(varchar(10),sort_key,23) sort_key FROM dbo.shipment_alerts $w " +
     "ORDER BY bound, CASE arrival_state WHEN 'arrived' THEN 0 WHEN 'no_space' THEN 0 WHEN 'arriving' THEN 1 WHEN 'customs_window' THEN 1 WHEN 'planning' THEN 2 WHEN 'cargo_pending' THEN 2 WHEN 'on_track' THEN 3 ELSE 9 END, sort_key, CASE worst_light WHEN 'R' THEN 0 WHEN 'A' THEN 1 ELSE 2 END"
   $rows=@(RunQ $cn $sel $p)
   $noteJobs=@{}; try{ Read-Notes|Where-Object{ $_ -and (-not $_.status -or "$($_.status)" -eq 'open') }|ForEach-Object{ $noteJobs["$($_.job_no)"]=1 } }catch{}
-  @{ lens=$lens; who=$who; rows=@($rows|ForEach-Object{ [pscustomobject]@{ jobNo=[string]$_.job_no; station=[string]$_.station; mode=[string]$_.mode; cargoType=[string]$_.cargo_type; bound=[string]$_.bound; lane=[string]$_.lane; carrier=[string]$_.carrier; custCode=[string]$_.cust_code; salesman=[string]$_.salesman; picUser=[string]$_.pic_user; createdBy=[string]$_.created_by; anchor=[string]$_.anchor_date; etd=[string]$_.etd; eta=[string]$_.eta; atd=[string]$_.atd; ata=[string]$_.ata; worst=[string]$_.worst_light; openAmber=[int]$_.open_amber; openRed=[int]$_.open_red; nextDue=[string]$_.next_due; autoDone=[int]$_.auto_done; manualDone=[int]$_.manual_done; consigneeName=[string]$_.consignee_name; shipperName=[string]$_.shipper_name; custContact=[string]$_.cust_contact; custPhone=[string]$_.cust_phone; custEmail=[string]$_.cust_email; vesselVoyage=[string]$_.vessel_voyage; containerSummary=[string]$_.container_summary; containerCount=[int]$_.container_count; totalWeight=[string]$_.total_weight; totalCbm=[string]$_.total_cbm; arrivalState=[string]$_.arrival_state; sortKey=[string]$_.sort_key; hasNotes=[bool]$noteJobs["$($_.job_no)"] } }) }
+  @{ lens=$lens; who=$who; rows=@($rows|ForEach-Object{ [pscustomobject]@{ jobNo=[string]$_.job_no; station=[string]$_.station; mode=[string]$_.mode; cargoType=[string]$_.cargo_type; bound=[string]$_.bound; lane=[string]$_.lane; carrier=[string]$_.carrier; custCode=[string]$_.cust_code; salesman=[string]$_.salesman; picUser=[string]$_.pic_user; createdBy=[string]$_.created_by; anchor=[string]$_.anchor_date; etd=[string]$_.etd; eta=[string]$_.eta; atd=[string]$_.atd; ata=[string]$_.ata; worst=[string]$_.worst_light; openAmber=[int]$_.open_amber; openRed=[int]$_.open_red; nextDue=[string]$_.next_due; autoDone=[int]$_.auto_done; manualDone=[int]$_.manual_done; consigneeName=[string]$_.consignee_name; shipperName=[string]$_.shipper_name; custContact=[string]$_.cust_contact; custPhone=[string]$_.cust_phone; custEmail=[string]$_.cust_email; vesselVoyage=[string]$_.vessel_voyage; containerSummary=[string]$_.container_summary; containerCount=[int]$_.container_count; totalWeight=[string]$_.total_weight; totalCbm=[string]$_.total_cbm; arrivalState=[string]$_.arrival_state; houseBill=[string]$_.house_bill; masterBill=[string]$_.master_bill; incoterm=[string]$_.incoterm; custRef=[string]$_.cust_ref; containerNo=[string]$_.container_no; linerSo=[string]$_.liner_so; cargoReady=[string]$_.cargo_ready; sortKey=[string]$_.sort_key; hasNotes=[bool]$noteJobs["$($_.job_no)"] } }) }
 }
 function Handle-Shipment($cn,$qs){
   $job="$($qs['job'])".Trim(); if(-not $job){ return @{error='job required'} }
@@ -255,6 +275,8 @@ while($listener.IsListening){
         $qs=$ctx.Request.QueryString
         switch($path){
           "/api-ops/roster"          { Send-Json $ctx (Handle-Roster $cn) }
+          "/api-ops/companies"       { Send-Json $ctx (Handle-Companies $cn) }
+          "/api-ops/ports"           { Send-Json $ctx (Handle-Ports $cn) }
           "/api-ops/my-tasks"        { Send-Json $ctx (Handle-MyTasks $cn $me) }
           "/api-ops/worklist"        { Send-Json $ctx (Handle-Worklist $cn $qs $me) }
           "/api-ops/shipment"        { Send-Json $ctx (Handle-Shipment $cn $qs) }

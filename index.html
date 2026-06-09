@@ -38,6 +38,20 @@
       <button class="ghost" id="collapseAll" style="font-size:12px">⊖ Collapse all</button>
       <span class="muted" id="wlCount" style="font-size:12px"></span>
     </div>
+    <div class="filters" id="filters">
+      <label class="fl">📅 <input type="text" class="datebox" id="fFrom" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window start — format yyyy-mm-dd (e.g. 2023-12-31)"></label>
+      <span class="fl">→</span>
+      <label class="fl"><input type="text" class="datebox" id="fTo" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window end — format yyyy-mm-dd"></label>
+      <button class="ghost" id="thisWeek" title="Reset to the current week">This week</button>
+      <button class="ghost" id="allDates" title="Show all dates">All dates</button>
+      <span class="combo" id="companyCombo">
+        <input type="text" id="fCompany" autocomplete="off" placeholder="🔍 Company name…" title="Search a company by name — matches shipper, consignee, agent or controlling customer">
+        <button class="combo-x" id="fCompanyClear" title="Clear company filter" style="display:none">✕</button>
+        <div class="mention-pop" id="fCompanyPop"></div>
+      </span>
+      <select id="fPol" title="Port of loading"><option value="">All POL</option></select>
+      <select id="fPod" title="Port of discharge"><option value="">All POD</option></select>
+    </div>
     <div id="worklist"><div class="empty">Loading…</div></div>
   </div>
 

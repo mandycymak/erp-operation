@@ -118,6 +118,58 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_arrival' AND obje
   CREATE INDEX IX_alerts_arrival ON dbo.shipment_alerts(bound, arrival_state, sort_key);
 "@
 
+# --- 1.2c shipment_alerts reference fields (added in place): the documents the OPERATOR and the CUSTOMER
+#     recognise — so near-identical arrivals can be told apart and responsibility is clear at a glance.
+#       house_bill   = origin-office house BL/AWB (blhead.blno where bill_type='H' | awbhead.hawb) — the doc
+#                      the import customer actually received; the internal job_no means nothing to them.
+#       master_bill  = carrier/master BL/AWB (blhead.mobl | awbhead.mawb).
+#       incoterm     = trade term (blhead.routing | awbhead.frt_terms): tells the operator if delivery is to
+#                      the buyer's door or only to the port.
+#       cust_ref     = customer PO / order ref (awbhead.po_no; no reliable sea field -> NULL for sea).
+#       container_no = first container number (blcont.container) — the strongest sea differentiator.
+#       liner_so     = liner shipping-order number (blcont.lsno) — fallback differentiator when no container.
+#       cargo_ready  = cargo-ready date (cargoready) — export urgency even before a vessel/flight is booked.
+ExecSql $opsDb @"
+IF COL_LENGTH('dbo.shipment_alerts','house_bill')   IS NULL ALTER TABLE dbo.shipment_alerts ADD house_bill   nvarchar(40) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','master_bill')  IS NULL ALTER TABLE dbo.shipment_alerts ADD master_bill  nvarchar(40) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','incoterm')     IS NULL ALTER TABLE dbo.shipment_alerts ADD incoterm     nvarchar(12) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','cust_ref')     IS NULL ALTER TABLE dbo.shipment_alerts ADD cust_ref     nvarchar(40) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','container_no') IS NULL ALTER TABLE dbo.shipment_alerts ADD container_no nvarchar(40) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','liner_so')     IS NULL ALTER TABLE dbo.shipment_alerts ADD liner_so     nvarchar(40) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','cargo_ready')  IS NULL ALTER TABLE dbo.shipment_alerts ADD cargo_ready  date          NULL;
+"@
+
+# --- 1.2d shipment_alerts party/route fields (added in place): the companies a shipment touches and the
+#     ports, so an operator can pull up "every shipment for company X" or "everything loading at CN port Y".
+#       shipper_code / consignee_code / agent_code / ctrl_code = the four roles a company can play on a job
+#         (ctrl_code = rcustomer, the controlling customer we actually serve). The worklist company filter
+#         matches the picked code against ANY of these (a company may be shipper on one job, consignee on another).
+#       pol / pod = port of loading / discharge codes (lane is the display string; these are for filtering).
+ExecSql $opsDb @"
+IF COL_LENGTH('dbo.shipment_alerts','shipper_code')   IS NULL ALTER TABLE dbo.shipment_alerts ADD shipper_code   nvarchar(12) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','consignee_code') IS NULL ALTER TABLE dbo.shipment_alerts ADD consignee_code nvarchar(12) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','ctrl_code')      IS NULL ALTER TABLE dbo.shipment_alerts ADD ctrl_code      nvarchar(12) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','pol')            IS NULL ALTER TABLE dbo.shipment_alerts ADD pol            nvarchar(12) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','pod')            IS NULL ALTER TABLE dbo.shipment_alerts ADD pod            nvarchar(12) NULL;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_pol' AND object_id=OBJECT_ID('dbo.shipment_alerts'))
+  CREATE INDEX IX_alerts_pol ON dbo.shipment_alerts(pol);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_pod' AND object_id=OBJECT_ID('dbo.shipment_alerts'))
+  CREATE INDEX IX_alerts_pod ON dbo.shipment_alerts(pod);
+"@
+
+# --- 2.7 company_dim — code->name lookup so the UI's company filter can show real names without the request
+#     path ever touching the ERP. Populated by seed-alerts.ps1 (resolves codes via the ERP party views once,
+#     off the request path) for every company that appears as shipper/consignee/agent/controlling-customer. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.company_dim') IS NULL
+CREATE TABLE dbo.company_dim (
+  code       nvarchar(12)  NOT NULL,
+  name       nvarchar(120) NULL,
+  updated_at datetime2     NOT NULL,
+  CONSTRAINT PK_company_dim PRIMARY KEY (code)
+);
+"@
+
 # --- 2.1 milestone_def — config-driven matrix: qualify/complete rules + SLA per [milestone x bound] ---
 ExecSql $opsDb @"
 IF OBJECT_ID('dbo.milestone_def') IS NULL
@@ -197,6 +249,102 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_evt_pic_time' AND object
   CREATE INDEX IX_evt_pic_time ON dbo.milestone_event_log(pic_user, occurred_at) INCLUDE(to_state,from_light,to_light,done_by);
 "@
 
-Write-Host "Operational database [$opsDb] ready (6 tables + indexes):" -ForegroundColor Green
-Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch, milestone_event_log" -ForegroundColor Green
+# ============================================================================================================
+#  CROSS-STATION INBOUND BOOKING FEED (publish/subscribe fan-in; see plan + project-summary key finding 5)
+#  An ORIGIN station publishes its outbound bookings (whose destination office is another station) into the
+#  central feed; the destination station's app reads ONLY rows addressed to it (dest_station=@stationCode).
+#  No station ever queries another station's ERP; the request path reads only these small pgsops tables.
+# ============================================================================================================
+
+# --- X.1 station_dim — our own group offices (the destination vocabulary). Seeded from each source ERP's
+#     dbo.asw_station_list (CODE + FM3000_CODE) joined to ops.config stations[] (database_name). ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.station_dim') IS NULL
+CREATE TABLE dbo.station_dim (
+  code          nvarchar(8)  NOT NULL,     -- our StationCode (HKG, SHA, SGN, BKK…)
+  fm3000_code   nvarchar(12) NULL,         -- group/global office code (asw_station_list.FM3000_CODE)
+  name          nvarchar(80) NULL,
+  database_name nvarchar(64) NULL,         -- source ERP db for this station (from ops.config stations[])
+  active        bit NOT NULL DEFAULT 1,
+  updated_at    datetime2 NOT NULL,
+  CONSTRAINT PK_station_dim PRIMARY KEY (code)
+);
+"@
+
+# --- X.2 station_route_map — resolves an ORIGIN booking's destination code -> the importing station. The
+#     destination is encoded in the origin's OWN master (agn2_code=dest agent, rcustomer=controlling cust),
+#     so rows are keyed by origin_station; '*' origin = a global rule (e.g. a POD-port fallback). Match
+#     precedence in the publisher: agent -> ctrl -> roagent -> pod, lowest priority wins. Admin-maintainable. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.station_route_map') IS NULL
+CREATE TABLE dbo.station_route_map (
+  id             int IDENTITY(1,1) PRIMARY KEY,
+  origin_station nvarchar(8)  NOT NULL,    -- StationCode whose master owns match_value; '*' = global rule
+  match_kind     nvarchar(12) NOT NULL,    -- 'agent'|'ctrl'|'roagent'|'pod'
+  match_value    nvarchar(20) NOT NULL,    -- agn2_code / rcustomer / roagent code, OR a pod port code
+  dest_station   nvarchar(8)  NOT NULL,    -- importing StationCode this resolves to
+  priority       int          NOT NULL DEFAULT 100,   -- lower wins when several rules match one booking
+  active         bit          NOT NULL DEFAULT 1,
+  note           nvarchar(120) NULL,
+  updated_at     datetime2    NOT NULL
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='UX_route' AND object_id=OBJECT_ID('dbo.station_route_map'))
+  CREATE UNIQUE INDEX UX_route ON dbo.station_route_map(origin_station,match_kind,match_value,dest_station);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_route_origin' AND object_id=OBJECT_ID('dbo.station_route_map'))
+  CREATE INDEX IX_route_origin ON dbo.station_route_map(origin_station,active) INCLUDE(match_kind,match_value,dest_station,priority);
+"@
+
+# --- X.3 inbound_booking_feed — one row per cross-station booking line, denormalized for the importer's
+#     request path (reads ONLY this table by dest_station). PK leads with source_station so each origin's
+#     MERGE touches a disjoint key range (no hot tail page). Publisher owns all columns EXCEPT
+#     feed_status/assigned_to/linked_job_no, which the consuming station owns (local assignment). ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.inbound_booking_feed') IS NULL
+CREATE TABLE dbo.inbound_booking_feed (
+  source_station nvarchar(8)  NOT NULL,    -- origin StationCode that published
+  mode           char(3)      NOT NULL,    -- 'Sea'|'Air'
+  booking_no     nvarchar(40) NOT NULL,    -- origin booking ref (blhead.blno @ bill_type='B' | awbhead ref)
+  dest_station   nvarchar(8)  NOT NULL,    -- resolved importing station (the consumer key)
+  source_jobn    nvarchar(24) NULL,        -- origin internal job no (groups split bookings; reconciliation)
+  master_bill    nvarchar(40) NULL,
+  house_bill     nvarchar(40) NULL,
+  shipper_code   nvarchar(12) NULL, shipper_name nvarchar(120) NULL,
+  ctrl_code      nvarchar(12) NULL, ctrl_name    nvarchar(120) NULL,   -- controlling customer (rcustomer)
+  agent_code     nvarchar(12) NULL, agent_name   nvarchar(120) NULL,   -- dest agent (agn2_code) at origin
+  pol            nvarchar(12) NULL, pod          nvarchar(12) NULL,
+  carrier        nvarchar(12) NULL, vessel_flight nvarchar(60) NULL,
+  etd            date NULL, cargo_ready date NULL, incoterm nvarchar(12) NULL,
+  cargo_summary  nvarchar(80) NULL, booking_date date NULL,            -- crtdate: how early we heard
+  feed_status    nvarchar(12) NOT NULL DEFAULT 'open',   -- 'open'|'consumed'|'void'   (consumer-owned)
+  assigned_to    nvarchar(20) NULL,                      -- LOCAL operator             (consumer-owned)
+  linked_job_no  nvarchar(24) NULL,                      -- shipment_alerts.job_no once import job exists (consumer-owned)
+  light          char(1) NOT NULL DEFAULT 'G',           -- pre-arrival urgency G/A/R
+  src_updated_at datetime2 NULL,                         -- origin upddate (watermark source)
+  updated_at     datetime2 NOT NULL,
+  CONSTRAINT PK_inbound_feed PRIMARY KEY (source_station, mode, booking_no)
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_feed_dest' AND object_id=OBJECT_ID('dbo.inbound_booking_feed'))
+  CREATE INDEX IX_feed_dest ON dbo.inbound_booking_feed(dest_station, feed_status, etd)
+    INCLUDE(mode,light,source_station,booking_no,source_jobn,shipper_name,ctrl_name,agent_name,pol,pod,assigned_to);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_feed_assigned' AND object_id=OBJECT_ID('dbo.inbound_booking_feed'))
+  CREATE INDEX IX_feed_assigned ON dbo.inbound_booking_feed(dest_station, assigned_to) INCLUDE(feed_status, etd);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_feed_link' AND object_id=OBJECT_ID('dbo.inbound_booking_feed'))
+  CREATE INDEX IX_feed_link ON dbo.inbound_booking_feed(linked_job_no);
+"@
+
+# --- X.4 feed_watermark — high-water per (source_station, mode) so each publisher pass writes only the delta. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.feed_watermark') IS NULL
+CREATE TABLE dbo.feed_watermark (
+  source_station nvarchar(8) NOT NULL,
+  mode           char(3)     NOT NULL,
+  last_src_at    datetime2   NULL,        -- MAX(upddate/crtdate) consumed so far
+  run_at         datetime2   NOT NULL,
+  CONSTRAINT PK_feed_watermark PRIMARY KEY (source_station, mode)
+);
+"@
+
+Write-Host "Operational database [$opsDb] ready (10 tables + indexes):" -ForegroundColor Green
+Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
+Write-Host "  milestone_event_log, company_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
 Write-Host "Next: map the alias/evidence fields to real ERP columns, then run listener-engine.ps1 -Mode Sea on the pilot station." -ForegroundColor Cyan

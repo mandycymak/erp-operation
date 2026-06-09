@@ -38,11 +38,13 @@ function New-AirContext($b){
     bound = switch("$($b.bound)"){ 'O'{'Export'} 'I'{'Import'} default {'Other'} }
     cargo_type='AIR'
     jobn=$b.jobn; hawb=("$($b.hawb)").Trim(); mawb=("$($b.mawb)").Trim()
+    incoterm=("$($b.frt_terms)").Trim(); po_no=("$($b.po_no)").Trim(); booking=("$($b.booking)").Trim()
     picuser=("$($b.picuser)").Trim(); crtuser=("$($b.crtuser)").Trim(); upduser=("$($b.upduser)").Trim(); status=$b.status
     declaration= if($b.declaration_complete -eq $true){'1'}else{'0'}
     pol=$b.pol; pod=$b.pod; carr=("$($b.carr)").Trim(); flight1=("$($b.flight1)").Trim()
     shpr_code=("$($b.shpr_code)").Trim(); cgne_code=("$($b.cgne_code)").Trim()
     atd_date=(D $b.atd_date); ata_date=(D $b.ata_date)
+    cargoready=(D $b.cargoready); f_date1=(D $b.f_date1)
     inform_cnee=(D $b.inform_cnee); cnee_pickup=(D $b.cnee_pickup); customer_pickup=(D $b.customer_pickup)
     comp_date=(D $b.comp_date); crtdate=(D $b.crtdate); ref=$b.ref
   }

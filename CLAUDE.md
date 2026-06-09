@@ -84,6 +84,7 @@ These are proven and lift over almost verbatim — read them in `..\pgs-dashboar
 4. **Goal-driven** — turn each task into a verifiable check. **Reconcile any computed milestone status / KPI against a direct SQL query of the source ERP before declaring it done.**
 - **All SQL is parameterised** (`SqlParameter` / `@name`) — never string-build values from user input.
 - **Row-level scope** carries over from the dashboard's model — route data reads through the scope clause so they stay scoped.
+- **Dates are ISO `yyyy-mm-dd` everywhere** (e.g. `2023-12-31`) — display, input, and storage. This is the house standard; the locale-driven `mm/dd/yyyy` is wrong. **Do not use native `<input type="date">`** (it renders in the browser locale and forces a calendar popup the operators don't want) — use a plain `<input type="text">` with `placeholder="yyyy-mm-dd"` and a `^\d{4}-\d{2}-\d{2}$` guard. Server dates are emitted with `CONVERT(varchar(10), col, 23)` (ISO) and PowerShell with `.ToString('yyyy-MM-dd')`.
 - Commit only when asked; never commit secrets.
 
 ## First build steps (the unblocking order)

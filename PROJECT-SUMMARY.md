@@ -115,4 +115,7 @@ $today = (Get-Date).ToString('yyyy-MM-dd')
   `ops-lists/`, `*.log`); verify with `git status` before any commit. Only `*.example.json` is tracked.
 - PS 5.1 traps: coerce `$null`→`[DBNull]::Value` for SQL params; serialize JSON-store records individually (never
   hand `ConvertTo-Json` a whole array). Client coerces 0/1-row arrays via `arr()`; responses are `no-store`.
+- **Dates are ISO `yyyy-mm-dd` everywhere** (e.g. `2023-12-31`) — never the locale `mm/dd/yyyy`, and **no native
+  `<input type="date">`** (locale format + unwanted calendar popup). Use a `text` input with `placeholder="yyyy-mm-dd"`
+  + a `^\d{4}-\d{2}-\d{2}$` guard; SQL `CONVERT(...,23)`; PowerShell `.ToString('yyyy-MM-dd')`.
 - Verify any computed light/KPI against a direct read-only SQL query of the source ERP before declaring done.
