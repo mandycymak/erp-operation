@@ -68,7 +68,7 @@ if($Mode -eq 'Air'){
   $cols=Filter-Cols $Station 'awbhead' $cols
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type IN('H','S') AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 } else {
-  $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,onboard1,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure2,crtdate"
+  $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,vessel_2,voyage_2,onboard1,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure2,crtdate"
   $cols=Filter-Cols $Station 'blhead' $cols
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='H' AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 }
@@ -91,6 +91,21 @@ if($Mode -ne 'Air'){
     $p=@{}; $ins=@(); $i=0; foreach($rf in $refs){ $ins+="@r$i"; $p["r$i"]=$rf; $i++ }
     $cont = Query $Station "SELECT blh, cont_type, load_wgt, load_cbm, container, lsno, liner FROM dbo.blcont WHERE blh IN ($($ins -join ','))" $p
     foreach($d in $cont){ $k="$($d.blh)"; if(-not $contByRef.ContainsKey($k)){ $contByRef[$k]=@() }; $contByRef[$k]+=$d }
+  }
+}
+
+# ---- resolve vessel codes -> names from the veslmstr master (sea only). One chunked keyed seek on
+#      veslmstr.code (its PK), same shape as the custsub seek below; the request path never reads the
+#      master. Export carries the ocean vessel in vessel_2, Import the arriving vessel in vessel_1 — we
+#      collect both code columns so either bound resolves. ----
+$vslByCode=@{}
+if($Mode -ne 'Air'){
+  $vslCodes=@($ships | ForEach-Object { ("$($_.vessel_1)").Trim(); ("$($_.vessel_2)").Trim() } | Where-Object { $_ } | Select-Object -Unique)
+  for($off=0; $off -lt $vslCodes.Count; $off+=500){
+    $chunk=@($vslCodes[$off..([Math]::Min($off+499,$vslCodes.Count-1))])
+    $p=@{}; $ins=@(); $i=0; foreach($cd in $chunk){ $ins+="@v$i"; $p["v$i"]=$cd; $i++ }
+    $rows = Query $Station "SELECT code, short_name FROM dbo.veslmstr WHERE code IN ($($ins -join ','))" $p
+    foreach($d in $rows){ $k="$($d.code)".Trim(); if($k -and -not $vslByCode.ContainsKey($k)){ $vslByCode[$k]=("$($d.short_name)").Trim() } }
   }
 }
 
@@ -191,7 +206,10 @@ foreach($b in $ships){
     $houseBill=$ship.hawb; $masterBill=$ship.mawb; $incoterm=$ship.incoterm; $custRef=$ship.po_no
     $cargoReady=$ship.cargoready; $carrierVal=$cr
   } else {
-    $vsl=("$($b.vessel_1)").Trim(); $voy=("$($b.voyage_1)").Trim()
+    # Export carries the ocean vessel in vessel_2/voyage_2; Import the arriving vessel in vessel_1/voyage_1.
+    if($ship.bound -eq 'Export'){ $vcode=("$($b.vessel_2)").Trim(); $voy=("$($b.voyage_2)").Trim() }
+    else                        { $vcode=("$($b.vessel_1)").Trim(); $voy=("$($b.voyage_1)").Trim() }
+    $vsl = if($vcode -and $vslByCode[$vcode]){ $vslByCode[$vcode] } else { $vcode }   # name, fallback to code
     $vv = if($vsl -and $voy){ "$vsl / $voy" } elseif($vsl){ $vsl } elseif($voy){ $voy } else { '' }
     $cp = ContSummary @($contByRef["$($b.ref)"])
     $etdV=$ship.departure2; $etaV=$ship.eta_delivery; $atdV=$ship.atd_date; $ataV=$ship.ata_date

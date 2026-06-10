@@ -87,7 +87,7 @@ user pasted). Only `*.example.json` is tracked.
 | `seed-milestone-config.ps1` | Config-as-data: **37** `milestone_def` rows — Sea (23, Export+Import) + **Air (14)** with `mode` — + starter evidence map | ✅ |
 | `ops-eval.ps1` | Pure evaluator: `New-ShipContext` (sea) + **`New-AirContext`** (air); `Eval-Milestones` filters defs by bound **and mode**; planned-due anchor is mode-aware | ✅ |
 | `eval-shipment.ps1` | Read-only one-shot card for one shipment (two-server aware) | ✅ |
-| `seed-alerts.ps1` | Listener stand-in. **`-Mode Sea|Air`**: reads `blhead`/`blcont` or `awbhead`, batches PIC + consignee/shipper contacts, computes arrival bucket + cargo profile + conveyance, pulls **house/master bill, incoterm, container/liner-SO, cargo-ready, role codes + POL/POD**, resolves company **names** via a single chunked `custsub.code2` clustered seek (never the heavy party views) → `company_dim`, upserts `shipment_alerts`. **`Filter-Cols`** intersects wanted columns with the station's `INFORMATION_SCHEMA` so schema-variant offices (e.g. HAM `blhead` lacks `picuser`) seed without failing | ✅ |
+| `seed-alerts.ps1` | Listener stand-in. **`-Mode Sea|Air`**: reads `blhead`/`blcont` or `awbhead`, batches PIC + consignee/shipper contacts, computes arrival bucket + cargo profile + conveyance, pulls **house/master bill, incoterm, container/liner-SO, cargo-ready, role codes + POL/POD**, resolves company **names** via a single chunked `custsub.code2` clustered seek (never the heavy party views) → `company_dim`, resolves **vessel code→name** via a chunked `veslmstr.code` seek (bound-aware: sea Export reads `vessel_2/voyage_2`, Import `vessel_1/voyage_1`), upserts `shipment_alerts`. **`Filter-Cols`** intersects wanted columns with the station's `INFORMATION_SCHEMA` so schema-variant offices (e.g. HAM `blhead` lacks `picuser`) seed without failing | ✅ |
 | `serve-ops.ps1` | Web service: worklist (arrival-grouped, `&station=` filter), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close, **`/api-ops/companies` (name type-ahead), `/api-ops/ports` (POL/POD lists)**. Config payload returns `stationCode` + `stations[]`. Reads only `pgsops` | ✅ |
 | `index.html`/`ops.js`/`styles.css` | UI: 🚢Sea/✈Air toggle, Import/Export toggle, **station picker**, **filter bar** (text `yyyy-mm-dd` date window default = current week, **company name** type-ahead across any role, POL/POD), **vessel/flight-grouped** collapsible worklist, mini-cards (house bill, container/liner-SO, incoterm, cust-ref), shipment drawer w/ milestones + **🔔 Remind-me** + **Arrangements** panel, custom in-page dialogs (no native `prompt`), My-Tasks | ✅ |
 | `ops.config.example.json` | Config template | ✅ |
@@ -133,7 +133,10 @@ If the live import job stores the origin HBL in another column (or you prefer MB
 ## Proven behaviour (tested live)
 
 - **Worklist is arrival-driven, grouped by vessel/voyage (sea) or airline+flight (air)** — not one card per
-  shipment. Import buckets: **Arrived / Arriving / Planning**; Export: **No-space / Customs-window / Cargo-pending
+  shipment. Sea group headers show the **vessel NAME** (resolved from `veslmstr`), not the raw code — bound-aware:
+  Export reads the ocean vessel `vessel_2/voyage_2`, Import the arriving vessel `vessel_1/voyage_1` (e.g.
+  `🚢 YM WISH / 038W`); this also lifts sea vessel coverage from ~12% (old `vessel_1`-only) to ~100%. Import
+  buckets: **Arrived / Arriving / Planning**; Export: **No-space / Customs-window / Cargo-pending
   / On-track**. Each conveyance gets ONE derived status (a vessel isn't split across buckets). Collapsible groups +
   collapse-all. Sorted ETA-first, falling back to time-in-transit.
 - **Richer cards:** consignee/shipper name, cargo profile (FCL `2×40HC`; LCL weight+CBM; **air `N pcs · kg`**),
