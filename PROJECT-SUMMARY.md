@@ -10,11 +10,26 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest (resume here):** all **12 fm3k stations** are seeded into the central `pgsops_net` (**618 rows**); the UI
-has a **station picker** (All / focus one office), a **filter bar** (date window defaulting to the current week,
-company **name** search across any role, POL/POD), and **richer cards** (house bill of origin office, container /
-liner SO, incoterm, customer ref). Seeding is **schema-drift resilient** (`Filter-Cols` drops columns a station's
-ERP lacks). Last commit on `main`: `da19b4e`.
+**Latest (resume here):** all **12 fm3k stations** seeded into `pgsops_net`; station picker + filter bar (week-default
+date window, company-name search, POL/POD); **schema-drift resilient** seeding (`Filter-Cols`). Last commit on `main`:
+`50998d3`.
+
+**This session's work (cross-station inbound feed made real + Air-freight UX):**
+- **Convention join RESOLVED** — the feed routes a booking to its destination station via `fm3kco.site.owncode`→`location`
+  (each office's system customer code, e.g. `S0001`=HK, carried on `agn2_code`/`roagent`/`rcustomer`). Replaced the old
+  `asw_station_list.FM3000_CODE` guess (wrong code space). Feed is keyed on **`sono`/`booking`** (the SO number, stable
+  from booking stage when `blno`/`mawb` are still empty). `bill_type='B'` publisher filter removed.
+- **Inbound panel is consignee-facing** — new feed columns (consignee, cargo_type FCL/LCL, service, container_no, po_no,
+  spot_id, booking_qty/wgt, house_bill); card led by `cgne:`, prominent cargo-ready/ETD dates, ref line; **grouped by
+  stage** (🆕 new booking vs 🚢 scheduled) for sea, **by flight no** for air; **recency filter** (ETD today+ OR booked
+  ≤90d) with a **show-all** toggle; **dedup vs Arrivals** (suppress a feed row whose origin HBL already exists as a local
+  import job — needs live EDI-linked data to fire).
+- **Field-mapping fixes (also fix the worklist):** Sea ETD = `blhead.departure2` (mandatory; `departure1` is dead);
+  Air Incoterm = `awbhead.routing` (EXW/CIF…, not `frt_terms` PP/CC); Air cargo falls back to actual `t_rece_qty`/`ttl_cwt`
+  when `t_book_*` are empty.
+- **Worklist UX:** milestone update-marker (🔄) shows the milestone **name** not the code; **Air groups by MAWB** (flights
+  repeat weekly); no-MAWB bucket sorts by routing+consignee for consolidation; import master = OBL/MAWB with job-no fallback;
+  a bare milestone tick shows a quiet 🔄 marker, not a misleading 💬.
 
 ```
 station ERP DBs (READ-ONLY)                                  pgsops (operational state, writable)
@@ -97,19 +112,23 @@ booking as the destination **agent code** (`agn2_code`, primary) / **R-O agent**
 snapshot still has no intragroup bookings, so its local testing keeps the POD-fallback `AUSYD→SYD`.)
 
 **Not yet built:** real `listener-engine.ps1`, `baseline-refresh.ps1`, `admin-ops.html`, real auth (runs open/demo
-mode), feed **reconciliation** (Phase 5: link a feed row to `shipment_alerts` once the local import job appears —
-deferred, untestable locally), and `pic_user`↔app-user mapping.
+mode), and `pic_user`↔app-user mapping.
+
+**Feed reconciliation (Phase 5) — mechanism in place, needs live data.** `/api-ops/inbound` already suppresses a feed
+row whose **origin HBL** matches a local import job (`shipment_alerts.house_bill`, bound=Import) — so received shipments
+show under Arrivals, not Inbound. In the current ERP **copy** the bookings and import jobs are independent fabricated
+records (different HBL numbers) so it matches 0; on live EDI-linked data (import job carries the origin HBL) it will fire.
+If the live import job stores the origin HBL in another column (or you prefer MBL / origin-office+job), point the match there.
 
 **Loose ends when resuming:**
-- **10 stale `HK01` rows** in `pgsops_net.shipment_alerts` — leftover from when `fm3khkg` was first seeded as
-  `HK01` before being re-seeded as `HKG`. Harmless (show under All, not under the picker); delete when convenient:
-  `DELETE FROM shipment_alerts WHERE station='HK01'` (data only, not in git).
+- **All 12 stations published to the feed (Sea+Air)** and **worklist re-seeded** on the fixed code (`departure2` ETD,
+  `routing` Air incoterm, actual air cargo). Feed default-hides stale via the recency window; use **show all** to see history.
+- **10 stale `HK01` rows** in `pgsops_net.shipment_alerts` — harmless; a `DELETE … WHERE station='HK01'` was blocked by the
+  auto-permission classifier, so still present. Clear when convenient (data only, not in git).
+- **`JNB`** publishes 0 cross-station rows ("no route rules") — its intragroup bookings are Air-only and don't hit the Sea
+  route discovery; run `seed-station-map.ps1 -Mode Both` to cover it.
 - **`demoerp` / `fm3kjfk`** await a DBA read grant for the `dashboard` login before they can be seeded as stations.
-- **Intercompany convention join — RESOLVED** via `fm3kco.site.owncode`→`location` (see Route map above); SIN
-  published 30 cross-station rows, `SINHKG000002`→HKG verified. Still TODO: publish all 12 stations (Sea+Air) so
-  every inbound feed populates (only SIN published so far).
-- The UI dropdown/filters were verified via API (`?station=`, config payload) but **not browser-clicked** here (no
-  Node/browser in the build env) — give them a quick click on :8079.
+- UI changes are **API-/data-verified but not browser-clicked** in this env (no Node/browser) — give them a click on :8079.
 
 ## Proven behaviour (tested live)
 
