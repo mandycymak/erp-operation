@@ -81,11 +81,21 @@ SELECT CONVERT(varchar(19),last_src_at,126) lsa FROM dbo.feed_watermark WHERE so
 $wm = Query $opsDb $wmSel @{ s=$StationCode; m=$Mode }
 $since = if($Since){ $Since } elseif($wm.Count -and $wm[0].lsa){ $wm[0].lsa } else { '2000-01-01' }
 
+# keep only columns that exist in this station's table (ERP schema drifts slightly between stations)
+function Filter-Cols($db,$table,$wantCsv){
+  $want=@($wantCsv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  $have=@{}; foreach($r in (Query $db "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='$table'")){ $have["$($r.COLUMN_NAME)".ToLower()]=1 }
+  $miss=@($want | Where-Object { -not $have[$_.ToLower()] })
+  if($miss.Count){ Write-Host "  [schema] $db.$table missing (dropped): $($miss -join ',')" -ForegroundColor DarkYellow }
+  (@($want | Where-Object { $have[$_.ToLower()] }) -join ',')
+}
 # ---- candidate bookings (mode-specific) ----
 if($Mode -eq 'Air'){
-  $sql="SELECT TOP $Limit jobn, mawb, agn2_code, rcustomer, pol, pod, carr, flight1, f_date1, cargoready, frt_terms, shpr_code, shpr_name, po_no, t_book_qty, t_book_wgt, crtdate, upddate FROM dbo.awbhead WHERE awb_type='B' AND bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
+  $cols=Filter-Cols $Station 'awbhead' "jobn, mawb, agn2_code, rcustomer, pol, pod, carr, flight1, f_date1, cargoready, frt_terms, shpr_code, shpr_name, po_no, t_book_qty, t_book_wgt, crtdate, upddate"
+  $sql="SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type='B' AND bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
 } else {
-  $sql="SELECT TOP $Limit blno, jobn, mobl, agn2_code, rcustomer, roagent, pol, pod, carr, vessel_1, voyage_1, departure1, cargoready, routing, shpr_code, shpr_name, crtdate, upddate FROM dbo.blhead WHERE bill_type='B' AND bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
+  $cols=Filter-Cols $Station 'blhead' "blno, jobn, mobl, agn2_code, rcustomer, roagent, pol, pod, carr, vessel_1, voyage_1, departure1, cargoready, routing, shpr_code, shpr_name, crtdate, upddate"
+  $sql="SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='B' AND bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
 }
 $bk = Query $Station $sql @{ since=$since }
 Write-Host ("publish-bookings $StationCode/$Mode : {0} candidate booking line(s) since {1}." -f $bk.Count,$since) -ForegroundColor Cyan

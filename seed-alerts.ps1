@@ -45,6 +45,17 @@ function Exec($sql,[hashtable]$p){
     [void]$c.ExecuteNonQuery(); return
   } catch { if($a -ge 5 -or -not (Test-Transient $_.Exception)){throw}; try{$opsCn.Close()}catch{}; Start-Sleep -Seconds ($a*2) } }
 }
+# Keep only the wanted columns that actually exist in this station's table (ERP schema drifts slightly between
+# stations, e.g. HAM's blhead lacks 'picuser'). Missing columns are dropped from the SELECT; New-*Context then
+# sees them as $null. Table names are hardcoded literals (safe to interpolate).
+function Filter-Cols($db,$table,$wantCsv){
+  $want=@($wantCsv -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  $have=@{}; foreach($r in (Query $db "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='$table'")){ $have["$($r.COLUMN_NAME)".ToLower()]=1 }
+  $keep=@($want | Where-Object { $have[$_.ToLower()] })
+  $miss=@($want | Where-Object { -not $have[$_.ToLower()] })
+  if($miss.Count){ Write-Host "  [schema] $db.$table missing (dropped): $($miss -join ',')" -ForegroundColor DarkYellow }
+  ($keep -join ',')
+}
 
 # ---- config ----
 $defs = Query $opsDb "SELECT milestone_code,bound,name,seq,phase_anchor,qualify_rule,complete_rule,sla_type,sla_offset_val,sla_offset_unit,sla_direction,sla_anchor,mode FROM dbo.milestone_def WHERE active=1"
@@ -54,9 +65,11 @@ $evmap = Query $opsDb "SELECT milestone_code,bound,source_kind,source_table,sour
 if($Mode -eq 'Air'){
   # awbhead = the air waybill table; awb_type H=house, S=straight/direct are the operator's shipments (M=consol master, B=booking)
   $cols="jobn,hawb,mawb,po_no,frt_terms,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,t_book_qty,t_book_wgt,t_book_cwt"
+  $cols=Filter-Cols $Station 'awbhead' $cols
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type IN('H','S') AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 } else {
   $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,onboard1,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure1,crtdate"
+  $cols=Filter-Cols $Station 'blhead' $cols
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='H' AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 }
 if(-not $ships.Count){ Write-Host "No candidate $Mode shipments in $Station as of $($AsOf.ToString('yyyy-MM-dd'))." -ForegroundColor Red; exit }

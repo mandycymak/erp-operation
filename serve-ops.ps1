@@ -286,7 +286,8 @@ function Save-MilestoneClose($cn,$ctx,$me){
   @{ ok=$true; jobNo=$job; milestone_code=$code; state=$(if($reopen){'pending'}else{'bypassed'}); worst=$worst; openAmber=$amber; openRed=$red; nextDue=$nd }
 }
 
-function Config-Payload { @{ appName=$AppName; instanceName=$InstanceName; appSubtitle=$AppSubtitle; stationCode=$StationCode } }
+$StationList=@(@($cfg.stations)|Where-Object{ $_ -and $_.code }|ForEach-Object{ [pscustomobject]@{ code="$($_.code)".Trim(); name="$($_.name)".Trim() } })
+function Config-Payload { @{ appName=$AppName; instanceName=$InstanceName; appSubtitle=$AppSubtitle; stationCode=$StationCode; stations=$StationList } }
 
 # ---------------- listener ----------------
 $listener=New-Object System.Net.HttpListener

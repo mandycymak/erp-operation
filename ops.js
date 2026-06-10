@@ -8,7 +8,7 @@ const arr = v => Array.isArray(v) ? v : (v == null ? [] : [v]);   // coerce PS s
 const isYmd = s => !s || /^\d{4}-\d{2}-\d{2}$/.test(('' + s).trim());   // house date standard: yyyy-mm-dd only
 
 const state = { user: localStorage.getItem('opsUser') || '', roster: [], lens: 'mine', teammate: '', bound: localStorage.getItem('opsBound') || 'Import', tmode: localStorage.getItem('opsMode') || 'Sea',
-  from: '', to: '', company: '', pol: '', pod: '', _companies: [], _ports: { pol: [], pod: [] } };
+  from: '', to: '', company: '', pol: '', pod: '', station: localStorage.getItem('opsStation') || '', _companies: [], _ports: { pol: [], pod: [] }, _stations: [] };
 let allCollapsed = false;   // collapse-all toggle for vessel groups
 
 async function api(path, opts) {
@@ -22,7 +22,8 @@ async function api(path, opts) {
 
 // ---------- init ----------
 async function init() {
-  try { const c = await api('/api-ops/config'); $('#appName').textContent = c.appName || 'Control Tower'; $('#appSub').textContent = c.appSubtitle || ''; document.title = c.appName || 'Control Tower'; } catch (e) {}
+  try { const c = await api('/api-ops/config'); $('#appName').textContent = c.appName || 'Control Tower'; $('#appSub').textContent = c.appSubtitle || ''; document.title = c.appName || 'Control Tower'; state._stations = arr(c.stations); } catch (e) {}
+  buildStationPicker();
   const rost = await api('/api-ops/roster'); state.roster = arr(rost.users).map(u => u.username);
   if (!state.user && state.roster.length) state.user = state.roster[0];
   buildUserPicker(); buildTeammate();
@@ -48,6 +49,13 @@ function buildTeammate() {
   state.roster.forEach(u => { const o = el('option'); o.value = u; o.textContent = u; sel.appendChild(o); });
   state.teammate = sel.value || '';
   sel.onchange = () => { state.teammate = sel.value; if (state.lens === 'user') loadWorklist(); };
+}
+function buildStationPicker() {
+  const sel = $('#stationPicker'); if (!sel) return;
+  sel.innerHTML = '<option value="">All stations</option>';
+  state._stations.forEach(s => { const o = el('option'); o.value = s.code; o.textContent = s.code + ' · ' + (s.name || s.code); if (s.code === state.station) o.selected = true; sel.appendChild(o); });
+  sel.style.display = state._stations.length > 1 ? '' : 'none';   // hide for single-station instances
+  sel.onchange = () => { state.station = sel.value; localStorage.setItem('opsStation', state.station); loadWorklist(); };
 }
 function wireLens() {
   document.querySelectorAll('#lensSeg button').forEach(b => b.onclick = () => {
@@ -232,6 +240,7 @@ async function loadWorklist() {
   if (state.company) q += '&company=' + encodeURIComponent(state.company);
   if (state.pol) q += '&pol=' + encodeURIComponent(state.pol);
   if (state.pod) q += '&pod=' + encodeURIComponent(state.pod);
+  if (state.station) q += '&station=' + encodeURIComponent(state.station);
   const data = await api(q);
   const rows = arr(data.rows).filter(r => (r.bound || 'Import') === state.bound && (r.mode || 'Sea') === state.tmode);
   const word = (state.tmode === 'Air' ? 'air ' : 'sea ') + state.bound.toLowerCase();
