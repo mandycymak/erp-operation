@@ -176,18 +176,29 @@ function Handle-Ports($cn){
 function Handle-Inbound($cn,$qs){
   $st= if($qs['station']){ "$($qs['station'])".Trim() } else { $StationCode }
   if(-not $st){ return @{ station=''; rows=@(); note='no stationCode configured' } }
-  $p=@{ st=$st }; $w=" WHERE dest_station=@st AND feed_status<>'void' "
-  if($qs['mode']){ $w+=" AND mode=@md "; $p['md']="$($qs['mode'])" }
-  if($qs['from']){ $w+=" AND (etd IS NULL OR etd>=@from) "; $p['from']="$($qs['from'])" }
-  if($qs['to']){   $w+=" AND (etd IS NULL OR etd<=@to) ";   $p['to']="$($qs['to'])" }
-  if($qs['status']){ $w+=" AND feed_status=@fs "; $p['fs']="$($qs['status'])" }
+  $p=@{ st=$st }; $w=" WHERE f.dest_station=@st AND f.feed_status<>'void' "
+  if($qs['mode']){ $w+=" AND f.mode=@md "; $p['md']="$($qs['mode'])" }
+  if($qs['from']){ $w+=" AND (f.etd IS NULL OR f.etd>=@from) "; $p['from']="$($qs['from'])" }
+  if($qs['to']){   $w+=" AND (f.etd IS NULL OR f.etd<=@to) ";   $p['to']="$($qs['to'])" }
+  if($qs['status']){ $w+=" AND f.feed_status=@fs "; $p['fs']="$($qs['status'])" }
+  # default recency window: hide stale/departed clutter — keep upcoming departures (ETD today+) and recently-booked
+  # new bookings (last 90d). showAll=1 reveals everything. (Operators think in weeks; this defaults to ~13 weeks.)
+  if(-not $qs['showAll']){
+    $today=(Get-Date).ToString('yyyy-MM-dd'); $cut90=(Get-Date).AddDays(-90).ToString('yyyy-MM-dd')
+    $w+=" AND ( (f.etd IS NOT NULL AND f.etd>=@today) OR (f.etd IS NULL AND (f.booking_date IS NULL OR f.booking_date>=@cut90)) ) "
+    $p['today']=$today; $p['cut90']=$cut90
+  }
+  # dedup vs Arrivals: if this origin HBL already exists as a local import job, it's been received -> show it under
+  # the arrival worklist, not here. (Origin office + HBL; matched on the HBL the consignee receives.)
+  $w+=" AND NOT EXISTS (SELECT 1 FROM dbo.shipment_alerts sa WHERE sa.station=@st AND sa.bound='Import' AND NULLIF(LTRIM(RTRIM(f.house_bill)),'') IS NOT NULL AND sa.house_bill=f.house_bill) "
   $sel="SELECT source_station,mode,booking_no,dest_station,source_jobn,master_bill,house_bill,shipper_name," +
-    "ctrl_code,ctrl_name,agent_code,agent_name,pol,pod,carrier,vessel_flight,CONVERT(varchar(10),etd,23) etd," +
+    "ctrl_code,ctrl_name,agent_code,agent_name,consignee_code,consignee_name,cargo_type,service,container_no,po_no,spot_id,booking_qty,booking_wgt," +
+    "pol,pod,carrier,vessel_flight,CONVERT(varchar(10),etd,23) etd," +
     "CONVERT(varchar(10),cargo_ready,23) cargo_ready,incoterm,cargo_summary,CONVERT(varchar(10),booking_date,23) booking_date," +
-    "feed_status,assigned_to,linked_job_no,light FROM dbo.inbound_booking_feed $w " +
+    "feed_status,assigned_to,linked_job_no,light FROM dbo.inbound_booking_feed f $w " +
     "ORDER BY CASE light WHEN 'R' THEN 0 WHEN 'A' THEN 1 ELSE 2 END, etd, source_station, source_jobn, booking_no"
   $rows=@(RunQ $cn $sel $p)
-  @{ station=$st; rows=@($rows|ForEach-Object{ [pscustomobject]@{ sourceStation=[string]$_.source_station; mode=[string]$_.mode; bookingNo=[string]$_.booking_no; destStation=[string]$_.dest_station; sourceJobn=[string]$_.source_jobn; masterBill=[string]$_.master_bill; houseBill=[string]$_.house_bill; shipperName=[string]$_.shipper_name; ctrlCode=[string]$_.ctrl_code; ctrlName=[string]$_.ctrl_name; agentCode=[string]$_.agent_code; agentName=[string]$_.agent_name; pol=[string]$_.pol; pod=[string]$_.pod; carrier=[string]$_.carrier; vesselFlight=[string]$_.vessel_flight; etd=[string]$_.etd; cargoReady=[string]$_.cargo_ready; incoterm=[string]$_.incoterm; cargoSummary=[string]$_.cargo_summary; bookingDate=[string]$_.booking_date; feedStatus=[string]$_.feed_status; assignedTo=[string]$_.assigned_to; linkedJobNo=[string]$_.linked_job_no; light=[string]$_.light } }) }
+  @{ station=$st; rows=@($rows|ForEach-Object{ [pscustomobject]@{ sourceStation=[string]$_.source_station; mode=[string]$_.mode; bookingNo=[string]$_.booking_no; destStation=[string]$_.dest_station; sourceJobn=[string]$_.source_jobn; masterBill=[string]$_.master_bill; houseBill=[string]$_.house_bill; shipperName=[string]$_.shipper_name; ctrlCode=[string]$_.ctrl_code; ctrlName=[string]$_.ctrl_name; agentCode=[string]$_.agent_code; agentName=[string]$_.agent_name; consigneeCode=[string]$_.consignee_code; consigneeName=[string]$_.consignee_name; cargoType=[string]$_.cargo_type; service=[string]$_.service; containerNo=[string]$_.container_no; poNo=[string]$_.po_no; spotId=[string]$_.spot_id; bookingQty=[string]$_.booking_qty; bookingWgt=[string]$_.booking_wgt; pol=[string]$_.pol; pod=[string]$_.pod; carrier=[string]$_.carrier; vesselFlight=[string]$_.vessel_flight; etd=[string]$_.etd; cargoReady=[string]$_.cargo_ready; incoterm=[string]$_.incoterm; cargoSummary=[string]$_.cargo_summary; bookingDate=[string]$_.booking_date; feedStatus=[string]$_.feed_status; assignedTo=[string]$_.assigned_to; linkedJobNo=[string]$_.linked_job_no; light=[string]$_.light } }) }
 }
 # Local assignment of an inbound booking to an operator. Updates the feed and threads a note keyed by a
 # synthetic FEED:<src>:<booking_no> job so the assignee's existing My-Tasks inbox/badge lights up (no new infra).
@@ -234,8 +245,19 @@ function Handle-Worklist($cn,$qs,$me){
     "CONVERT(varchar(10),sort_key,23) sort_key FROM dbo.shipment_alerts $w " +
     "ORDER BY bound, CASE arrival_state WHEN 'arrived' THEN 0 WHEN 'no_space' THEN 0 WHEN 'arriving' THEN 1 WHEN 'customs_window' THEN 1 WHEN 'planning' THEN 2 WHEN 'cargo_pending' THEN 2 WHEN 'on_track' THEN 3 ELSE 9 END, sort_key, CASE worst_light WHEN 'R' THEN 0 WHEN 'A' THEN 1 ELSE 2 END"
   $rows=@(RunQ $cn $sel $p)
-  $noteJobs=@{}; try{ Read-Notes|Where-Object{ $_ -and (-not $_.status -or "$($_.status)" -eq 'open') }|ForEach-Object{ $noteJobs["$($_.job_no)"]=1 } }catch{}
-  @{ lens=$lens; who=$who; rows=@($rows|ForEach-Object{ [pscustomobject]@{ jobNo=[string]$_.job_no; station=[string]$_.station; mode=[string]$_.mode; cargoType=[string]$_.cargo_type; bound=[string]$_.bound; lane=[string]$_.lane; carrier=[string]$_.carrier; custCode=[string]$_.cust_code; salesman=[string]$_.salesman; picUser=[string]$_.pic_user; createdBy=[string]$_.created_by; anchor=[string]$_.anchor_date; etd=[string]$_.etd; eta=[string]$_.eta; atd=[string]$_.atd; ata=[string]$_.ata; worst=[string]$_.worst_light; openAmber=[int]$_.open_amber; openRed=[int]$_.open_red; nextDue=[string]$_.next_due; autoDone=[int]$_.auto_done; manualDone=[int]$_.manual_done; consigneeName=[string]$_.consignee_name; shipperName=[string]$_.shipper_name; custContact=[string]$_.cust_contact; custPhone=[string]$_.cust_phone; custEmail=[string]$_.cust_email; vesselVoyage=[string]$_.vessel_voyage; containerSummary=[string]$_.container_summary; containerCount=[int]$_.container_count; totalWeight=[string]$_.total_weight; totalCbm=[string]$_.total_cbm; arrivalState=[string]$_.arrival_state; houseBill=[string]$_.house_bill; masterBill=[string]$_.master_bill; incoterm=[string]$_.incoterm; custRef=[string]$_.cust_ref; containerNo=[string]$_.container_no; linerSo=[string]$_.liner_so; cargoReady=[string]$_.cargo_ready; sortKey=[string]$_.sort_key; hasNotes=[bool]$noteJobs["$($_.job_no)"] } }) }
+  # split open notes into "chat" (a real remark/task the operator should read) vs "status update" (a milestone
+  # ticked/re-opened with NO remark) — so a bare tick shows a quiet update marker, not a misleading 💬.
+  $chatJobs=@{}; $updJobs=@{}
+  try{ foreach($nt in @(Read-Notes)){ if(-not $nt){ continue }
+    $stt="$($nt.status)"; if($stt -and $stt -ne 'open'){ continue }
+    $jk="$($nt.job_no)"; if(-not $jk){ continue }
+    $kk="$($nt.kind)"; $isMs=($kk -eq 'bypass' -or $kk -eq 'reopen')
+    $sil=$false
+    if($nt.PSObject.Properties['silent']){ $sil=[bool]$nt.silent } elseif($isMs -and ("$($nt.note)" -notmatch ':')){ $sil=$true }  # back-compat: no-':' tick text = no remark
+    if($isMs -and $sil){ $cur=$updJobs[$jk]; if(-not $cur -or "$($nt.created)" -gt "$($cur.created)"){ $updJobs[$jk]=@{ code="$($nt.milestone_code)"; created="$($nt.created)" } } }
+    else { $chatJobs[$jk]=1 }
+  } }catch{}
+  @{ lens=$lens; who=$who; rows=@($rows|ForEach-Object{ [pscustomobject]@{ jobNo=[string]$_.job_no; station=[string]$_.station; mode=[string]$_.mode; cargoType=[string]$_.cargo_type; bound=[string]$_.bound; lane=[string]$_.lane; carrier=[string]$_.carrier; custCode=[string]$_.cust_code; salesman=[string]$_.salesman; picUser=[string]$_.pic_user; createdBy=[string]$_.created_by; anchor=[string]$_.anchor_date; etd=[string]$_.etd; eta=[string]$_.eta; atd=[string]$_.atd; ata=[string]$_.ata; worst=[string]$_.worst_light; openAmber=[int]$_.open_amber; openRed=[int]$_.open_red; nextDue=[string]$_.next_due; autoDone=[int]$_.auto_done; manualDone=[int]$_.manual_done; consigneeName=[string]$_.consignee_name; shipperName=[string]$_.shipper_name; custContact=[string]$_.cust_contact; custPhone=[string]$_.cust_phone; custEmail=[string]$_.cust_email; vesselVoyage=[string]$_.vessel_voyage; containerSummary=[string]$_.container_summary; containerCount=[int]$_.container_count; totalWeight=[string]$_.total_weight; totalCbm=[string]$_.total_cbm; arrivalState=[string]$_.arrival_state; houseBill=[string]$_.house_bill; masterBill=[string]$_.master_bill; incoterm=[string]$_.incoterm; custRef=[string]$_.cust_ref; containerNo=[string]$_.container_no; linerSo=[string]$_.liner_so; cargoReady=[string]$_.cargo_ready; sortKey=[string]$_.sort_key; hasNotes=[bool]$chatJobs["$($_.job_no)"]; hasUpdate=[bool]$updJobs["$($_.job_no)"]; updateMilestone=$(if($updJobs["$($_.job_no)"]){[string]$updJobs["$($_.job_no)"].code}else{''}) } }) }
 }
 function Handle-Shipment($cn,$qs){
   $job="$($qs['job'])".Trim(); if(-not $job){ return @{error='job required'} }
@@ -281,7 +303,9 @@ function Save-MilestoneClose($cn,$ctx,$me){
   $ment=@(@($j.mentions)|Where-Object{ $_ -and "$_".Trim() -ne '' }|ForEach-Object{"$_".Trim()}|Select-Object -Unique)
   $kind= if($reopen){'reopen'}else{'bypass'}
   $txt= if($reopen){"Re-opened $code"}else{"Ticked $code complete" + $(if($j.reason){": $($j.reason)"}else{''})}
-  $newNote=[pscustomobject]@{ id=[guid]::NewGuid().ToString(); created=(Get-Date).ToString('o'); user=$me; job_no=$job; milestone_code=$code; kind=$kind; note=$txt; mentions=$ment; status='open'; doneBy=''; doneAt='' }
+  # silent = a status change with no operator remark -> the worklist shows a quiet "updated" marker, not a 💬
+  $silent=[bool](-not ("$($j.reason)").Trim())
+  $newNote=[pscustomobject]@{ id=[guid]::NewGuid().ToString(); created=(Get-Date).ToString('o'); user=$me; job_no=$job; milestone_code=$code; kind=$kind; note=$txt; mentions=$ment; status='open'; doneBy=''; doneAt=''; silent=$silent }
   Write-Notes (@(Read-Notes) + $newNote)
   @{ ok=$true; jobNo=$job; milestone_code=$code; state=$(if($reopen){'pending'}else{'bypassed'}); worst=$worst; openAmber=$amber; openRed=$red; nextDue=$nd }
 }

@@ -50,6 +50,17 @@ function Exec($sql,[hashtable]$p){
   } catch { if($a -ge 5 -or -not (Test-Transient $_.Exception)){throw}; try{$opsCn.Close()}catch{}; Start-Sleep -Seconds ($a*2) } }
 }
 function DOnly($d){ if($d -is [datetime]){ $d.ToString('yyyy-MM-dd') } else { $null } }
+# derive FCL/LCL from blhead.service (e.g. 'CY /CY' -> FCL, 'CFS/CFS' -> LCL, mixed -> 'Mixed'); CY=container yard, CFS=container freight station
+function CargoType($svc){ $u="$svc".ToUpper(); $cy=$u -match 'CY'; $cfs=$u -match 'CFS'; if($cy -and -not $cfs){'FCL'}elseif($cfs -and -not $cy){'LCL'}elseif($cy -and $cfs){'Mixed'}else{$null} }
+# "count x type" container summary + first container no from a job's blcont rows (lifted from seed-alerts.ps1)
+function ContSummary($rows){
+  if(-not $rows -or -not $rows.Count){ return @{ summary=$null; first_cont=$null } }
+  $byType=[ordered]@{}; $firstCont=$null
+  foreach($r in $rows){ $t=("$($r.cont_type)").Trim(); if($t){ if($byType.Contains($t)){$byType[$t]++}else{$byType[$t]=1} }
+    if(-not $firstCont){ $cn=("$($r.container)").Trim(); if($cn){ $firstCont=$cn } } }
+  $parts=@(); foreach($k in $byType.Keys){ $parts += ("{0}x{1}" -f $byType[$k], $k) }
+  @{ summary=$(if($parts.Count){$parts -join ' + '}else{$null}); first_cont=$firstCont }
+}
 
 # ---- route map for this origin (+ global '*' rules); key "kind|value" -> @{dest;pri} ----
 $routeRows = Query $opsDb "SELECT match_kind,match_value,dest_station,priority FROM dbo.station_route_map WHERE active=1 AND origin_station IN (@me,'*')" @{ me=$StationCode }
@@ -92,17 +103,28 @@ function Filter-Cols($db,$table,$wantCsv){
 }
 # ---- candidate bookings (mode-specific) ----
 if($Mode -eq 'Air'){
-  $cols=Filter-Cols $Station 'awbhead' "booking, jobn, mawb, agn2_code, rcustomer, pol, pod, carr, flight1, f_date1, cargoready, frt_terms, shpr_code, shpr_name, po_no, t_book_qty, t_book_wgt, crtdate, upddate"
+  $cols=Filter-Cols $Station 'awbhead' "booking, jobn, mawb, hawb, agn2_code, rcustomer, cgne_code, cgne_name, pol, pod, carr, flight1, f_date1, cargoready, routing, frt_terms, shpr_code, shpr_name, po_no, t_book_qty, t_book_wgt, crtdate, upddate"
   # No bill/awb-type filter: the destination office (resolved below) decides what's cross-station, not the doc
   # stage. (The bill_type='B' filter belongs to the dashboard's de-dup, not to this feed.)
   $sql="SELECT TOP $Limit $cols FROM dbo.awbhead WHERE bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
 } else {
-  $cols=Filter-Cols $Station 'blhead' "sono, blno, jobn, mobl, agn2_code, rcustomer, roagent, pol, pod, carr, vessel_1, voyage_1, departure1, cargoready, routing, shpr_code, shpr_name, crtdate, upddate"
+  $cols=Filter-Cols $Station 'blhead' "sono, blno, jobn, mobl, agn2_code, rcustomer, roagent, cgne_code, cgne_name, service, spotid, t_book_qty, t_book_wgt, ref, pol, pod, carr, vessel_1, voyage_1, departure2, cargoready, routing, shpr_code, shpr_name, crtdate, upddate"
   $sql="SELECT TOP $Limit $cols FROM dbo.blhead WHERE bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
 }
 $bk = Query $Station $sql @{ since=$since }
 Write-Host ("publish-bookings $StationCode/$Mode : {0} candidate booking line(s) since {1}." -f $bk.Count,$since) -ForegroundColor Cyan
 if(-not $bk.Count){ Exec $wmMerge @{ ws=$StationCode; wm=$Mode; lsa=$null }; $opsCn.Close(); exit }
+
+# batch container rows for the selected sea bookings (keyed by blhead.ref); empty at booking stage, fills in later
+$contByRef=@{}
+if($Mode -ne 'Air'){
+  $refs=@($bk | ForEach-Object { $_.ref } | Where-Object { $null -ne $_ -and "$_".Trim() } | Select-Object -Unique)
+  for($off=0; $off -lt $refs.Count; $off+=500){
+    $chunk=@($refs[$off..([Math]::Min($off+499,$refs.Count-1))])
+    $p=@{}; $ins=@(); $i=0; foreach($rf in $chunk){ $ins+="@r$i"; $p["r$i"]=$rf; $i++ }
+    foreach($d in (Query $Station "SELECT blh, cont_type, container FROM dbo.blcont WHERE blh IN ($($ins -join ','))" $p)){ $k="$($d.blh)"; if(-not $contByRef.ContainsKey($k)){ $contByRef[$k]=@() }; $contByRef[$k]+=$d }
+  }
+}
 
 # resolve agent/ctrl names from the master once (chunked custsub.code2 clustered seek)
 $codes=@(); foreach($b in $bk){ $codes+=("$($b.agn2_code)").Trim(); $codes+=("$($b.rcustomer)").Trim() }
@@ -121,14 +143,17 @@ USING (SELECT @ss source_station,@mode mode,@bn booking_no) s
   ON t.source_station=s.source_station AND t.mode=s.mode AND t.booking_no=s.booking_no
 WHEN MATCHED THEN UPDATE SET dest_station=@dest,source_jobn=@jobn,master_bill=@mbl,house_bill=@hbl,
   shipper_code=@shc,shipper_name=@shn,ctrl_code=@ctc,ctrl_name=@ctn,agent_code=@agc,agent_name=@agn,
+  consignee_code=@cgnc,consignee_name=@cgnn,cargo_type=@ctype,service=@svc,container_no=@cno,po_no=@pono,
+  spot_id=@spot,booking_qty=@bqty,booking_wgt=@bwgt,
   pol=@pol,pod=@pod,carrier=@carr,vessel_flight=@vf,etd=@etd,cargo_ready=@cr,incoterm=@inco,
   cargo_summary=@cs,booking_date=@bd,light=@light,src_updated_at=@srcup,
   feed_status=CASE WHEN t.feed_status='consumed' THEN t.feed_status ELSE 'open' END,updated_at=SYSDATETIME()
 WHEN NOT MATCHED THEN INSERT(source_station,mode,booking_no,dest_station,source_jobn,master_bill,house_bill,
-  shipper_code,shipper_name,ctrl_code,ctrl_name,agent_code,agent_name,pol,pod,carrier,vessel_flight,etd,cargo_ready,
+  shipper_code,shipper_name,ctrl_code,ctrl_name,agent_code,agent_name,consignee_code,consignee_name,cargo_type,
+  service,container_no,po_no,spot_id,booking_qty,booking_wgt,pol,pod,carrier,vessel_flight,etd,cargo_ready,
   incoterm,cargo_summary,booking_date,feed_status,assigned_to,linked_job_no,light,src_updated_at,updated_at)
-  VALUES(@ss,@mode,@bn,@dest,@jobn,@mbl,@hbl,@shc,@shn,@ctc,@ctn,@agc,@agn,@pol,@pod,@carr,@vf,@etd,@cr,
-  @inco,@cs,@bd,'open',NULL,NULL,@light,@srcup,SYSDATETIME());
+  VALUES(@ss,@mode,@bn,@dest,@jobn,@mbl,@hbl,@shc,@shn,@ctc,@ctn,@agc,@agn,@cgnc,@cgnn,@ctype,@svc,@cno,@pono,
+  @spot,@bqty,@bwgt,@pol,@pod,@carr,@vf,@etd,@cr,@inco,@cs,@bd,'open',NULL,NULL,@light,@srcup,SYSDATETIME());
 "@
 
 $today=(Get-Date).Date
@@ -147,22 +172,38 @@ foreach($b in $bk){
   $bn= if($Mode -eq 'Air'){ ("$($b.booking)").Trim() } else { ("$($b.sono)").Trim() }
   if(-not $bn){ $bn= if($Mode -eq 'Air'){ ("$($b.mawb)").Trim() } else { ("$($b.blno)").Trim() } }
   if(-not $bn){ $bn=("$($b.jobn)").Trim() }
+  # consignee = the party who receives the cargo at destination (who the importer coordinates with)
+  $cgnc=("$($b.cgne_code)").Trim(); $cgnn=("$($b.cgne_name)").Trim()
+  $q=[int]("0"+"$($b.t_book_qty)"); $w=[double]("0"+"$($b.t_book_wgt)")
+  $bwgt= if($w -gt 0){ ("{0} kg" -f [math]::Round($w,0)) } else { $null }
   if($Mode -eq 'Air'){
     $fl=("$($b.flight1)").Trim(); $cr=("$($b.carr)").Trim(); $vf= if($cr -and $fl){"$cr $fl"}elseif($fl){$fl}elseif($cr){$cr}else{''}
-    $etd=$b.f_date1; $mbl=("$($b.mawb)").Trim(); $inco=("$($b.frt_terms)").Trim()
-    $q=[int]("0"+"$($b.t_book_qty)"); $w=[double]("0"+"$($b.t_book_wgt)"); $cs= if($q -gt 0 -or $w -gt 0){ (@($(if($q){"$q pcs"}), $(if($w){("{0} kg" -f [math]::Round($w,0))}))|Where-Object{$_}) -join ' / ' } else { $null }
+    $etd=$b.f_date1; $mbl=("$($b.mawb)").Trim(); $inco=("$($b.routing)").Trim()   # air Incoterm is in routing (like sea); frt_terms is PP/CC payment terms
+    $cs= if($q -gt 0 -or $w -gt 0){ (@($(if($q){"$q pcs"}), $(if($w){("{0} kg" -f [math]::Round($w,0))}))|Where-Object{$_}) -join ' / ' } else { $null }
+    $ctype='Air'; $svc=$null; $cno=$null; $pono=("$($b.po_no)").Trim(); $spot=$null
+    $bqty= if($q -gt 0){ "$q pcs" } else { $null }
+    $hbl=("$($b.hawb)").Trim()   # house AWB — the doc the consignee receives; lets the importer dedup vs arrivals
   } else {
     $vsl=("$($b.vessel_1)").Trim(); $voy=("$($b.voyage_1)").Trim(); $vf= if($vsl -and $voy){"$vsl / $voy"}elseif($vsl){$vsl}elseif($voy){$voy}else{''}
-    $etd=$b.departure1; $mbl=("$($b.mobl)").Trim(); $inco=("$($b.routing)").Trim(); $cs=$null
+    $etd=$b.departure2; $mbl=("$($b.mobl)").Trim(); $inco=("$($b.routing)").Trim()
+    $svc=("$($b.service)").Trim(); $ctype=(CargoType $svc)
+    $cp=ContSummary @($contByRef["$($b.ref)"]); $cno=$cp.first_cont; $cs=$cp.summary
+    $pono=$null; $spot=("$($b.spotid)").Trim()
+    $bqty= if($q -gt 0){ "$q pkgs" } else { $null }
+    $hbl=("$($b.blno)").Trim()   # house BL (origin's HBL) — empty at booking stage, fills in when the bill issues
   }
   # pre-arrival urgency: R if ETD within 3 days, A within a week, else G (importer can prep earlier than arrival)
   $light='G'; if($etd -is [datetime]){ $days=($etd.Date - $today).TotalDays; if($days -le 3){ $light='R' } elseif($days -le 7){ $light='A' } }
   Exec $feedMerge @{
     ss=$StationCode; mode=$Mode; bn=$bn; dest=$dest; jobn=("$($b.jobn)").Trim()
-    mbl=$(if($mbl){$mbl}else{$null}); hbl=$null
+    mbl=$(if($mbl){$mbl}else{$null}); hbl=$(if($hbl){$hbl}else{$null})
     shc=$(if(("$($b.shpr_code)").Trim()){("$($b.shpr_code)").Trim()}else{$null}); shn=$(if(("$($b.shpr_name)").Trim()){("$($b.shpr_name)").Trim()}else{$null})
     ctc=$(if($ctrl){$ctrl}else{$null}); ctn=$(if($nameByCode.ContainsKey($ctrl)){$nameByCode[$ctrl]}else{$null})
     agc=$(if($agent){$agent}else{$null}); agn=$(if($nameByCode.ContainsKey($agent)){$nameByCode[$agent]}else{$null})
+    cgnc=$(if($cgnc){$cgnc}else{$null}); cgnn=$(if($cgnn){$cgnn}else{$null})
+    ctype=$(if($ctype){$ctype}else{$null}); svc=$(if($svc){$svc}else{$null}); cno=$(if($cno){$cno}else{$null})
+    pono=$(if($pono){$pono}else{$null}); spot=$(if($spot){$spot}else{$null})
+    bqty=$(if($bqty){$bqty}else{$null}); bwgt=$(if($bwgt){$bwgt}else{$null})
     pol=$(if(("$($b.pol)").Trim()){("$($b.pol)").Trim()}else{$null}); pod=$(if($pod){$pod}else{$null})
     carr=$(if(("$($b.carr)").Trim()){("$($b.carr)").Trim()}else{$null}); vf=$(if($vf){$vf}else{$null})
     etd=(DOnly $etd); cr=(DOnly $b.cargoready); inco=$(if($inco){$inco}else{$null})

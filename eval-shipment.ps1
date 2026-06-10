@@ -67,7 +67,7 @@ $ship = @{
   atd_date=(D $b.atd_date); eta_delivery=(D $b.eta_delivery); goods_delivery=(D $b.goods_delivery)
   comp_date=(D $b.comp_date); ata_date=(D $b.ata_date); not1_date=(D $b.not1_date); release_date=(D $b.release_date)
   broker=$b.broker; customer_pickup=(D $b.customer_pickup); wh_code=$b.wh_code; ad_date=(D $b.ad_date)
-  ware_date=(D $b.ware_date); pd_date=(D $b.pd_date); departure1=(D $b.departure1); crtdate=(D $b.crtdate)
+  ware_date=(D $b.ware_date); pd_date=(D $b.pd_date); departure2=(D $b.departure2); crtdate=(D $b.crtdate)
 }
 function FieldVal($f){ if($ship.ContainsKey($f)){ $ship[$f] } else { $null } }
 function HasVal($f){ $v=FieldVal $f; $null -ne $v -and "$v" -ne '' }
@@ -122,7 +122,7 @@ function PlannedDue($d){
     if("$($d.sla_offset_unit)" -eq 'hour'){ return $base.AddHours($off) } else { return $base.AddDays($off) }
   } elseif("$($d.sla_type)" -eq 'baseline'){
     if("$($d.phase_anchor)" -in 'booking','etd'){
-      $etd = if($ship.departure1){$ship.departure1}elseif($ship.eta_delivery){$ship.eta_delivery}else{$null}
+      $etd = if($ship.departure2){$ship.departure2}elseif($ship.eta_delivery){$ship.eta_delivery}else{$null}
       if($etd -is [datetime]){ return $etd.AddDays(-$DefaultLeadDays) }
     }
     return $null   # post-departure baseline, or ETD unknown -> no time-gate until real baselines exist

@@ -25,7 +25,7 @@ function New-ShipContext($b){
     comp_date=(D $b.comp_date); ata_date=(D $b.ata_date); not1_date=(D $b.not1_date); release_date=(D $b.release_date)
     broker=("$($b.broker)").Trim(); customer_pickup=(D $b.customer_pickup); wh_code=("$($b.wh_code)").Trim()
     ad_date=(D $b.ad_date); ware_date=(D $b.ware_date); pd_date=(D $b.pd_date)
-    departure1=(D $b.departure1); crtdate=(D $b.crtdate)
+    departure2=(D $b.departure2); crtdate=(D $b.crtdate)
     ref=$b.ref; vessel_1=("$($b.vessel_1)").Trim(); voyage_1=("$($b.voyage_1)").Trim()
   }
 }
@@ -38,7 +38,7 @@ function New-AirContext($b){
     bound = switch("$($b.bound)"){ 'O'{'Export'} 'I'{'Import'} default {'Other'} }
     cargo_type='AIR'
     jobn=$b.jobn; hawb=("$($b.hawb)").Trim(); mawb=("$($b.mawb)").Trim()
-    incoterm=("$($b.frt_terms)").Trim(); po_no=("$($b.po_no)").Trim(); booking=("$($b.booking)").Trim()
+    incoterm=("$($b.routing)").Trim(); frt_terms=("$($b.frt_terms)").Trim(); po_no=("$($b.po_no)").Trim(); booking=("$($b.booking)").Trim()
     picuser=("$($b.picuser)").Trim(); crtuser=("$($b.crtuser)").Trim(); upduser=("$($b.upduser)").Trim(); status=$b.status
     declaration= if($b.declaration_complete -eq $true){'1'}else{'0'}
     pol=$b.pol; pod=$b.pod; carr=("$($b.carr)").Trim(); flight1=("$($b.flight1)").Trim()
@@ -94,7 +94,7 @@ function _PlannedDue($S,$d){
     if("$($d.sla_offset_unit)" -eq 'hour'){ return $base.AddHours($off) } else { return $base.AddDays($off) }
   } elseif("$($d.sla_type)" -eq 'baseline'){
     if("$($d.phase_anchor)" -in 'booking','etd'){
-      $etd = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.atd_date } elseif($S.ship.departure1){$S.ship.departure1}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null}
+      $etd = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.atd_date } elseif($S.ship.departure2){$S.ship.departure2}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null}
       if($etd -is [datetime]){ return $etd.AddDays(-$S.lead) }
     }
     return $null

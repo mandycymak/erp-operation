@@ -90,6 +90,10 @@ button:hover{filter:brightness(1.08)}
 .ibcard.R{box-shadow:inset 3px 0 0 var(--r)} .ibcard.A{box-shadow:inset 3px 0 0 var(--a)} .ibcard.G{box-shadow:inset 3px 0 0 var(--g)}
 .ibcard .r1{display:flex;align-items:center;gap:9px}
 .ibcard .r2{color:var(--mut);font-size:11px;line-height:1.4}
+.ibcard .ib-dates{font-size:12px;color:var(--fg)} .ibcard .ib-dates b{font-weight:700}
+.ibcard .ib-ids{font-size:10.5px;opacity:.75}
+.ibcard .mwho{font-weight:600}
+.upd-ind{margin-left:6px;color:var(--mut);font-size:11px;white-space:nowrap}
 .ib-asg{font-size:11px;color:var(--accent);cursor:pointer;border:1px solid var(--accent);border-radius:20px;padding:1px 8px}
 .ib-assign{font-size:11px;padding:2px 10px}
 .side{display:flex;flex-direction:column;gap:14px}

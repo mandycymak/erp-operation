@@ -157,49 +157,79 @@ function refreshAll() { loadWorklist(); loadTasks(); loadInbound(); }
 // ---------- inbound cross-station bookings (pre-arrival) ----------
 // Shown on the Import bound only: bookings created at OTHER stations whose destination is OUR station,
 // so we coordinate from booking -> delivery. Reads only the pgsops feed; assign locally to an operator.
-const IB_GROUPS = [{ k: 'R', t: '🔴 ETD imminent' }, { k: 'A', t: '🟠 This week' }, { k: 'G', t: '🟢 Planning' }];
+// Grouped by booking STAGE (what the origin has done so far), not urgency — so the operator sees what is coming
+// before it is EDI'd to them: a fresh booking (no schedule) vs one where the vessel/flight is already arranged.
+const IB_STAGES = [
+  { k: 'sched', t: '🚢 Vessel / flight scheduled' },
+  { k: 'new', t: '🆕 New booking — awaiting schedule' },
+];
+function ibStage(r) { return (r.vesselFlight || r.etd) ? 'sched' : 'new'; }
+function ibByDate(a, b) { const x = a.etd || a.cargoReady || a.bookingDate || '9999'; const y = b.etd || b.cargoReady || b.bookingDate || '9999'; return x < y ? -1 : x > y ? 1 : 0; }
 async function loadInbound() {
   const panel = $('#inboundPanel'); if (!panel) return;
   if (state.bound !== 'Import') { panel.style.display = 'none'; panel.innerHTML = ''; return; }
   panel.style.display = '';
-  const data = await api('/api-ops/inbound?mode=' + encodeURIComponent(state.tmode));
+  const data = await api('/api-ops/inbound?mode=' + encodeURIComponent(state.tmode) + (state.ibShowAll ? '&showAll=1' : ''));
   const rows = arr(data.rows); const station = data.station || '';
   const head = '📥 Inbound bookings (pre-arrival)' + (station ? ' · ' + esc(station) : '');
-  if (!rows.length) { panel.innerHTML = '<div class="ib-head">' + head + ' <span class="cnt">0</span></div>'; return; }
-  panel.innerHTML = '<div class="ib-head">' + head + ' <span class="cnt">' + rows.length + '</span>'
+  // toggle: default view hides stale/departed + already-received; "show all" reveals the full feed
+  const toggle = '<button class="ghost ib-alltoggle" title="' + (state.ibShowAll ? 'Showing all — click to show only recent/upcoming' : 'Showing recent + upcoming — click to show all') + '">'
+    + (state.ibShowAll ? 'recent only' : 'show all') + '</button>';
+  const headHtml = '<div class="ib-head">' + head + ' <span class="cnt">' + rows.length + '</span>' + toggle
     + '<button class="ghost ib-collapse" title="Collapse">▾</button></div>';
+  if (!rows.length) {
+    panel.innerHTML = headHtml + '<div class="ib-body"><div class="bh" style="opacity:.7">nothing ' + (state.ibShowAll ? '' : 'recent/upcoming ') + 'in the feed' + (state.ibShowAll ? '' : ' — try “show all”') + '</div></div>';
+    const t0 = panel.querySelector('.ib-alltoggle'); if (t0) t0.onclick = () => { state.ibShowAll = !state.ibShowAll; loadInbound(); };
+    return;
+  }
+  panel.innerHTML = headHtml;
   const body = el('div', 'ib-body');
-  IB_GROUPS.forEach(g => {
-    const gs = rows.filter(r => (r.light || 'G') === g.k);
+  IB_STAGES.forEach(g => {
+    const gs = rows.filter(r => ibStage(r) === g.k).sort(ibByDate);
     if (!gs.length) return;
     body.appendChild(el('div', 'bh', esc(g.t) + ' <span class="cnt">' + gs.length + '</span>'));
     gs.forEach(r => body.appendChild(inboundCard(r)));
   });
   panel.appendChild(body);
   panel.querySelector('.ib-collapse').onclick = () => { body.style.display = body.style.display === 'none' ? '' : 'none'; };
+  const tg = panel.querySelector('.ib-alltoggle'); if (tg) tg.onclick = () => { state.ibShowAll = !state.ibShowAll; loadInbound(); };
 }
 function inboundCard(r) {
   const c = el('div', 'ibcard ' + (r.light || 'G'));
-  const cust = r.ctrlName || r.shipperName || r.ctrlCode || '—';
+  // the CONSIGNEE is who receives the cargo at destination — the party this operator coordinates with
+  const cnee = r.consigneeName || r.consigneeCode || '—';
   const route = [r.pol, r.pod].filter(Boolean).join(' → ');
-  const when = [r.etd ? 'ETD ' + esc(r.etd) : '', r.cargoReady ? 'cargo-ready ' + esc(r.cargoReady) : ''].filter(Boolean).join(' · ');
+  const svc = r.cargoType ? (r.service ? r.cargoType + ' (' + r.service.trim() + ')' : r.cargoType) : (r.service || '');
+  const qty = [r.bookingQty, r.bookingWgt].filter(Boolean).join(' / ') || r.cargoSummary || '';
+  const conv = r.vesselFlight ? (r.mode === 'Air' ? '✈ ' : '🚢 ') + esc(r.vesselFlight) : '';
   const asg = r.assignedTo ? '<span class="ib-asg" title="Reassign">👤 ' + esc(r.assignedTo) + '</span>'
                            : '<button class="tick primary ib-assign">Assign</button>';
-  const sub = ['from ' + esc(r.sourceStation), esc(r.shipperName || ''), route, when,
-    r.cargoSummary ? esc(r.cargoSummary) : '', r.agentName ? 'agent ' + esc(r.agentName) : '',
-    r.masterBill ? (r.mode === 'Air' ? 'MAWB ' : 'MBL ') + esc(r.masterBill) : ''].filter(Boolean).join('  ·  ');
+  // dates are the operator's lever for talking to the consignee — give them their own prominent row
+  const dates = [];
+  if (r.cargoReady) dates.push('📅 cargo-ready <b>' + esc(r.cargoReady) + '</b>');
+  if (r.etd) dates.push((r.mode === 'Air' ? '🛫' : '⚓') + ' ETD <b>' + esc(r.etd) + '</b>');
+  const dateRow = dates.length ? dates.join('&nbsp;&nbsp;·&nbsp;&nbsp;') : '⏳ dates not set yet — confirm with origin';
+  // line 2: the operational shape — origin, service, qty, route, planned conveyance
+  const sub = ['from ' + esc(r.sourceStation), esc(svc), esc(qty), esc(route), conv].filter(Boolean).join('  ·  ');
+  // line 3: the reference numbers used when talking to the consignee / tracing the box
+  const ids = [r.masterBill ? (r.mode === 'Air' ? 'MAWB ' : 'MBL ') + esc(r.masterBill) : '',
+    r.containerNo ? '📦 ' + esc(r.containerNo) : '', r.spotId ? 'ship-id ' + esc(r.spotId) : '',
+    r.poNo ? 'PO ' + esc(r.poNo) : '', r.shipperName ? 'shpr ' + esc(r.shipperName) : '']
+    .filter(Boolean).join('  ·  ');
   c.innerHTML =
     '<div class="r1"><span class="mref">' + esc(r.bookingNo) + '</span>' +
       (r.incoterm ? '<span class="minco">' + esc(r.incoterm) + '</span>' : '') +
-      '<span class="mwho">' + esc(cust) + '</span><span class="mspacer"></span>' + asg + '</div>' +
-    (sub ? '<div class="r2">' + sub + '</div>' : '');
+      '<span class="mwho" title="consignee">cgne: ' + esc(cnee) + '</span><span class="mspacer"></span>' + asg + '</div>' +
+    '<div class="ib-dates">' + dateRow + '</div>' +
+    (sub ? '<div class="r2">' + sub + '</div>' : '') +
+    (ids ? '<div class="r2 ib-ids">' + ids + '</div>' : '');
   const ab = c.querySelector('.ib-assign'); if (ab) ab.onclick = e => { e.stopPropagation(); assignInbound(r); };
   const ac = c.querySelector('.ib-asg'); if (ac) ac.onclick = e => { e.stopPropagation(); assignInbound(r); };
   return c;
 }
 function assignInbound(r) {
   const bg = el('div', 'modal-bg'); const box = el('div', 'modal');
-  box.innerHTML = '<h3>Assign inbound booking</h3><p class="modal-msg">' + esc(r.bookingNo) + ' from ' + esc(r.sourceStation) + ' · ' + esc(r.ctrlName || r.shipperName || '') + '</p>';
+  box.innerHTML = '<h3>Assign inbound booking</h3><p class="modal-msg">' + esc(r.bookingNo) + ' from ' + esc(r.sourceStation) + ' · consignee ' + esc(r.consigneeName || r.consigneeCode || '—') + '</p>';
   const sel = el('select'); sel.innerHTML = '<option value="">— unassign —</option>';
   state.roster.forEach(u => { const o = el('option'); o.value = u; o.textContent = u; if (u === r.assignedTo) o.selected = true; sel.appendChild(o); });
   box.appendChild(sel);
@@ -331,7 +361,8 @@ function miniCard(r) {
   const who = isImport ? (r.consigneeName || r.custCode) : (r.shipperName || r.custCode);
   const cargo = cargoProfile(r);
   const sev = r.openRed ? '<span class="pill R">' + r.openRed + 'R</span>' : (r.openAmber ? '<span class="pill A">' + r.openAmber + 'A</span>' : '');
-  const note = r.hasNotes ? '<span class="note-ind">💬</span>' : '';
+  const note = (r.hasNotes ? '<span class="note-ind" title="has a remark / note">💬</span>' : '')
+    + (r.hasUpdate ? '<span class="upd-ind" title="status updated — no remark">🔄' + (r.updateMilestone ? ' ' + esc(r.updateMilestone) : '') + '</span>' : '');
   const docLbl = isAir ? 'HAWB' : 'HBL';
   const mLbl = isAir ? 'MAWB' : 'MBL';
   // primary id: import customers know the origin house bill, not our internal job number

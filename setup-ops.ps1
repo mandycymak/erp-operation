@@ -323,6 +323,17 @@ CREATE TABLE dbo.inbound_booking_feed (
   updated_at     datetime2 NOT NULL,
   CONSTRAINT PK_inbound_feed PRIMARY KEY (source_station, mode, booking_no)
 );
+-- consignee-facing enrichment (in-place adds): the importer talks to the CONSIGNEE about the origin-side plan,
+-- so surface who receives the cargo + service/qty/refs (some empty at booking stage, fill in as origin proceeds).
+IF COL_LENGTH('dbo.inbound_booking_feed','consignee_code') IS NULL ALTER TABLE dbo.inbound_booking_feed ADD consignee_code nvarchar(12)  NULL;
+IF COL_LENGTH('dbo.inbound_booking_feed','consignee_name') IS NULL ALTER TABLE dbo.inbound_booking_feed ADD consignee_name nvarchar(120) NULL;
+IF COL_LENGTH('dbo.inbound_booking_feed','cargo_type')     IS NULL ALTER TABLE dbo.inbound_booking_feed ADD cargo_type     nvarchar(12)  NULL;  -- FCL|LCL|Mixed|Air
+IF COL_LENGTH('dbo.inbound_booking_feed','service')        IS NULL ALTER TABLE dbo.inbound_booking_feed ADD service        nvarchar(20)  NULL;  -- raw blhead.service e.g. 'CY /CY'
+IF COL_LENGTH('dbo.inbound_booking_feed','container_no')   IS NULL ALTER TABLE dbo.inbound_booking_feed ADD container_no   nvarchar(40)  NULL;
+IF COL_LENGTH('dbo.inbound_booking_feed','po_no')          IS NULL ALTER TABLE dbo.inbound_booking_feed ADD po_no          nvarchar(60)  NULL;
+IF COL_LENGTH('dbo.inbound_booking_feed','spot_id')        IS NULL ALTER TABLE dbo.inbound_booking_feed ADD spot_id        nvarchar(40)  NULL;  -- ship/spot id (blhead.spotid)
+IF COL_LENGTH('dbo.inbound_booking_feed','booking_qty')    IS NULL ALTER TABLE dbo.inbound_booking_feed ADD booking_qty    nvarchar(40)  NULL;
+IF COL_LENGTH('dbo.inbound_booking_feed','booking_wgt')    IS NULL ALTER TABLE dbo.inbound_booking_feed ADD booking_wgt    nvarchar(40)  NULL;
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_feed_dest' AND object_id=OBJECT_ID('dbo.inbound_booking_feed'))
   CREATE INDEX IX_feed_dest ON dbo.inbound_booking_feed(dest_station, feed_status, etd)
     INCLUDE(mode,light,source_station,booking_no,source_jobn,shipper_name,ctrl_name,agent_name,pol,pod,assigned_to);
