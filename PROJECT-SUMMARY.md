@@ -4,11 +4,17 @@ Status snapshot of the Control Tower build. The authoritative design is **`BLUEP
 **what is actually built and proven** against real ERP data, plus the findings that shaped it. Read this first
 when resuming. Operator-memory notes also live under `.claude/projects/.../memory/` (local + network DB setup).
 
-## Status: working app — arrival-driven worklist, arrangements/reminders, Sea **and** Air
+## Status: working app — arrival-driven worklist, filters, multi-station, cross-station feed; Sea **and** Air
 
 A clickable, end-to-end worklist app runs against real data on two test environments. The scheduled
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
+
+**Latest (resume here):** all **12 fm3k stations** are seeded into the central `pgsops_net` (**618 rows**); the UI
+has a **station picker** (All / focus one office), a **filter bar** (date window defaulting to the current week,
+company **name** search across any role, POL/POD), and **richer cards** (house bill of origin office, container /
+liner SO, incoterm, customer ref). Seeding is **schema-drift resilient** (`Filter-Cols` drops columns a station's
+ERP lacks). Last commit on `main`: `da19b4e`.
 
 ```
 station ERP DBs (READ-ONLY)                                  pgsops (operational state, writable)
@@ -29,7 +35,13 @@ to the source. Used so the network ERP (read-only login) is read remotely while 
 | Env | Source ERP | Data | opsDb | Port | Notes |
 |---|---|---|---|---|---|
 | **Local** | `fibsbkk` on `localhost\SQLEXPRESS` (Win auth) | **frozen 2021** snapshot; as-of `2021-11-27` | `pgsops` (local) | 8078 | Only `fibsbkk` has the real 381-col schema; `fibsdemo_*` are stripped. Sea/BKK. Milestone fields empty → all-Red. |
-| **Network** | `fm3khkg` on `192.168.5.2` (SQL login `dashboard`, read-only) | **LIVE to today**; as-of = today | `pgsops_net` (local, two-server) | 8079 | 420-col schema, operational fields populated → realistic light mix. Sister stations `fm3k*` exist for multi-station. Login can't `CREATE DATABASE` → two-server mode. |
+| **Network** | `fm3k*` on `192.168.5.2` (SQL login `dashboard`, read-only) | **LIVE to today**; as-of = today | `pgsops_net` (local, two-server) | 8079 | **12 stations seeded** (YVR SHA HAM HKG JKT NRT JNB SIN BKK TPE LAX SGN), 618 rows. 414–420-col schemas vary by office → `Filter-Cols`. Login can't `CREATE DATABASE` → two-server mode. |
+
+**Stations & access.** Group offices are same-ERP databases `fm3k<code>` on `192.168.5.2`. Seeded: 12 (above).
+**Excluded:** `fm3kco` is the master DB (no `blhead`). **Blocked — need a DBA grant:** the `dashboard` login is
+**denied read** on `demoerp` and `fm3kjfk`; both can be added as stations once read access is granted. Each station
+is seeded with its own `-StationCode` (3-letter office code, e.g. `HKG`, `SHA`); the station picker reads the list
+from config (`stations[]`) via the config payload.
 
 Configs are gitignored: `ops.config.json` (local), `ops.config.network.json` (network), `.env.txt` (creds the
 user pasted). Only `*.example.json` is tracked.
@@ -56,17 +68,17 @@ user pasted). Only `*.example.json` is tracked.
 
 | File | Role | State |
 |---|---|---|
-| `setup-ops.ps1` | Creates `pgsops` + 6 tables; in-place ALTERs add the worklist enrichment columns (consignee/shipper name+contact, vessel_voyage, container_summary/count, total_weight/cbm, arrival_state, sort_key) and `milestone_def.mode` | ✅ idempotent, two-server |
+| `setup-ops.ps1` | Creates `pgsops` + base tables + `company_dim`; in-place ALTERs add worklist enrichment columns (consignee/shipper name+contact, vessel_voyage, container_summary/count, total_weight/cbm, arrival_state, sort_key) **plus the display/filter set: house_bill, master_bill, incoterm, cust_ref, container_no, liner_so, cargo_ready, shipper_code, consignee_code, ctrl_code, pol, pod** and `milestone_def.mode` | ✅ idempotent, two-server |
 | `seed-milestone-config.ps1` | Config-as-data: **37** `milestone_def` rows — Sea (23, Export+Import) + **Air (14)** with `mode` — + starter evidence map | ✅ |
 | `ops-eval.ps1` | Pure evaluator: `New-ShipContext` (sea) + **`New-AirContext`** (air); `Eval-Milestones` filters defs by bound **and mode**; planned-due anchor is mode-aware | ✅ |
 | `eval-shipment.ps1` | Read-only one-shot card for one shipment (two-server aware) | ✅ |
-| `seed-alerts.ps1` | Listener stand-in. **`-Mode Sea|Air`**: reads `blhead`/`blcont` or `awbhead`, batches PIC + consignee/shipper contacts, computes arrival bucket + cargo profile + conveyance, upserts `shipment_alerts` | ✅ |
-| `serve-ops.ps1` | Web service: worklist (arrival-grouped), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close. Reads only `pgsops` | ✅ |
-| `index.html`/`ops.js`/`styles.css` | UI: 🚢Sea/✈Air toggle, Import/Export toggle, **vessel/flight-grouped** collapsible worklist, mini-cards, shipment drawer w/ milestones + **🔔 Remind-me** + **Arrangements** panel, custom in-page dialogs (no native `prompt`), My-Tasks | ✅ |
+| `seed-alerts.ps1` | Listener stand-in. **`-Mode Sea|Air`**: reads `blhead`/`blcont` or `awbhead`, batches PIC + consignee/shipper contacts, computes arrival bucket + cargo profile + conveyance, pulls **house/master bill, incoterm, container/liner-SO, cargo-ready, role codes + POL/POD**, resolves company **names** via a single chunked `custsub.code2` clustered seek (never the heavy party views) → `company_dim`, upserts `shipment_alerts`. **`Filter-Cols`** intersects wanted columns with the station's `INFORMATION_SCHEMA` so schema-variant offices (e.g. HAM `blhead` lacks `picuser`) seed without failing | ✅ |
+| `serve-ops.ps1` | Web service: worklist (arrival-grouped, `&station=` filter), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close, **`/api-ops/companies` (name type-ahead), `/api-ops/ports` (POL/POD lists)**. Config payload returns `stationCode` + `stations[]`. Reads only `pgsops` | ✅ |
+| `index.html`/`ops.js`/`styles.css` | UI: 🚢Sea/✈Air toggle, Import/Export toggle, **station picker**, **filter bar** (text `yyyy-mm-dd` date window default = current week, **company name** type-ahead across any role, POL/POD), **vessel/flight-grouped** collapsible worklist, mini-cards (house bill, container/liner-SO, incoterm, cust-ref), shipment drawer w/ milestones + **🔔 Remind-me** + **Arrangements** panel, custom in-page dialogs (no native `prompt`), My-Tasks | ✅ |
 | `ops.config.example.json` | Config template | ✅ |
 | `setup-ops.ps1` (feed) | +4 tables for the cross-station feed: `station_dim`, `station_route_map`, `inbound_booking_feed`, `feed_watermark` | ✅ idempotent |
-| `seed-station-map.ps1` | Seeds `station_dim` from `asw_station_list` + builds `station_route_map` from the intercompany convention (`asw_station_list.FM3000_CODE`↔agent code) with POD fallback + **unmapped-code discovery report** | ✅ |
-| `publish-bookings.ps1` | **Publisher** (one origin/invocation): reads outbound bookings (`bill_type/awb_type='B'`, `bound='O'`) destined to another station, resolves `dest_station` via `station_route_map`, UPSERTs `inbound_booking_feed`; **incremental** via `feed_watermark` | ✅ |
+| `seed-station-map.ps1` | Seeds `station_dim` from `asw_station_list` + builds `station_route_map` from the **authoritative intercompany convention** `fm3kco.site.owncode`↔`location` (e.g. `S0001`→`HKG`) — the office's system customer code, carried on a booking's `agn2_code`/`roagent`/`rcustomer` — with POD fallback + **unmapped-code discovery report** | ✅ |
+| `publish-bookings.ps1` | **Publisher** (one origin/invocation): reads outbound shipments (`bound='O'`, **no bill/awb-type filter** — destination office decides cross-station, not the doc stage) destined to another station, resolves `dest_station` via `station_route_map`, keys the feed on **`sono`/`booking`** (the SO number, stable from booking stage when `blno`/`mawb` are still empty), UPSERTs `inbound_booking_feed`; **incremental** via `feed_watermark` | ✅ |
 | `serve-ops.ps1` (feed) | `/api-ops/inbound` (reads only the feed by `dest_station=stationCode`) + `/api-ops/inbound-assign` (local assign → threads a `FEED:` note into the assignee's My-Tasks); `stationCode` in config payload | ✅ |
 | `ops.js`/`index.html` (feed) | **📥 Inbound bookings (pre-arrival)** panel (Import bound only): light-grouped cards (source station, shipper, controlling customer, agent, POL→POD, ETD/cargo-ready) with **Assign** → roster picker | ✅ |
 | `register-ops-tasks.ps1` | Task Scheduler: `publish-bookings` per station (Sea 3×/day, Air 2h, **staggered**) + weekly `seed-station-map` | ✅ |
@@ -76,15 +88,28 @@ scheduled `publish-bookings.ps1` writes its cross-station bookings into the cent
 tagged with `dest_station`; the importing station's app reads ONLY rows addressed to it (`dest_station=stationCode`,
 indexed seek) and assigns them locally. No station ever queries another station's ERP; the request path never
 touches the ERP. Scales linearly with stations (each publishes its own delta).
-**Route map:** the destination office is encoded in the origin's master as the destination **agent code**
-(`agn2_code`) / controlling customer (`rcustomer`); `seed-station-map.ps1` maps those to a station via the group
-convention (`asw_station_list.FM3000_CODE`). ⚠ **The exact convention join must be confirmed on live `fm3khkg`** —
-the frozen `fibsbkk` snapshot has no intragroup-destination bookings (its bookings go to an external AU agent), so
-local testing uses the POD-fallback rule (`AUSYD→SYD`).
+**Route map (convention join — CONFIRMED on live `fm3k*`):** the destination office is carried on the origin's
+booking as the destination **agent code** (`agn2_code`, primary) / **R-O agent** (`roagent`) / controlling customer
+(`rcustomer`), holding that office's **system customer code** (e.g. `S0001`=HK). `fm3kco.site` maps
+`owncode`→`location` (the 3-letter StationCode), so `S0001`→`HKG`. Verified end-to-end: SIN booking `SINHKG000002`
+(`agn2_code=S0001`, `SGSIN→HKHKG`, no bill yet) surfaces under HKG's `/api-ops/inbound`. (The old guess via
+`asw_station_list.FM3000_CODE` was a different code space and never matched — replaced. The frozen `fibsbkk`
+snapshot still has no intragroup bookings, so its local testing keeps the POD-fallback `AUSYD→SYD`.)
 
 **Not yet built:** real `listener-engine.ps1`, `baseline-refresh.ps1`, `admin-ops.html`, real auth (runs open/demo
 mode), feed **reconciliation** (Phase 5: link a feed row to `shipment_alerts` once the local import job appears —
 deferred, untestable locally), and `pic_user`↔app-user mapping.
+
+**Loose ends when resuming:**
+- **10 stale `HK01` rows** in `pgsops_net.shipment_alerts` — leftover from when `fm3khkg` was first seeded as
+  `HK01` before being re-seeded as `HKG`. Harmless (show under All, not under the picker); delete when convenient:
+  `DELETE FROM shipment_alerts WHERE station='HK01'` (data only, not in git).
+- **`demoerp` / `fm3kjfk`** await a DBA read grant for the `dashboard` login before they can be seeded as stations.
+- **Intercompany convention join — RESOLVED** via `fm3kco.site.owncode`→`location` (see Route map above); SIN
+  published 30 cross-station rows, `SINHKG000002`→HKG verified. Still TODO: publish all 12 stations (Sea+Air) so
+  every inbound feed populates (only SIN published so far).
+- The UI dropdown/filters were verified via API (`?station=`, config payload) but **not browser-clicked** here (no
+  Node/browser in the build env) — give them a quick click on :8079.
 
 ## Proven behaviour (tested live)
 
@@ -93,7 +118,14 @@ deferred, untestable locally), and `pic_user`↔app-user mapping.
   / On-track**. Each conveyance gets ONE derived status (a vessel isn't split across buckets). Collapsible groups +
   collapse-all. Sorted ETA-first, falling back to time-in-transit.
 - **Richer cards:** consignee/shipper name, cargo profile (FCL `2×40HC`; LCL weight+CBM; **air `N pcs · kg`**),
-  conveyance, arrival chip, R/A severity, notes flag.
+  conveyance, arrival chip, R/A severity, notes flag, plus **origin-office house bill** (the doc the customer
+  received — shown for import, not the internal job no), **container / liner-SO** (to tell near-identical sea
+  arrivals apart), **incoterm** (delivery responsibility), and **customer ref / PO** (`spotid`).
+- **Filters & multi-station (tested):** station picker filters the worklist to one office (`?station=SHA` → 124
+  SHA-only rows; config returns 12 stations). Date window defaults to the **current week** (This-week / All-dates
+  buttons). **Company filter is name-searchable** (type-ahead against `company_dim`, never the 300k master) and
+  matches a company in **any** role — shipper, consignee, agent, or controlling customer. POL/POD dropdowns let an
+  operator surface, e.g., all China-origin shipments first.
 - **Arrangements panel** (per shipment): who-to-contact (consignee/shipper + `tel:`/`mailto:` from the ERP views),
   and operator-recorded Trucker/Broker/Warehouse/Customer tasks with status — stored in the JSON note store as
   `kind='arrangement'` (no ERP write).
@@ -113,14 +145,21 @@ deferred, untestable locally), and `pic_user`↔app-user mapping.
 .\seed-alerts.ps1 -Station fibsbkk -StationCode BKK -AsOf 2021-11-27 -Limit 120
 .\serve-ops.ps1                                                            # http://localhost:8078/
 
-# --- NETWORK (live fm3khkg, two-server: read network ERP, write local pgsops_net) ---
+# --- NETWORK (live fm3k*, two-server: read network ERP, write local pgsops_net) ---
 .\setup-ops.ps1            -ConfigPath .\ops.config.network.json
 .\seed-milestone-config.ps1 -ConfigPath .\ops.config.network.json
 $today = (Get-Date).ToString('yyyy-MM-dd')
-.\seed-alerts.ps1 -ConfigPath .\ops.config.network.json -Station fm3khkg -StationCode HK01 -Mode Sea -AsOf $today -Limit 120
-.\seed-alerts.ps1 -ConfigPath .\ops.config.network.json -Station fm3khkg -StationCode HK01 -Mode Air -AsOf $today -Limit 120
+# Seed all 12 stations (db fm3k<code> -> StationCode <CODE>), both modes:
+$stations = @{ YVR='fm3kyvr'; SHA='fm3ksha'; HAM='fm3kham'; HKG='fm3khkg'; JKT='fm3kjkt'; NRT='fm3knrt';
+               JNB='fm3kjnb'; SIN='fm3ksin'; BKK='fm3kbkk'; TPE='fm3ktpe'; LAX='fm3klax'; SGN='fm3ksgn' }
+foreach ($code in $stations.Keys) {
+  foreach ($m in 'Sea','Air') {
+    .\seed-alerts.ps1 -ConfigPath .\ops.config.network.json -Station $stations[$code] -StationCode $code -Mode $m -AsOf $today -Limit 120
+  }
+}
 .\serve-ops.ps1            -ConfigPath .\ops.config.network.json -Port 8079   # http://localhost:8079/
-# In the UI: pick the All lens (or an operator), toggle 🚢Sea/✈Air and Import/Export.
+# In the UI: pick the All lens, use the station picker to focus one office; toggle 🚢Sea/✈Air, Import/Export,
+# and the filter bar (date window, company name, POL/POD).
 
 # --- CROSS-STATION INBOUND BOOKING FEED ---
 .\setup-ops.ps1                          # creates the 4 feed tables (idempotent)

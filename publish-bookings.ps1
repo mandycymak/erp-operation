@@ -1,8 +1,9 @@
 <#
   publish-bookings.ps1  — cross-station inbound booking PUBLISHER (one origin station per invocation).
 
-  Reads the origin ERP's OUTBOUND bookings (blhead bill_type='B' | awbhead awb_type='B', bound='O') that are
-  destined to ANOTHER group station, resolves the destination station via pgsops.station_route_map, and UPSERTs
+  Reads the origin ERP's OUTBOUND shipments (blhead/awbhead bound='O' — no bill/awb-type filter; the destination
+  office decides what's cross-station, not the doc stage) that are destined to ANOTHER group station, resolves
+  the destination station via pgsops.station_route_map (built from fm3kco.site.owncode), and UPSERTs
   one denormalized row per booking into pgsops.inbound_booking_feed. The destination station's app then reads
   ONLY feed rows addressed to it (no station ever queries another station's ERP). Incremental via feed_watermark.
 
@@ -91,11 +92,13 @@ function Filter-Cols($db,$table,$wantCsv){
 }
 # ---- candidate bookings (mode-specific) ----
 if($Mode -eq 'Air'){
-  $cols=Filter-Cols $Station 'awbhead' "jobn, mawb, agn2_code, rcustomer, pol, pod, carr, flight1, f_date1, cargoready, frt_terms, shpr_code, shpr_name, po_no, t_book_qty, t_book_wgt, crtdate, upddate"
-  $sql="SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type='B' AND bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
+  $cols=Filter-Cols $Station 'awbhead' "booking, jobn, mawb, agn2_code, rcustomer, pol, pod, carr, flight1, f_date1, cargoready, frt_terms, shpr_code, shpr_name, po_no, t_book_qty, t_book_wgt, crtdate, upddate"
+  # No bill/awb-type filter: the destination office (resolved below) decides what's cross-station, not the doc
+  # stage. (The bill_type='B' filter belongs to the dashboard's de-dup, not to this feed.)
+  $sql="SELECT TOP $Limit $cols FROM dbo.awbhead WHERE bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
 } else {
-  $cols=Filter-Cols $Station 'blhead' "blno, jobn, mobl, agn2_code, rcustomer, roagent, pol, pod, carr, vessel_1, voyage_1, departure1, cargoready, routing, shpr_code, shpr_name, crtdate, upddate"
-  $sql="SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='B' AND bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
+  $cols=Filter-Cols $Station 'blhead' "sono, blno, jobn, mobl, agn2_code, rcustomer, roagent, pol, pod, carr, vessel_1, voyage_1, departure1, cargoready, routing, shpr_code, shpr_name, crtdate, upddate"
+  $sql="SELECT TOP $Limit $cols FROM dbo.blhead WHERE bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
 }
 $bk = Query $Station $sql @{ since=$since }
 Write-Host ("publish-bookings $StationCode/$Mode : {0} candidate booking line(s) since {1}." -f $bk.Count,$since) -ForegroundColor Cyan
@@ -139,7 +142,10 @@ foreach($b in $bk){
   $dest=Resolve-Dest $agent $ctrl $roagent $pod
   if(-not $dest){ $skipNoRoute++; continue }
   if($dest -eq $StationCode){ $skipSelf++; continue }
-  $bn= if($Mode -eq 'Air'){ $j=("$($b.mawb)").Trim(); if($j){$j}else{("$($b.jobn)").Trim()} } else { ("$($b.blno)").Trim() }
+  # key the feed on the SO number (sono/booking) — the stable id that exists from booking stage onward; at booking
+  # time blno/mawb/jobn are still empty, so keying on those would collide every booking-stage row onto one feed row.
+  $bn= if($Mode -eq 'Air'){ ("$($b.booking)").Trim() } else { ("$($b.sono)").Trim() }
+  if(-not $bn){ $bn= if($Mode -eq 'Air'){ ("$($b.mawb)").Trim() } else { ("$($b.blno)").Trim() } }
   if(-not $bn){ $bn=("$($b.jobn)").Trim() }
   if($Mode -eq 'Air'){
     $fl=("$($b.flight1)").Trim(); $cr=("$($b.carr)").Trim(); $vf= if($cr -and $fl){"$cr $fl"}elseif($fl){$fl}elseif($cr){$cr}else{''}

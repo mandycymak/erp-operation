@@ -26,6 +26,7 @@ $cfg=Get-Content $ConfigPath -Raw|ConvertFrom-Json
 function EnvOrConfig($n,$v){ $e=[Environment]::GetEnvironmentVariable($n); if($e -and $e.Trim()){$e}else{$v} }
 $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.auth
 $user=EnvOrConfig "DB_USER" $cfg.user; $pwd=EnvOrConfig "DB_PASSWORD" $cfg.password; $opsDb=EnvOrConfig "DB_OPS_DB" $cfg.opsDb
+$masterDb=EnvOrConfig "DB_MASTER_DB" $cfg.masterDb; if(-not ("$masterDb".Trim())){ $masterDb='fm3kco' }
 $ac= if($auth -eq 'sql'){"User ID=$user;Password=$pwd"}else{"Integrated Security=True"}
 $opsServer=EnvOrConfig "DB_OPS_SERVER" $cfg.opsServer; if(-not ("$opsServer".Trim())){ $opsServer=$server }
 $opsAuth=EnvOrConfig "DB_OPS_AUTH" $cfg.opsAuth; if(-not ("$opsAuth".Trim())){ $opsAuth=$auth }
@@ -100,6 +101,19 @@ foreach($a in $asw){
 foreach($s in $stations){ $code="$($s.code)".Trim(); Exec $dimMerge @{ code=$code; fm=$null; name=$(if($nameByCode[$code]){$nameByCode[$code]}else{$null}); db="$($s.database)".Trim() } }
 Write-Host ("station_dim: {0} office(s); convention map FM3000->station has {1} entr(ies)." -f $asw.Count, $fmToStation.Count) -ForegroundColor Cyan
 
+# ---- authoritative convention map: <masterDb>.site.owncode -> station CODE ----------------------------------
+# Each office is also a CUSTOMER in the group system; site.owncode is that office's system customer code (e.g.
+# S0001 = Hong Kong) and site.location is its 3-letter station code (hkg). A booking's destination agent
+# (agn2_code) / R-O agent (roagent) / controlling customer (rcustomer) carries this owncode. This is the real
+# intercompany link (asw_station_list.FM3000_CODE lives in a different code space and never matches these).
+$ownToStation=@{}
+try{
+  foreach($r in (Query $masterDb "SELECT owncode, location FROM dbo.site WHERE NULLIF(LTRIM(RTRIM(owncode)),'') IS NOT NULL AND NULLIF(LTRIM(RTRIM(location)),'') IS NOT NULL")){
+    $oc="$($r.owncode)".Trim().ToUpper(); $loc="$($r.location)".Trim().ToUpper(); if($oc -and $loc){ $ownToStation[$oc]=$loc }
+  }
+}catch{ Write-Host ("  [warn] could not read {0}.site: {1}" -f $masterDb,$_.Exception.Message) -ForegroundColor DarkYellow }
+Write-Host ("convention map (site.owncode->station): {0} entr(ies)." -f $ownToStation.Count) -ForegroundColor Cyan
+
 # ---- 2) station_route_map agent/ctrl rows from the convention, per origin ----
 $modes = if($Mode -eq 'Both'){ @('Sea','Air') } else { @($Mode) }
 $unmapped=@{}   # "origin|code" -> name (discovery report)
@@ -108,17 +122,19 @@ foreach($s in $stations){
   $origin="$($s.code)".Trim(); $db="$($s.database)".Trim()
   foreach($m in $modes){
     try{
-      if($m -eq 'Air'){ $rows=Query $db "SELECT DISTINCT agn2_code, rcustomer FROM dbo.awbhead WHERE awb_type='B' AND bound='O'" @{} }
-      else            { $rows=Query $db "SELECT DISTINCT agn2_code, rcustomer FROM dbo.blhead  WHERE bill_type='B' AND bound='O'" @{} }
+      if($m -eq 'Air'){ $rows=Query $db "SELECT DISTINCT agn2_code, rcustomer FROM dbo.awbhead WHERE bound='O'" @{} }
+      else            { $rows=Query $db "SELECT DISTINCT agn2_code, rcustomer, roagent FROM dbo.blhead WHERE bound='O'" @{} }
     } catch { Write-Host ("  [skip] {0}/{1}: {2}" -f $origin,$m,$_.Exception.Message) -ForegroundColor DarkYellow; continue }
-    $codes=@(); foreach($r in $rows){ $codes+=("$($r.agn2_code)").Trim(); $codes+=("$($r.rcustomer)").Trim() }
+    $codes=@(); foreach($r in $rows){ $codes+=("$($r.agn2_code)").Trim(); $codes+=("$($r.rcustomer)").Trim(); if($r.PSObject.Properties['roagent']){ $codes+=("$($r.roagent)").Trim() } }
     $codes=@($codes|Where-Object{$_}|Select-Object -Unique)
     foreach($r in $rows){
-      foreach($pair in @(@{k='agent';v=("$($r.agn2_code)").Trim();pri=10}, @{k='ctrl';v=("$($r.rcustomer)").Trim();pri=20})){
-        $code=$pair.v; if(-not $code){ continue }
-        $dest=$fmToStation[$code]
+      $pairs=@(@{k='agent';v=("$($r.agn2_code)").Trim();pri=10}, @{k='ctrl';v=("$($r.rcustomer)").Trim();pri=20})
+      if($r.PSObject.Properties['roagent']){ $pairs+=,@{k='roagent';v=("$($r.roagent)").Trim();pri=15} }
+      foreach($pair in $pairs){
+        $code=("$($pair.v)").Trim(); if(-not $code){ continue }
+        $dest=$ownToStation[$code.ToUpper()]; if(-not $dest){ $dest=$fmToStation[$code] }
         if($dest -and $dest -ne $origin){
-          Exec $routeMerge @{ o=$origin; k=$pair.k; v=$code; d=$dest; p=$pair.pri; note="auto: asw_station_list" }; $routeN++
+          Exec $routeMerge @{ o=$origin; k=$pair.k; v=$code; d=$dest; p=$pair.pri; note="auto: site.owncode" }; $routeN++
         } elseif(-not $dest){ $unmapped["$origin|$code"]=$null }
       }
     }
