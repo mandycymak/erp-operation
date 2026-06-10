@@ -64,7 +64,7 @@ $evmap = Query $opsDb "SELECT milestone_code,bound,source_kind,source_table,sour
 # ---- candidate shipments: active house bills/AWBs as of AsOf, recent first (mode-specific source table) ----
 if($Mode -eq 'Air'){
   # awbhead = the air waybill table; awb_type H=house, S=straight/direct are the operator's shipments (M=consol master, B=booking)
-  $cols="jobn,hawb,mawb,po_no,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,t_book_qty,t_book_wgt,t_book_cwt"
+  $cols="jobn,hawb,mawb,po_no,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,t_book_qty,t_book_wgt,t_book_cwt,t_rece_qty,ttl_cwt"
   $cols=Filter-Cols $Station 'awbhead' $cols
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type IN('H','S') AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 } else {
@@ -181,7 +181,10 @@ foreach($b in $ships){
   if($Mode -eq 'Air'){
     $fl=("$($b.flight1)").Trim(); $cr=("$($b.carr)").Trim()
     $vv = if($fl -and $cr){ "$cr $fl" } elseif($fl){ $fl } elseif($cr){ $cr } else { '' }
-    $q=[int]("0"+"$($b.t_book_qty)"); $w=[double]("0"+"$($b.t_book_wgt)")
+    # booking estimates (t_book_*) are empty once an AWB is issued — fall back to actual received pcs / total
+    # chargeable weight so shipped air jobs still show their cargo profile
+    $q=[int]("0"+"$($b.t_book_qty)"); if($q -le 0){ $q=[int]("0"+"$($b.t_rece_qty)") }
+    $w=[double]("0"+"$($b.t_book_wgt)"); if($w -le 0){ $w=[double]("0"+"$($b.ttl_cwt)") }
     $cp = @{ summary=$(if($q -gt 0){"$q pcs"}else{$null}); count=$q; wgt=$(if($w -gt 0){[math]::Round($w,2)}else{$null}); cbm=$null; first_cont=$null; liner_so=$null; liner=$null }
     $etdV=$ship.f_date1; $etaV=$null; $atdV=$ship.atd_date; $ataV=$ship.ata_date
     $dep=$ship.atd_date; $eta=$null; $assigned=($fl -ne '' -or $cr -ne '')

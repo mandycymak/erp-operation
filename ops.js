@@ -184,12 +184,28 @@ async function loadInbound() {
   }
   panel.innerHTML = headHtml;
   const body = el('div', 'ib-body');
-  IB_STAGES.forEach(g => {
-    const gs = rows.filter(r => ibStage(r) === g.k).sort(ibByDate);
-    if (!gs.length) return;
-    body.appendChild(el('div', 'bh', esc(g.t) + ' <span class="cnt">' + gs.length + '</span>'));
-    gs.forEach(r => body.appendChild(inboundCard(r)));
-  });
+  if (state.tmode === 'Air') {
+    // Air: group by flight no so scattered bookings on the same flight sit together ('(no flight yet)' last)
+    const fmap = new Map();
+    rows.forEach(r => { const k = r.vesselFlight || '(no flight yet)'; if (!fmap.has(k)) fmap.set(k, []); fmap.get(k).push(r); });
+    const fgroups = [...fmap.entries()].sort((a, b) => {
+      if (a[0].startsWith('(no')) return 1; if (b[0].startsWith('(no')) return -1;
+      const ea = a[1].slice().sort(ibByDate)[0], eb = b[1].slice().sort(ibByDate)[0];
+      const x = (ea && (ea.etd || ea.cargoReady)) || '9999', y = (eb && (eb.etd || eb.cargoReady)) || '9999';
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+    fgroups.forEach(([k, gs]) => {
+      body.appendChild(el('div', 'bh', '✈ ' + esc(k) + ' <span class="cnt">' + gs.length + '</span>'));
+      gs.sort(ibByDate).forEach(r => body.appendChild(inboundCard(r)));
+    });
+  } else {
+    IB_STAGES.forEach(g => {
+      const gs = rows.filter(r => ibStage(r) === g.k).sort(ibByDate);
+      if (!gs.length) return;
+      body.appendChild(el('div', 'bh', esc(g.t) + ' <span class="cnt">' + gs.length + '</span>'));
+      gs.forEach(r => body.appendChild(inboundCard(r)));
+    });
+  }
   panel.appendChild(body);
   panel.querySelector('.ib-collapse').onclick = () => { body.style.display = body.style.display === 'none' ? '' : 'none'; };
   const tg = panel.querySelector('.ib-alltoggle'); if (tg) tg.onclick = () => { state.ibShowAll = !state.ibShowAll; loadInbound(); };
@@ -199,7 +215,8 @@ function inboundCard(r) {
   // the CONSIGNEE is who receives the cargo at destination — the party this operator coordinates with
   const cnee = r.consigneeName || r.consigneeCode || '—';
   const route = [r.pol, r.pod].filter(Boolean).join(' → ');
-  const svc = r.cargoType ? (r.service ? r.cargoType + ' (' + r.service.trim() + ')' : r.cargoType) : (r.service || '');
+  // service label only meaningful for sea (FCL/LCL); for air "Air" is redundant (mode already selected)
+  const svc = (r.cargoType && r.cargoType.toUpperCase() !== 'AIR') ? (r.service ? r.cargoType + ' (' + r.service.trim() + ')' : r.cargoType) : '';
   const qty = [r.bookingQty, r.bookingWgt].filter(Boolean).join(' / ') || r.cargoSummary || '';
   const conv = r.vesselFlight ? (r.mode === 'Air' ? '✈ ' : '🚢 ') + esc(r.vesselFlight) : '';
   const asg = r.assignedTo ? '<span class="ib-asg" title="Reassign">👤 ' + esc(r.assignedTo) + '</span>'
@@ -286,15 +303,18 @@ async function loadWorklist() {
   // group rows by vessel/voyage; derive ONE status per vessel (most-advanced state across its shipments,
   // so a vessel isn't split across buckets just because ATA is filled on only some of its bills)
   const gmap = new Map();
-  const noConv = state.tmode === 'Air' ? '(no flight no. yet)' : '(no vessel / voyage yet)';
-  rows.forEach(r => { const k = r.vesselVoyage || noConv; if (!gmap.has(k)) gmap.set(k, { vv: k, rows: [] }); gmap.get(k).rows.push(r); });
+  const isAirMode = state.tmode === 'Air';
+  // Air groups by MAWB (flight numbers repeat — same weekly flight — so MAWB is the true consolidation unit);
+  // Sea groups by vessel/voyage. No master yet → one shared bucket so consolidation candidates sit together.
+  const noConv = isAirMode ? '(no MAWB yet)' : '(no vessel / voyage yet)';
+  rows.forEach(r => { const k = (isAirMode ? r.masterBill : r.vesselVoyage) || noConv; if (!gmap.has(k)) gmap.set(k, { vv: k, rows: [] }); gmap.get(k).rows.push(r); });
   const gList = [...gmap.values()].map(g => {
     let best = 99, sk = '';
     g.rows.forEach(r => { const o = (ord[r.arrivalState] != null ? ord[r.arrivalState] : 9); if (o < best) best = o; if (r.sortKey && (!sk || r.sortKey < sk)) sk = r.sortKey; });
     g.key = (buckets[best] && buckets[best].key) || 'other'; g.sortKey = sk;
     return g;
   });
-  const conv = state.tmode === 'Air' ? 'flight' : 'vessel';
+  const conv = isAirMode ? 'MAWB' : 'vessel';
   $('#wlCount').textContent = rows.length + ' ' + word + ' · ' + gList.length + ' ' + conv + (gList.length === 1 ? '' : 's');
   buckets.forEach(bk => {
     const gs = gList.filter(g => g.key === bk.key).sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0));
@@ -307,7 +327,10 @@ async function loadWorklist() {
   });
 }
 function vesselGroup(g) {
-  const rs = g.rows;
+  const rs = g.rows.slice();
+  // ungrouped bucket (no MAWB / no vessel yet): order by routing (lane) then consignee so an operator can
+  // eyeball which shipments share a destination/consignee and could be consolidated onto one MAWB.
+  if (/^\(no /.test(g.vv)) rs.sort((a, b) => { const ka = (a.lane || '') + '|' + (a.consigneeName || ''); const kb = (b.lane || '') + '|' + (b.consigneeName || ''); return ka < kb ? -1 : ka > kb ? 1 : 0; });
   const worst = rs.some(r => r.worst === 'R') ? 'R' : (rs.some(r => r.worst === 'A') ? 'A' : 'G');
   const sample = rs.find(r => r.arrivalState === g.key) || rs[0];
   const totalCont = rs.reduce((a, r) => a + (r.containerCount || 0), 0);
@@ -361,8 +384,10 @@ function miniCard(r) {
   const who = isImport ? (r.consigneeName || r.custCode) : (r.shipperName || r.custCode);
   const cargo = cargoProfile(r);
   const sev = r.openRed ? '<span class="pill R">' + r.openRed + 'R</span>' : (r.openAmber ? '<span class="pill A">' + r.openAmber + 'A</span>' : '');
+  const updLbl = r.updateMilestoneName || r.updateMilestone || '';
+  const updTip = (r.updateMilestone ? r.updateMilestone + ' — ' : '') + (r.updateMilestoneName || 'status update') + ' (updated, no remark)';
   const note = (r.hasNotes ? '<span class="note-ind" title="has a remark / note">💬</span>' : '')
-    + (r.hasUpdate ? '<span class="upd-ind" title="status updated — no remark">🔄' + (r.updateMilestone ? ' ' + esc(r.updateMilestone) : '') + '</span>' : '');
+    + (r.hasUpdate ? '<span class="upd-ind" title="' + esc(updTip) + '">🔄' + (updLbl ? ' ' + esc(updLbl) : '') + '</span>' : '');
   const docLbl = isAir ? 'HAWB' : 'HBL';
   const mLbl = isAir ? 'MAWB' : 'MBL';
   // primary id: import customers know the origin house bill, not our internal job number
@@ -372,7 +397,8 @@ function miniCard(r) {
   const diff = r.containerNo
     ? '🔢 ' + esc(r.containerNo) + (r.containerCount > 1 ? ' +' + (r.containerCount - 1) : '')
     : (r.linerSo ? 'SO ' + esc(r.linerSo) : '');
-  const otherBill = isImport ? (r.masterBill ? mLbl + ' ' + esc(r.masterBill) : '')
+  // import: show the master (OBL for sea, MAWB for air); fall back to our job no when no master is issued yet
+  const otherBill = isImport ? (mLbl + ' ' + esc(r.masterBill || r.jobNo))
                              : (r.houseBill ? docLbl + ' ' + esc(r.houseBill) : '');
   const po = r.custRef ? 'PO ' + esc(r.custRef) : '';
   const exp = !isImport ? [r.cargoReady ? 'cargo-ready ' + esc(r.cargoReady) : '', r.etd ? 'ETD ' + esc(r.etd) : ''].filter(Boolean).join(' · ') : '';
