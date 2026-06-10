@@ -41,6 +41,10 @@ Server (`18.136.126.101,1438`, reached over the Swivel VPN). "JSONB" in the orig
 - `listener-engine.ps1 -Mode <Sea|Air>` — the listener; pulls active jobs, evaluates milestones, upserts `shipment_alerts`, appends `milestone_event_log`.
 - `baseline-refresh.ps1` — monthly rebuild of `milestone_baselines` over 3 years.
 - `register-ops-tasks.ps1` — schedule Air-2h / Sea-3×day / baseline-monthly (Windows Task Scheduler).
+- `seed-station-map.ps1` / `publish-bookings.ps1` — **cross-station inbound booking feed** (key finding 5): the
+  station identity directory (`station_dim`/`station_route_map`) + the per-origin publisher that fans booking
+  rows (destined to another station) into the central `inbound_booking_feed`. The importer reads only its own
+  rows (`dest_station=stationCode`); served by `/api-ops/inbound` + `/api-ops/inbound-assign` (local assignment).
 - `serve-ops.ps1` — the web service: auth, JSON API (worklist, alerts, KPIs, notes/roster/my-tasks, admin), static files.
 - `index.html` / `ops.js` / `styles.css` — the UI (worklist, manager weekly plan, detention/demurrage listing, my-tasks inbox).
 - `admin-ops.html` — admin-only milestone-def / evidence-map / field-alias-map editors.

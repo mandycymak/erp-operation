@@ -25,6 +25,7 @@ $ConnStr="Server=$opsServer;Database=$opsDb;$authClause;TrustServerCertificate=T
 $AppName= if($cfg.appName){$cfg.appName}else{"Control Tower"}
 $AppSubtitle= if($cfg.appSubtitle){$cfg.appSubtitle}else{""}
 $InstanceName= if($cfg.instanceName){$cfg.instanceName}else{""}
+$StationCode= if($cfg.stationCode){"$($cfg.stationCode)".Trim()}else{""}   # which station this instance serves (inbound feed)
 $Root=$PSScriptRoot
 $ListDir=Join-Path $Root "ops-lists"; if(-not (Test-Path $ListDir)){ New-Item -ItemType Directory -Path $ListDir|Out-Null }
 $NotesPath=Join-Path $ListDir "job-notes.json"
@@ -170,6 +171,39 @@ function Handle-Ports($cn){
   $pod=@(RunQ $cn "SELECT DISTINCT pod code, mode FROM dbo.shipment_alerts WHERE job_status='active' AND NULLIF(pod,'') IS NOT NULL" @{})
   @{ pol=@($pol|ForEach-Object{ [pscustomobject]@{ code=[string]$_.code; mode=[string]$_.mode } }); pod=@($pod|ForEach-Object{ [pscustomobject]@{ code=[string]$_.code; mode=[string]$_.mode } }) }
 }
+# Inbound cross-station bookings destined to THIS station (reads only the small pgsops feed; no ERP/cross-DB).
+# Station = config stationCode, with an optional ?station= override (HQ/testing). Ordered by urgency then ETD.
+function Handle-Inbound($cn,$qs){
+  $st= if($qs['station']){ "$($qs['station'])".Trim() } else { $StationCode }
+  if(-not $st){ return @{ station=''; rows=@(); note='no stationCode configured' } }
+  $p=@{ st=$st }; $w=" WHERE dest_station=@st AND feed_status<>'void' "
+  if($qs['mode']){ $w+=" AND mode=@md "; $p['md']="$($qs['mode'])" }
+  if($qs['from']){ $w+=" AND (etd IS NULL OR etd>=@from) "; $p['from']="$($qs['from'])" }
+  if($qs['to']){   $w+=" AND (etd IS NULL OR etd<=@to) ";   $p['to']="$($qs['to'])" }
+  if($qs['status']){ $w+=" AND feed_status=@fs "; $p['fs']="$($qs['status'])" }
+  $sel="SELECT source_station,mode,booking_no,dest_station,source_jobn,master_bill,house_bill,shipper_name," +
+    "ctrl_code,ctrl_name,agent_code,agent_name,pol,pod,carrier,vessel_flight,CONVERT(varchar(10),etd,23) etd," +
+    "CONVERT(varchar(10),cargo_ready,23) cargo_ready,incoterm,cargo_summary,CONVERT(varchar(10),booking_date,23) booking_date," +
+    "feed_status,assigned_to,linked_job_no,light FROM dbo.inbound_booking_feed $w " +
+    "ORDER BY CASE light WHEN 'R' THEN 0 WHEN 'A' THEN 1 ELSE 2 END, etd, source_station, source_jobn, booking_no"
+  $rows=@(RunQ $cn $sel $p)
+  @{ station=$st; rows=@($rows|ForEach-Object{ [pscustomobject]@{ sourceStation=[string]$_.source_station; mode=[string]$_.mode; bookingNo=[string]$_.booking_no; destStation=[string]$_.dest_station; sourceJobn=[string]$_.source_jobn; masterBill=[string]$_.master_bill; houseBill=[string]$_.house_bill; shipperName=[string]$_.shipper_name; ctrlCode=[string]$_.ctrl_code; ctrlName=[string]$_.ctrl_name; agentCode=[string]$_.agent_code; agentName=[string]$_.agent_name; pol=[string]$_.pol; pod=[string]$_.pod; carrier=[string]$_.carrier; vesselFlight=[string]$_.vessel_flight; etd=[string]$_.etd; cargoReady=[string]$_.cargo_ready; incoterm=[string]$_.incoterm; cargoSummary=[string]$_.cargo_summary; bookingDate=[string]$_.booking_date; feedStatus=[string]$_.feed_status; assignedTo=[string]$_.assigned_to; linkedJobNo=[string]$_.linked_job_no; light=[string]$_.light } }) }
+}
+# Local assignment of an inbound booking to an operator. Updates the feed and threads a note keyed by a
+# synthetic FEED:<src>:<booking_no> job so the assignee's existing My-Tasks inbox/badge lights up (no new infra).
+function Save-InboundAssign($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.source_station -or -not $j.mode -or -not $j.booking_no){ return @{error='invalid payload'} }
+  $assignee="$($j.assignee)".Trim()
+  RunQ $cn "UPDATE dbo.inbound_booking_feed SET assigned_to=@a,updated_at=SYSDATETIME() WHERE source_station=@ss AND mode=@md AND booking_no=@bn" @{ a=$(if($assignee){$assignee}else{$null}); ss="$($j.source_station)"; md="$($j.mode)"; bn="$($j.booking_no)" } | Out-Null
+  $job='FEED:'+"$($j.source_station)"+':'+"$($j.booking_no)"
+  $ment=@(@(@($j.mentions)+$assignee)|Where-Object{ $_ -and "$_".Trim() -ne '' }|ForEach-Object{"$_".Trim()}|Select-Object -Unique)
+  $txt= if($assignee){ "Assigned inbound booking to @$assignee" } else { "Unassigned inbound booking" }
+  if("$($j.note)".Trim()){ $txt+=": $("$($j.note)".Trim())" }
+  $rec=[pscustomobject]@{ id=[guid]::NewGuid().ToString(); created=(Get-Date).ToString('o'); user=$me; job_no=$job; milestone_code=''; kind='inbound'; note=$txt; mentions=$ment; status='open'; doneBy=''; doneAt=''; arr_type=''; party=''; contact=''; arr_status=''; remind_on='' }
+  Write-Notes (@(Read-Notes) + $rec)
+  @{ ok=$true; assignedTo=$assignee }
+}
 function Handle-Worklist($cn,$qs,$me){
   $lens="$($qs['lens'])"; if(-not $lens){ $lens='mine' }
   $who= if($lens -eq 'user' -and $qs['user']){ "$($qs['user'])".Trim() } else { $me }
@@ -252,7 +286,7 @@ function Save-MilestoneClose($cn,$ctx,$me){
   @{ ok=$true; jobNo=$job; milestone_code=$code; state=$(if($reopen){'pending'}else{'bypassed'}); worst=$worst; openAmber=$amber; openRed=$red; nextDue=$nd }
 }
 
-function Config-Payload { @{ appName=$AppName; instanceName=$InstanceName; appSubtitle=$AppSubtitle } }
+function Config-Payload { @{ appName=$AppName; instanceName=$InstanceName; appSubtitle=$AppSubtitle; stationCode=$StationCode } }
 
 # ---------------- listener ----------------
 $listener=New-Object System.Net.HttpListener
@@ -277,6 +311,8 @@ while($listener.IsListening){
           "/api-ops/roster"          { Send-Json $ctx (Handle-Roster $cn) }
           "/api-ops/companies"       { Send-Json $ctx (Handle-Companies $cn) }
           "/api-ops/ports"           { Send-Json $ctx (Handle-Ports $cn) }
+          "/api-ops/inbound"         { Send-Json $ctx (Handle-Inbound $cn $qs) }
+          "/api-ops/inbound-assign"  { Send-Json $ctx (Save-InboundAssign $cn $ctx $me) }
           "/api-ops/my-tasks"        { Send-Json $ctx (Handle-MyTasks $cn $me) }
           "/api-ops/worklist"        { Send-Json $ctx (Handle-Worklist $cn $qs $me) }
           "/api-ops/shipment"        { Send-Json $ctx (Handle-Shipment $cn $qs) }

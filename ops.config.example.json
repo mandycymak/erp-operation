@@ -9,6 +9,14 @@
   "instanceName": "ERP Group",
   "appSubtitle": "Operational control tower — live shipment milestones, worklist & cash-leak alerts",
   "port": 8078,
+  "_stationCode": "Which station THIS app instance serves (one instance per station). Drives the inbound cross-station booking feed: the UI shows only feed rows whose dest_station = stationCode.",
+  "stationCode": "HKG",
+  "_routePodMap": "Optional fallback for the inbound feed: maps a destination PORT code -> the importing station, used when no agent/controlling-customer route exists yet. Seeded into station_route_map as global ('*') 'pod' rules by seed-station-map.ps1.",
+  "routePodMap": { "HKHKG": "HKG", "SGSIN": "SIN" },
+  "_routeManual": "Optional manual overrides for station_route_map (admin-curated). kind = 'agent'|'ctrl'|'roagent'|'pod'; origin omitted = global '*'. Lower priority wins.",
+  "routeManual": [
+    { "origin": "BKK", "kind": "agent", "value": "A0354", "dest": "HKG", "priority": 10 }
+  ],
   "stations": [
     { "code": "BKK", "name": "Bangkok",   "country": "TH", "database": "station_bkk" },
     { "code": "SIN", "name": "Singapore", "country": "SG", "database": "station_sin" },

@@ -79,6 +79,19 @@ button:hover{filter:brightness(1.08)}
 .mcard .pill{font-size:11px;padding:0 6px}
 .mcard .note-ind{margin:0}
 .refdocs{font-size:12px;color:var(--ink,#cdd3df);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;margin-bottom:10px}
+/* inbound cross-station bookings panel */
+.inbound{border:1px solid var(--accent);border-radius:10px;margin-bottom:14px;overflow:hidden}
+.ib-head{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel2);font-weight:650;font-size:13px}
+.ib-head .cnt{font-weight:600;color:var(--mut);font-size:12px}
+.ib-head .ib-collapse{margin-left:auto;font-size:12px;padding:2px 8px}
+.ib-body .bh{padding:6px 12px;font-size:12px;font-weight:600;color:var(--mut);border-top:1px solid var(--line)}
+.ib-body .bh .cnt{color:var(--mut);font-weight:500}
+.ibcard{display:flex;flex-direction:column;gap:3px;padding:7px 12px;border-top:1px solid var(--line);font-size:12.5px}
+.ibcard.R{box-shadow:inset 3px 0 0 var(--r)} .ibcard.A{box-shadow:inset 3px 0 0 var(--a)} .ibcard.G{box-shadow:inset 3px 0 0 var(--g)}
+.ibcard .r1{display:flex;align-items:center;gap:9px}
+.ibcard .r2{color:var(--mut);font-size:11px;line-height:1.4}
+.ib-asg{font-size:11px;color:var(--accent);cursor:pointer;border:1px solid var(--accent);border-radius:20px;padding:1px 8px}
+.ib-assign{font-size:11px;padding:2px 10px}
 .side{display:flex;flex-direction:column;gap:14px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
 .panel h3{margin:0 0 8px;font-size:13px}

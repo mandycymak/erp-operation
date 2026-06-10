@@ -64,9 +64,27 @@ user pasted). Only `*.example.json` is tracked.
 | `serve-ops.ps1` | Web service: worklist (arrival-grouped), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close. Reads only `pgsops` | ✅ |
 | `index.html`/`ops.js`/`styles.css` | UI: 🚢Sea/✈Air toggle, Import/Export toggle, **vessel/flight-grouped** collapsible worklist, mini-cards, shipment drawer w/ milestones + **🔔 Remind-me** + **Arrangements** panel, custom in-page dialogs (no native `prompt`), My-Tasks | ✅ |
 | `ops.config.example.json` | Config template | ✅ |
+| `setup-ops.ps1` (feed) | +4 tables for the cross-station feed: `station_dim`, `station_route_map`, `inbound_booking_feed`, `feed_watermark` | ✅ idempotent |
+| `seed-station-map.ps1` | Seeds `station_dim` from `asw_station_list` + builds `station_route_map` from the intercompany convention (`asw_station_list.FM3000_CODE`↔agent code) with POD fallback + **unmapped-code discovery report** | ✅ |
+| `publish-bookings.ps1` | **Publisher** (one origin/invocation): reads outbound bookings (`bill_type/awb_type='B'`, `bound='O'`) destined to another station, resolves `dest_station` via `station_route_map`, UPSERTs `inbound_booking_feed`; **incremental** via `feed_watermark` | ✅ |
+| `serve-ops.ps1` (feed) | `/api-ops/inbound` (reads only the feed by `dest_station=stationCode`) + `/api-ops/inbound-assign` (local assign → threads a `FEED:` note into the assignee's My-Tasks); `stationCode` in config payload | ✅ |
+| `ops.js`/`index.html` (feed) | **📥 Inbound bookings (pre-arrival)** panel (Import bound only): light-grouped cards (source station, shipper, controlling customer, agent, POL→POD, ETD/cargo-ready) with **Assign** → roster picker | ✅ |
+| `register-ops-tasks.ps1` | Task Scheduler: `publish-bookings` per station (Sea 3×/day, Air 2h, **staggered**) + weekly `seed-station-map` | ✅ |
 
-**Not yet built:** real `listener-engine.ps1`, `baseline-refresh.ps1`, `register-ops-tasks.ps1`, `admin-ops.html`,
-real auth (runs open/demo mode), the cross-station booking feed (§key finding 5), and `pic_user`↔app-user mapping.
+**Cross-station inbound booking feed (key finding 5) — built (publish/subscribe fan-in).** An origin station's
+scheduled `publish-bookings.ps1` writes its cross-station bookings into the central `pgsops.inbound_booking_feed`
+tagged with `dest_station`; the importing station's app reads ONLY rows addressed to it (`dest_station=stationCode`,
+indexed seek) and assigns them locally. No station ever queries another station's ERP; the request path never
+touches the ERP. Scales linearly with stations (each publishes its own delta).
+**Route map:** the destination office is encoded in the origin's master as the destination **agent code**
+(`agn2_code`) / controlling customer (`rcustomer`); `seed-station-map.ps1` maps those to a station via the group
+convention (`asw_station_list.FM3000_CODE`). ⚠ **The exact convention join must be confirmed on live `fm3khkg`** —
+the frozen `fibsbkk` snapshot has no intragroup-destination bookings (its bookings go to an external AU agent), so
+local testing uses the POD-fallback rule (`AUSYD→SYD`).
+
+**Not yet built:** real `listener-engine.ps1`, `baseline-refresh.ps1`, `admin-ops.html`, real auth (runs open/demo
+mode), feed **reconciliation** (Phase 5: link a feed row to `shipment_alerts` once the local import job appears —
+deferred, untestable locally), and `pic_user`↔app-user mapping.
 
 ## Proven behaviour (tested live)
 
@@ -103,6 +121,14 @@ $today = (Get-Date).ToString('yyyy-MM-dd')
 .\seed-alerts.ps1 -ConfigPath .\ops.config.network.json -Station fm3khkg -StationCode HK01 -Mode Air -AsOf $today -Limit 120
 .\serve-ops.ps1            -ConfigPath .\ops.config.network.json -Port 8079   # http://localhost:8079/
 # In the UI: pick the All lens (or an operator), toggle 🚢Sea/✈Air and Import/Export.
+
+# --- CROSS-STATION INBOUND BOOKING FEED ---
+.\setup-ops.ps1                          # creates the 4 feed tables (idempotent)
+.\seed-station-map.ps1                    # station_dim + route map; prints UNMAPPED codes to curate
+.\publish-bookings.ps1 -Station fibsbkk -StationCode BKK -Mode Sea   # publish BKK's cross-station bookings
+# Importer view: set "stationCode" in config to the destination station; the 📥 Inbound panel (Import bound)
+# shows rows where dest_station=stationCode. Locally the POD rule AUSYD->SYD routes BKK bookings to "SYD".
+# Schedule it all: .\register-ops-tasks.ps1   (publish per station, staggered; weekly map refresh)
 ```
 
 ## Constraints (do not violate)

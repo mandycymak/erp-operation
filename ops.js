@@ -63,7 +63,7 @@ function wireBound() {
     b.onclick = () => {
       document.querySelectorAll('#boundSeg button').forEach(x => x.classList.remove('on'));
       b.classList.add('on'); state.bound = b.dataset.bound; localStorage.setItem('opsBound', state.bound);
-      loadWorklist();
+      loadWorklist(); loadInbound();
     };
   });
 }
@@ -75,7 +75,7 @@ function wireMode() {
       b.classList.add('on'); state.tmode = b.dataset.tmode; localStorage.setItem('opsMode', state.tmode);
       state.pol = ''; state.pod = '';   // POL/POD lists are mode-specific; reset when switching transport mode
       renderFilterOptions();
-      loadWorklist();
+      loadWorklist(); loadInbound();
     };
   });
 }
@@ -144,7 +144,69 @@ function buildPortSelect(sel, list, cur, allLabel) {
   s.innerHTML = '<option value="">' + allLabel + '</option>';
   codes.forEach(code => { const o = el('option'); o.value = code; o.textContent = code; if (code === cur) o.selected = true; s.appendChild(o); });
 }
-function refreshAll() { loadWorklist(); loadTasks(); }
+function refreshAll() { loadWorklist(); loadTasks(); loadInbound(); }
+
+// ---------- inbound cross-station bookings (pre-arrival) ----------
+// Shown on the Import bound only: bookings created at OTHER stations whose destination is OUR station,
+// so we coordinate from booking -> delivery. Reads only the pgsops feed; assign locally to an operator.
+const IB_GROUPS = [{ k: 'R', t: '🔴 ETD imminent' }, { k: 'A', t: '🟠 This week' }, { k: 'G', t: '🟢 Planning' }];
+async function loadInbound() {
+  const panel = $('#inboundPanel'); if (!panel) return;
+  if (state.bound !== 'Import') { panel.style.display = 'none'; panel.innerHTML = ''; return; }
+  panel.style.display = '';
+  const data = await api('/api-ops/inbound?mode=' + encodeURIComponent(state.tmode));
+  const rows = arr(data.rows); const station = data.station || '';
+  const head = '📥 Inbound bookings (pre-arrival)' + (station ? ' · ' + esc(station) : '');
+  if (!rows.length) { panel.innerHTML = '<div class="ib-head">' + head + ' <span class="cnt">0</span></div>'; return; }
+  panel.innerHTML = '<div class="ib-head">' + head + ' <span class="cnt">' + rows.length + '</span>'
+    + '<button class="ghost ib-collapse" title="Collapse">▾</button></div>';
+  const body = el('div', 'ib-body');
+  IB_GROUPS.forEach(g => {
+    const gs = rows.filter(r => (r.light || 'G') === g.k);
+    if (!gs.length) return;
+    body.appendChild(el('div', 'bh', esc(g.t) + ' <span class="cnt">' + gs.length + '</span>'));
+    gs.forEach(r => body.appendChild(inboundCard(r)));
+  });
+  panel.appendChild(body);
+  panel.querySelector('.ib-collapse').onclick = () => { body.style.display = body.style.display === 'none' ? '' : 'none'; };
+}
+function inboundCard(r) {
+  const c = el('div', 'ibcard ' + (r.light || 'G'));
+  const cust = r.ctrlName || r.shipperName || r.ctrlCode || '—';
+  const route = [r.pol, r.pod].filter(Boolean).join(' → ');
+  const when = [r.etd ? 'ETD ' + esc(r.etd) : '', r.cargoReady ? 'cargo-ready ' + esc(r.cargoReady) : ''].filter(Boolean).join(' · ');
+  const asg = r.assignedTo ? '<span class="ib-asg" title="Reassign">👤 ' + esc(r.assignedTo) + '</span>'
+                           : '<button class="tick primary ib-assign">Assign</button>';
+  const sub = ['from ' + esc(r.sourceStation), esc(r.shipperName || ''), route, when,
+    r.cargoSummary ? esc(r.cargoSummary) : '', r.agentName ? 'agent ' + esc(r.agentName) : '',
+    r.masterBill ? (r.mode === 'Air' ? 'MAWB ' : 'MBL ') + esc(r.masterBill) : ''].filter(Boolean).join('  ·  ');
+  c.innerHTML =
+    '<div class="r1"><span class="mref">' + esc(r.bookingNo) + '</span>' +
+      (r.incoterm ? '<span class="minco">' + esc(r.incoterm) + '</span>' : '') +
+      '<span class="mwho">' + esc(cust) + '</span><span class="mspacer"></span>' + asg + '</div>' +
+    (sub ? '<div class="r2">' + sub + '</div>' : '');
+  const ab = c.querySelector('.ib-assign'); if (ab) ab.onclick = e => { e.stopPropagation(); assignInbound(r); };
+  const ac = c.querySelector('.ib-asg'); if (ac) ac.onclick = e => { e.stopPropagation(); assignInbound(r); };
+  return c;
+}
+function assignInbound(r) {
+  const bg = el('div', 'modal-bg'); const box = el('div', 'modal');
+  box.innerHTML = '<h3>Assign inbound booking</h3><p class="modal-msg">' + esc(r.bookingNo) + ' from ' + esc(r.sourceStation) + ' · ' + esc(r.ctrlName || r.shipperName || '') + '</p>';
+  const sel = el('select'); sel.innerHTML = '<option value="">— unassign —</option>';
+  state.roster.forEach(u => { const o = el('option'); o.value = u; o.textContent = u; if (u === r.assignedTo) o.selected = true; sel.appendChild(o); });
+  box.appendChild(sel);
+  const ta = el('textarea'); ta.placeholder = 'note to the operator (optional)'; box.appendChild(ta);
+  const bar = el('div', 'modal-bar'); const cancel = el('button', 'ghost', 'Cancel'); const ok = el('button', 'primary', 'Save');
+  bar.appendChild(cancel); bar.appendChild(ok); box.appendChild(bar);
+  bg.appendChild(box); document.body.appendChild(bg);
+  const done = () => bg.remove();
+  cancel.onclick = done; bg.onclick = e => { if (e.target === bg) done(); };
+  ok.onclick = async () => {
+    ok.disabled = true;
+    await api('/api-ops/inbound-assign', { method: 'POST', body: { source_station: r.sourceStation, mode: r.mode, booking_no: r.bookingNo, assignee: sel.value, note: ta.value.trim(), mentions: [] } });
+    done(); loadInbound(); loadTasks();
+  };
+}
 
 // ---------- worklist ----------
 // arrival-driven buckets, by bound. Rows arrive already server-sorted (bound, arrival rank, sort_key).
