@@ -10,9 +10,18 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest (resume here):** all **12 fm3k stations** seeded into `pgsops_net`; station picker + filter bar (week-default
-date window, company-name search, POL/POD); **schema-drift resilient** seeding (`Filter-Cols`). Last commit on `main`:
-`50998d3`.
+**Latest (resume here):** **admin page now manages milestones, not just users.** `admin-ops.html` is split into
+two tabs — **Users** (with a live search box over login/name/email/station/team/ERP-name, for ~500-user scale) and
+**Milestones & alerts** (CRUD over `milestone_def`: name, mode/bound/seq/phase, active, and the **alert timing** —
+`baseline` / `fixed` offset / `none` — that drives every operator's Green/Amber/Red). Backed by admin-gated
+`/api-ops/admin/milestones` (GET/POST) + `/admin/milestone-delete`; edits apply at a shipment's **next evaluation
+run**, not retroactively. Header **Admin** link (admins only). Two **restart bats** (`restart-ops-network.bat` 8079 /
+`restart-ops-local.bat` 8078) stop-then-start the web service, port-scoped, excluding `$PID`. **Encoding fix:** all
+config/JSON reads use `[IO.File]::ReadAllText` (PS 5.1's `Get-Content -Raw` decodes BOM-less UTF-8 as ANSI →
+mojibake in the subtitle); `.ps1` kept ASCII-only. Last commit on `main`: `bade065`.
+
+**Prior milestone (12-station seed + Air UX):** all **12 fm3k stations** seeded into `pgsops_net`; station picker +
+filter bar (week-default date window, company-name search, POL/POD); **schema-drift resilient** seeding (`Filter-Cols`).
 
 **This session's work (cross-station inbound feed made real + Air-freight UX):**
 - **Convention join RESOLVED** — the feed routes a booking to its destination station via `fm3kco.site.owncode`→`location`
@@ -88,7 +97,11 @@ user pasted). Only `*.example.json` is tracked.
 | `ops-eval.ps1` | Pure evaluator: `New-ShipContext` (sea) + **`New-AirContext`** (air); `Eval-Milestones` filters defs by bound **and mode**; planned-due anchor is mode-aware | ✅ |
 | `eval-shipment.ps1` | Read-only one-shot card for one shipment (two-server aware) | ✅ |
 | `seed-alerts.ps1` | Listener stand-in. **`-Mode Sea|Air`**: reads `blhead`/`blcont` or `awbhead`, batches PIC + consignee/shipper contacts, computes arrival bucket + cargo profile + conveyance, pulls **house/master bill, incoterm, container/liner-SO, cargo-ready, role codes + POL/POD**, resolves company **names** via a single chunked `custsub.code2` clustered seek (never the heavy party views) → `company_dim`, resolves **vessel code→name** via a chunked `veslmstr.code` seek (bound-aware: sea Export reads `vessel_2/voyage_2`, Import `vessel_1/voyage_1`), upserts `shipment_alerts`. **`Filter-Cols`** intersects wanted columns with the station's `INFORMATION_SCHEMA` so schema-variant offices (e.g. HAM `blhead` lacks `picuser`) seed without failing | ✅ |
-| `serve-ops.ps1` | Web service: worklist (arrival-grouped, `&station=` filter), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close, **`/api-ops/companies` (name type-ahead), `/api-ops/ports` (POL/POD lists)**. Config payload returns `stationCode` + `stations[]`. Reads only `pgsops` | ✅ |
+| `serve-ops.ps1` | Web service: worklist (arrival-grouped, `&station=` filter), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close, **`/api-ops/companies` (name type-ahead), `/api-ops/ports` (POL/POD lists)**. Config payload returns `stationCode` + `stations[]`. **Real auth** (`users.json` present → login/sessions/scope; absent → open/demo mode) + admin-gated `/api-ops/admin/*`: **`users`** CRUD and **`milestones`** CRUD (`GET/POST /admin/milestones` + `/admin/milestone-delete`, MERGE on `milestone_def`, validated, `admin-audit.log`). Config/JSON read via `[IO.File]::ReadAllText` (UTF-8 safe). Reads only `pgsops` | ✅ |
+| `admin-ops.html` | Admin-only page, **two tabs**: **Users** (table + add/edit, **live search** over login/name/email/station/team/ERP-name for ~500 users) and **Milestones & alerts** (table + editor: name/mode/bound/seq/phase/active + **alert timing** baseline/fixed/none — what drives operator Green/Amber/Red). Non-admins 403 | ✅ |
+| `login.html` / `users.example.json` | Login page + user-record template (logins are gitignored `users.json`) | ✅ |
+| `restart-ops-network.bat` / `restart-ops-local.bat` | One-double-click **restart** of the web service (8079 network / 8078 local): stop-then-start, **port-scoped**, kill excludes `$PID` | ✅ |
+| `seed-ports.ps1` | Seeds the POL/POD port list for the filter dropdowns | ✅ |
 | `index.html`/`ops.js`/`styles.css` | UI: 🚢Sea/✈Air toggle, Import/Export toggle, **station picker**, **filter bar** (text `yyyy-mm-dd` date window default = current week, **company name** type-ahead across any role, POL/POD), **vessel/flight-grouped** collapsible worklist, mini-cards (house bill, container/liner-SO, incoterm, cust-ref), shipment drawer w/ milestones + **🔔 Remind-me** + **Arrangements** panel, custom in-page dialogs (no native `prompt`), My-Tasks | ✅ |
 | `ops.config.example.json` | Config template | ✅ |
 | `setup-ops.ps1` (feed) | +4 tables for the cross-station feed: `station_dim`, `station_route_map`, `inbound_booking_feed`, `feed_watermark` | ✅ idempotent |
@@ -111,8 +124,9 @@ booking as the destination **agent code** (`agn2_code`, primary) / **R-O agent**
 `asw_station_list.FM3000_CODE` was a different code space and never matched — replaced. The frozen `fibsbkk`
 snapshot still has no intragroup bookings, so its local testing keeps the POD-fallback `AUSYD→SYD`.)
 
-**Not yet built:** real `listener-engine.ps1`, `baseline-refresh.ps1`, `admin-ops.html`, real auth (runs open/demo
-mode), and `pic_user`↔app-user mapping.
+**Not yet built:** real `listener-engine.ps1` (scheduled), `baseline-refresh.ps1` (3-yr lane averages that back the
+`baseline` alert timing — until it exists, `baseline` milestones fall back to fixed/none), and `pic_user`↔app-user
+mapping. (**Built since last summary:** `admin-ops.html` + real auth + milestone-admin + restart bats.)
 
 **Feed reconciliation (Phase 5) — mechanism in place, needs live data.** `/api-ops/inbound` already suppresses a feed
 row whose **origin HBL** matches a local import job (`shipment_alerts.house_bill`, bound=Import) — so received shipments
@@ -190,6 +204,10 @@ foreach ($code in $stations.Keys) {
 # Importer view: set "stationCode" in config to the destination station; the 📥 Inbound panel (Import bound)
 # shows rows where dest_station=stationCode. Locally the POD rule AUSYD->SYD routes BKK bookings to "SYD".
 # Schedule it all: .\register-ops-tasks.ps1   (publish per station, staggered; weekly map refresh)
+
+# --- RESTART the web service after a code/config change (stop-then-start, port-scoped) ---
+# Double-click restart-ops-network.bat (8079, ops.config.network.json) or restart-ops-local.bat (8078, ops.config.json).
+# Switching machines/DBs: copy a config to ops.config.<env>.json and point a bat (or -ConfigPath) at it; env DB_* override too.
 ```
 
 ## Constraints (do not violate)
@@ -202,6 +220,9 @@ foreach ($code in $stations.Keys) {
   `ops-lists/`, `*.log`); verify with `git status` before any commit. Only `*.example.json` is tracked.
 - PS 5.1 traps: coerce `$null`→`[DBNull]::Value` for SQL params; serialize JSON-store records individually (never
   hand `ConvertTo-Json` a whole array). Client coerces 0/1-row arrays via `arr()`; responses are `no-store`.
+- **Read config/JSON with `[IO.File]::ReadAllText`, not `Get-Content -Raw`** — PS 5.1 decodes a BOM-less UTF-8 file
+  as ANSI, so `—`/`·` arrive as mojibake (`â€”`/`Â·`). Keep `.ps1` source **ASCII-only**: a non-ASCII byte in a
+  BOM-less script can terminate a string and cause a runtime parse error. New HTML pages need `<meta charset="utf-8">`.
 - **Dates are ISO `yyyy-mm-dd` everywhere** (e.g. `2023-12-31`) — never the locale `mm/dd/yyyy`, and **no native
   `<input type="date">`** (locale format + unwanted calendar popup). Use a `text` input with `placeholder="yyyy-mm-dd"`
   + a `^\d{4}-\d{2}-\d{2}$` guard; SQL `CONVERT(...,23)`; PowerShell `.ToString('yyyy-MM-dd')`.
