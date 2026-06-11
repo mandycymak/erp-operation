@@ -10,7 +10,38 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-11 — RESUME HERE).** Worked against the **pgs** ERP group, not the fibsbkk/fm3k envs in
+**Latest session (2026-06-11b — demoerp connected + Sea worklist fixed — RESUME HERE).** Brought up the **demoerp**
+environment end-to-end and fixed the all-Red Sea worklist. Commits on `main`: **`90bc63b`** (Sea fix) + **`734b7f1`**
+(gitignore `.claude/`).
+
+- **demoerp connected (two-server).** Auto-discovered `192.168.5.2`: the SQL login **`dashboard`** can read **only the
+  fm3k group** (15 DBs); every `pgs*` DB is **denied**. So **demoerp = the fm3k group** (12 stations + `fm3kco` master)
+  — the same group as the old "Network" env. The login **can't `CREATE DATABASE`** there → **two-server mode**: read
+  fm3k* remotely, write the ops DB **`demoerp`** locally on **`localhost\SQLEXPRESS`** (SQL Server 2025). Rewrote the
+  gitignored **`ops.config.demoerp.json`** with the real DBs (station codes/names taken from `fm3kco.site`), ran
+  `setup-ops.ps1`, seeded milestone config + all 12 stations (Sea+Air). Login as `mandy` (admin), worklist serves on **:8079**.
+- **VPN route fix (Surfshark coexistence).** The Swivel tunnel now pushes `192.168.0.0/21`, but Surfshark plants a
+  competing `/21` (metric 1) that black-holes `192.168.5.2`. Fix **without** disconnecting Surfshark: add a
+  more-specific route — `New-NetRoute -DestinationPrefix '192.168.5.0/24' -InterfaceIndex 5 -NextHop 10.8.1.13 -RouteMetric 1`
+  (elevated; longest-prefix-match wins). Captured as a **local skill** `.claude/skills/swivel-vpn/` (gitignored; a
+  `-Check`/`-Fix` helper). The Swivel client is **OpenVPN Connect**; use the `VPNConfig_2026_splittunnel.ovpn` profile.
+- **Sea worklist all-Red -> realistic (committed `90bc63b`).** SQL reconciliation found two causes: (1) **bound-mapping
+  bug** — Export milestones keyed off the dead `_1` leg; `onboard1` is 0% populated while `onboard2` is 95%; and (2)
+  **sparse operational fields** (`ts_blno`/`edidate`/`atd_date` ~0%) left pre-departure milestones perpetually overdue.
+  Fix in `ops-eval.ps1` (+ `seed-milestone-config.ps1`, `seed-alerts.ps1`): a bound-aware **`onboard`** field
+  (Export->`onboard2`, Import->`onboard1`) **plus a departed/arrived supersede** — pending booking/etd milestones close
+  once the leg has sailed, eta milestones once arrived; `atd`/`delivery` stay open (the cash-leak items the tool exists
+  to surface), marked `done_by='superseded'`. Plus an **ETA date-sanity guard** (null any arrival <= departure). Result:
+  Sea **366R/0G -> 344G/22R**, **0** impossible ETD>=ETA rows; pilot `SEHKG260600003` reconciled (M1b via `data:onboard`,
+  M6/M7/M9 superseded). The 22 reds are legitimate overdue invoice/delivery on old shipments.
+
+**Open items for next chat:** (a) **`job_no` collapse** — the seed *processes* 120 shipments/station but stores ~30
+distinct rows: many raw `blhead` rows have a **blank `jobn`** so they upsert onto the same key. Investigate the job_no
+derivation so all ~120 surface as distinct cards. (b) `eval-shipment.ps1` (standalone diagnostic) still duplicates the
+old `onboard1` logic — optional consistency follow-up. (c) demoerp ops DB lives on **this PC's** `localhost\SQLEXPRESS`;
+for office use, point `opsServer` at an office-reachable instance and re-run `setup-ops.ps1` + seeders there.
+
+**Prior session (2026-06-11a, pgs env).** Worked against the **pgs** ERP group, not the fibsbkk/fm3k envs in
 the table below — the working-tree `ops.config.json` points at **`18.136.126.101,1438`** (SQL login `swivel`), opsDb
 **`pgsops`**, 23 `pgs*` stations. Data is a **frozen snapshot**: `shipment_alerts.sort_key` spans **2020-11-18 →
 2023-05-12**, all 2,181 rows **Sea** (1,752 Export / 429 Import); **zero Air rows** (Air ingest still broken —
@@ -100,6 +131,7 @@ to the source. Used so the network ERP (read-only login) is read remotely while 
 |---|---|---|---|---|---|
 | **Local** | `fibsbkk` on `localhost\SQLEXPRESS` (Win auth) | **frozen 2021** snapshot; as-of `2021-11-27` | `pgsops` (local) | 8078 | Only `fibsbkk` has the real 381-col schema; `fibsdemo_*` are stripped. Sea/BKK. Milestone fields empty → all-Red. |
 | **Network** | `fm3k*` on `192.168.5.2` (SQL login `dashboard`, read-only) | **LIVE to today**; as-of = today | `pgsops_net` (local, two-server) | 8079 | **12 stations seeded** (YVR SHA HAM HKG JKT NRT JNB SIN BKK TPE LAX SGN), 618 rows. 414–420-col schemas vary by office → `Filter-Cols`. Login can't `CREATE DATABASE` → two-server mode. |
+| **demoerp** (current) | `fm3k*` on `192.168.5.2` (SQL login `dashboard`, read-only) | **LIVE to today** | `demoerp` (local `localhost\SQLEXPRESS`, two-server) | 8079 | Same fm3k group as Network, own ops DB. Config `ops.config.demoerp.json`; reach `192.168.5.2` over Swivel VPN — see the `swivel-vpn` skill for the Surfshark route fix. Sea fix (`90bc63b`) applied + all 12 stations seeded → Sea 344G/22R. |
 
 **Stations & access.** Group offices are same-ERP databases `fm3k<code>` on `192.168.5.2`. Seeded: 12 (above).
 **Excluded:** `fm3kco` is the master DB (no `blhead`). **Blocked — need a DBA grant:** the `dashboard` login is
