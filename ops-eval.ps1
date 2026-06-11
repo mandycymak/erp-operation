@@ -10,16 +10,19 @@
 function New-ShipContext($b){
   function D($x){ if($null -eq $x -or "$x" -eq ''){$null}else{[datetime]$x} }
   $routing = "$($b.routing)"
+  $bnd = switch("$($b.bound)"){ 'O'{'Export'} 'I'{'Import'} default {'Other'} }
+  $ob1=(D $b.onboard1); $ob2=(D $b.onboard2)   # Export rides leg-2 (onboard2); Import leg-1 (onboard1)
   @{
     mode='Sea'
-    bound = switch("$($b.bound)"){ 'O'{'Export'} 'I'{'Import'} default {'Other'} }
+    bound = $bnd
     cargo_type = switch -regex ("$($b.frttype)"){ 'CY|FCL'{'FCL'} 'CFS|LCL'{'LCL'} default {$null} }
     incoterm = $routing.Substring(0,[Math]::Min(8,$routing.Length)).Trim()
     jobn=$b.jobn; blno=$b.blno; picuser=("$($b.picuser)").Trim(); crtuser=("$($b.crtuser)").Trim()
     upduser=("$($b.upduser)").Trim(); status=$b.status
     declaration= if($b.declaration -eq $true){'1'}else{'0'}
     pol=$b.pol; pod=$b.pod; carr=$b.carr; salesman=("$($b.salesman)").Trim()
-    onboard1=(D $b.onboard1); cargoready=(D $b.cargoready); cargorece=(D $b.cargorece)
+    onboard1=$ob1; onboard2=$ob2; onboard=$(if($bnd -eq 'Import'){$ob1}else{$ob2})
+    cargoready=(D $b.cargoready); cargorece=(D $b.cargorece)
     customs_clearance=(D $b.customs_clearance); ts_blno=$b.ts_blno; ams_hbl=$b.ams_hbl; edidate=(D $b.edidate)
     atd_date=(D $b.atd_date); eta_delivery=(D $b.eta_delivery); goods_delivery=(D $b.goods_delivery)
     comp_date=(D $b.comp_date); ata_date=(D $b.ata_date); not1_date=(D $b.not1_date); release_date=(D $b.release_date)
@@ -118,6 +121,15 @@ function _Light($S,$due){
 function Eval-Milestones($S,$defs,$manual){
   if(-not $manual){ $manual=@{} }
   $items=@(); $amber=0; $red=0; $auto=0; $man=0; $nextDue=$null
+  # Leg-passed flags (bound/mode-aware): once the origin leg has DEPARTED (or destination ARRIVED), the
+  # pre-departure / pre-arrival operational milestones are moot for a "what to do today" board. We supersede
+  # them rather than leave them Red on sparse data. Keys off the reliable departure/arrival dates (not ETA).
+  $isImp = ("$($S.bound)" -eq 'Import')
+  $depDate = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.atd_date } elseif($isImp){ $S.ship.departure1 } else { $S.ship.departure2 }
+  $arrDate = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.ata_date } elseif($isImp){ $S.ship.arrival1 }   else { $S.ship.arrival2 }
+  $onb     = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.atd_date } else { $S.ship.onboard }
+  $departed = ($onb -is [datetime]) -or ($depDate -is [datetime] -and $depDate -le $S.asof)
+  $arrived  = ($S.ship.ata_date -is [datetime]) -or ($arrDate -is [datetime] -and $arrDate -le $S.asof)
   foreach($d in @($defs | Where-Object { $_.bound -eq $S.bound -and ("$($_.mode)" -eq "$($S.ship.mode)" -or "$($_.mode)" -eq 'Both' -or "$($_.mode)" -eq '') } | Sort-Object seq)){
     $code=$d.milestone_code
     $row=[ordered]@{ code=$code; name=$d.name; seq=[int]$d.seq; phase_anchor=$d.phase_anchor; tracked=$true; state='pending'; light='G'; done_by=''; done_at=''; due=''; basis='' }
@@ -136,6 +148,12 @@ function Eval-Milestones($S,$defs,$manual){
     if($ev.matched){
       $row.state='done'; $row.done_by='auto'; $row.light='G'; $row.basis="evidence:$($ev.via)"
       if($ev.date){ $row.done_at=([datetime]$ev.date).ToString('o') }; $auto++; $items+=[pscustomobject]$row; continue
+    }
+    # pending, but its phase already passed (ship departed / arrived) -> superseded, not actionable today
+    $sup = switch("$($d.phase_anchor)"){ 'booking'{$departed} 'etd'{$departed} 'eta'{$arrived} default {$false} }
+    if($sup){
+      $row.state='done'; $row.done_by='superseded'; $row.light='G'; $row.basis='superseded: leg passed'
+      $auto++; $items+=[pscustomobject]$row; continue
     }
     # pending -> planned light
     $due=_PlannedDue $S $d; $lt=_Light $S $due

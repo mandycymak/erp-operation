@@ -59,14 +59,14 @@ function Def($code,$bound,$name,$seq,$anchor,$qual,$comp,$slatype,$offval,$offun
 $defs = @(
  # ---- EXPORT (rules over real blhead columns; evidence OR-ed in by evaluator) ----
  (Def 'M1'  'Export' 'Booking Confirmation'         1 'booking'  (Always)                          (Rule 'OR' @((CNN 'blno'),(CNN 'picuser'),(CEV)))                          'baseline' $null $null $null $null)
- (Def 'M1b' 'Export' 'Space Confirmed'              2 'booking'  (Always)                          (Rule 'OR' @((CNN 'onboard1'),(CEV)))                                      'baseline' $null $null $null $null)
+ (Def 'M1b' 'Export' 'Space Confirmed'              2 'booking'  (Always)                          (Rule 'OR' @((CNN 'onboard'),(CEV)))                                       'baseline' $null $null $null $null)
  (Def 'M2'  'Export' 'Empty Container Release'      3 'etd'      (Rule 'AND' @((CMODE 'Sea'),(CEQ 'cargo_type' 'FCL')))  (Rule 'OR' @((CNN 'cargoready'),(CEV)))               'baseline' $null $null $null $null)
  (Def 'M3'  'Export' 'Origin Pickup'               4 'etd'      (Rule 'OR' @((CIN 'incoterm' @('EXW','FCA')),(CNN 'cargorece')))  (Rule 'OR' @((CNN 'cargorece'),(CEV)))       'baseline' $null $null $null $null)
  (Def 'M4'  'Export' 'Warehouse Receiving'         5 'etd'      (Rule 'OR' @((CEQ 'cargo_type' 'LCL')))  (Rule 'AND' @((CNN 'cargoready'),(CNN 'cargorece')))                  'baseline' $null $null $null $null)
  (Def 'M5'  'Export' 'Customs Clearance'           6 'etd'      (Rule 'AND' @((CEQ 'declaration' '1')))  (Rule 'OR' @((CNN 'customs_clearance'),(CEV)))                        'baseline' $null $null $null $null)
  (Def 'M6'  'Export' 'Shipping Instructions (SI)'  7 'etd'      (Rule 'AND' @((CMODE 'Sea')))     (Rule 'OR' @((CNN 'ts_blno'),(CEV)))                                       'baseline' $null $null $null $null)
  (Def 'M7'  'Export' 'Manifest Printing'           8 'etd'      (Always)                          (Rule 'OR' @((CEV)))                                                       'baseline' $null $null $null $null)
- (Def 'M8a' 'Export' 'Customs Manifest (AMS/ENS)'  9 'etd'      (Rule 'AND' @((CMODE 'Sea')))     (Rule 'OR' @((CNN 'ams_hbl'),(CNN 'edidate'),(CEV)))                       'fixed' 3 'day' 'before' 'onboard1')
+ (Def 'M8a' 'Export' 'Customs Manifest (AMS/ENS)'  9 'etd'      (Rule 'AND' @((CMODE 'Sea')))     (Rule 'OR' @((CNN 'ams_hbl'),(CNN 'edidate'),(CEV)))                       'fixed' 3 'day' 'before' 'onboard')
  (Def 'M9'  'Export' 'Agent EDI'                  10 'etd'      (Always)                          (Rule 'OR' @((CNN 'edidate'),(CEV)))                                       'baseline' $null $null $null $null)
  (Def 'M9b' 'Export' 'Departure (ATD)'            11 'atd'      (Always)                          (Rule 'OR' @((CNN 'atd_date')))                                            'baseline' $null $null $null $null)
  (Def 'M10' 'Export' 'Post-Dept. Invoicing'       12 'atd'      (Always)                          (Rule 'OR' @((CEV)))                                                       'fixed' 3 'day' 'after' 'atd_date')

@@ -76,7 +76,7 @@ if($Mode -eq 'Air'){
   $cols=Wrap-Ntext $cols @('remark','special_remark')
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type IN('H','S') AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 } else {
-  $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,vessel_2,voyage_2,onboard1,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure1,departure2,arrival1,arrival1d,arrival2,arrival2d,arrival3,deli,dest,pol_name,pod_name,deli_name,dest_name,available_date,spotid,sono,t_book_qty,t_book_wgt,t_book_cbm,t_rece_qty,t_rece_wgt,t_rece_cbm,remark,crtdate"
+  $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,vessel_2,voyage_2,onboard1,onboard2,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure1,departure2,arrival1,arrival1d,arrival2,arrival2d,arrival3,deli,dest,pol_name,pod_name,deli_name,dest_name,available_date,spotid,sono,t_book_qty,t_book_wgt,t_book_cbm,t_rece_qty,t_rece_wgt,t_rece_cbm,remark,crtdate"
   $cols=Filter-Cols $Station 'blhead' $cols
   $cols=Wrap-Ntext $cols @('remark')
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='H' AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
@@ -245,6 +245,9 @@ foreach($b in $ships){
     # (departure1 -> arrival1). eta_delivery is the separate "expected delivery" date, kept below.
     if($ship.bound -eq 'Import'){ $etdV=$ship.departure1; $etaV=$ship.arrival1 }
     else                        { $etdV=$ship.departure2; $etaV=$ship.arrival2 }
+    # ETA sanity: source arrival can be null or a placeholder equal to / before departure (zero/negative
+    # transit). Treat a non-credible arrival as UNKNOWN so the worklist never shows departure-after-arrival.
+    if($etaV -isnot [datetime] -or ($etdV -is [datetime] -and $etaV -le $etdV)){ $etaV=$null }
     $atdV=$ship.atd_date; $ataV=$ship.ata_date
     $dep=$etdV; $eta=$etaV; $assigned=($vsl -ne '' -or $voy -ne '')
     $houseBill=("$($b.blno)").Trim(); $masterBill=("$($b.mobl)").Trim(); $incoterm=$ship.incoterm
