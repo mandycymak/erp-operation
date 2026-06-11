@@ -10,7 +10,47 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest (resume here):** **admin page now manages milestones, not just users.** `admin-ops.html` is split into
+**Latest session (2026-06-11 — RESUME HERE).** Worked against the **pgs** ERP group, not the fibsbkk/fm3k envs in
+the table below — the working-tree `ops.config.json` points at **`18.136.126.101,1438`** (SQL login `swivel`), opsDb
+**`pgsops`**, 23 `pgs*` stations. Data is a **frozen snapshot**: `shipment_alerts.sort_key` spans **2020-11-18 →
+2023-05-12**, all 2,181 rows **Sea** (1,752 Export / 429 Import); **zero Air rows** (Air ingest still broken —
+`awbhead` missing `comp_date`). Done this session:
+
+- **Auth bootstrapped.** Created gitignored `users.json` with the first admin **`mandy`** (password stored only in the gitignored `users.json`; role admin,
+  `admin:true`, empty stations/access = unrestricted). App is now in **real-auth mode** (login page on, sessions).
+  Passwords are `SHA256("salt:password")`; new users get hashed automatically via `admin-ops.html`.
+- **Fixed worklist 500 (schema drift).** The pulled `serve-ops.ps1` worklist SELECT referenced 6 columns missing from
+  the live `pgsops.shipment_alerts` (`commodity, sono, route_summary, available_date, eta_delivery, goods_delivery`).
+  Fix: re-ran idempotent **`setup-ops.ps1`** to ALTER-add them. ⚠ These 6 (+`route_json, detail_json, erp_ref`) are
+  **NULL on the existing 2,181 rows** — re-run `seed-alerts.ps1 -Mode Sea` to populate route/commodity detail on cards.
+- **Admin no longer gated by erpUser** (`serve-ops.ps1` `Handle-Worklist`): an **admin** role sees every shipment on the
+  `mine` lens without owning the ERP `pic_user` — condition is `lens='all' OR (lens!='user' AND Cur-Tier='admin')`.
+  The teammate (`user`) lens still narrows to the chosen person; operators unchanged.
+- **As-of testing clock** (config-driven, live-safe). New `ops.config.json` key **`asOfDate`** (yyyy-mm-dd). When set,
+  the app treats it as "today" for **all operational date logic** (worklist date window, inbound recency, task overdue);
+  empty/absent = real today (program logic identical). Server: `$AsOfDate` + `Today-Str`/`Today-Date`, used at the tasks
+  `today`, inbound recency, and exposed as `today` in `/api-ops/me`. Client: `currentWeek()` uses `ME.today` instead of
+  the browser clock. **Set to `2023-04-15`** so the 2023 snapshot behaves like a live day. *(Verified: `/me today`=2023-04-15;
+  worklist `mine`==`all`==2181; default week 04-10..04-16 → 342 Sea rows; a 2026 window → 0.)* Files syntax-clean
+  (`PSParser` + `node --check`); server running on **8078**.
+- **demoerp env scaffolded but NOT usable yet.** New gitignored **`ops.config.demoerp.json`** (server `192.168.5.2`,
+  SQL login `dashboard` / `SwivelDash-8704`, port **8079**) + **`restart-ops-demoerp.bat`**. Blocked: `192.168.5.2` is
+  **unreachable** from this PC (different subnet, not via the Swivel split-tunnel — needs LAN/VPN to `192.168.5.x`). Its
+  `opsDb`/`masterDb`/`stations[]` are **placeholders copied from pgs** — auto-discover the real DB list once reachable,
+  then run `setup-ops.ps1` against it.
+- **VPN/network gotchas (cost real time — record for next time).** The SQL host is reached only over the **Swivel
+  OpenVPN** split-tunnel (routes just `18.136.126.101/32`). **Surfshark conflicts two ways:** (1) its running OpenVPN
+  tunnel makes OpenVPN Connect throw the *phantom* `PRE_CONNECT_CHECK_FAILURE: VPN Connection is being utilised by
+  another Windows user` (only one Windows user is actually logged in) — fix: **disconnect Surfshark in its app** (killing
+  the service just auto-respawns); (2) Surfshark plants a Wi-Fi `/32` route to the SQL host (metric 55) that **beats** the
+  tunnel route (257) and black-holes traffic — fix: `Remove-NetRoute -DestinationPrefix '18.136.126.101/32' -InterfaceIndex 8`.
+
+**Open items for the new chat:** (a) re-seed Sea to fill the 6 NULL columns; (b) Air ingest still produces 0 rows;
+(c) demoerp needs network access + DB-layout discovery; (d) temp VPN-fix scripts/logs left in `C:\Users\mandy\`
+(`vpn-*.ps1`/`.log`) — deletable. Nothing committed this session (changes in tracked `serve-ops.ps1`, `ops.js`;
+`ops.config.json`/`users.json`/`ops.config.demoerp.json` gitignored).
+
+**Prior (admin page):** **admin page now manages milestones, not just users.** `admin-ops.html` is split into
 two tabs — **Users** (with a live search box over login/name/email/station/team/ERP-name, for ~500-user scale) and
 **Milestones & alerts** (CRUD over `milestone_def`: name, mode/bound/seq/phase, active, and the **alert timing** —
 `baseline` / `fixed` offset / `none` — that drives every operator's Green/Amber/Red). Backed by admin-gated

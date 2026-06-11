@@ -141,7 +141,7 @@ function applyAccessGating() {
 }
 // ---------- filters (date window + company + POL/POD) ----------
 function fmtDate(x) { const m = String(x.getMonth() + 1).padStart(2, '0'); const d = String(x.getDate()).padStart(2, '0'); return x.getFullYear() + '-' + m + '-' + d; }
-function currentWeek() { const d = new Date(); const dow = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - dow); const sun = new Date(mon); sun.setDate(mon.getDate() + 6); return { from: fmtDate(mon), to: fmtDate(sun) }; }
+function currentWeek() { const d = (ME && ME.today) ? new Date(ME.today + 'T00:00:00') : new Date(); const dow = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - dow); const sun = new Date(mon); sun.setDate(mon.getDate() + 6); return { from: fmtDate(mon), to: fmtDate(sun) }; }
 function wireFilters() {
   const wk = currentWeek(); state.from = wk.from; state.to = wk.to;
   const ff = $('#fFrom'), ft = $('#fTo'); ff.value = state.from; ft.value = state.to;

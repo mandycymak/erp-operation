@@ -27,6 +27,12 @@ $AppName= if($cfg.appName){$cfg.appName}else{"Control Tower"}
 $AppSubtitle= if($cfg.appSubtitle){$cfg.appSubtitle}else{""}
 $InstanceName= if($cfg.instanceName){$cfg.instanceName}else{""}
 $StationCode= if($cfg.stationCode){"$($cfg.stationCode)".Trim()}else{""}   # which station this instance serves (inbound feed)
+# Testing clock: when ops.config.json sets asOfDate (yyyy-mm-dd), the app treats THAT as "today" for all
+# operational date logic (worklist date window, inbound recency, task overdue) so a frozen historical snapshot
+# behaves like a live day. Empty/absent = LIVE (real today) — program logic is identical either way.
+$AsOfDate= if($cfg.asOfDate -and "$($cfg.asOfDate)".Trim() -match '^\d{4}-\d{2}-\d{2}$'){ "$($cfg.asOfDate)".Trim() }else{ '' }
+function Today-Str  { if($AsOfDate){ $AsOfDate } else { (Get-Date).ToString('yyyy-MM-dd') } }
+function Today-Date { if($AsOfDate){ [datetime]::ParseExact($AsOfDate,'yyyy-MM-dd',$null) } else { (Get-Date).Date } }
 # System identities written by other systems into ERP pic_user (not people): their shipments broadcast to
 # EVERYONE's "My work" until a real user takes over (pic_user or last_updated_by becomes a real user).
 $SysUsers   =@(@($cfg.systemUsers)        | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
@@ -83,9 +89,9 @@ function Handle-OpsLogin($ctx){
   Send-Json $ctx @{ username=$u.username; displayName=$dn; role="$($u.role)"; admin=[bool]$u.admin }
 }
 function Me-PayloadOps($sess){
-  if(-not $script:AuthOn){ return @{ user=$sess.username; username=$sess.username; authOn=$false } }
+  if(-not $script:AuthOn){ return @{ user=$sess.username; username=$sess.username; authOn=$false; today=(Today-Str) } }
   $u=Get-OpsUser $sess.username
-  @{ user=$sess.username; username=$sess.username; authOn=$true
+  @{ user=$sess.username; username=$sess.username; authOn=$true; today=(Today-Str)
      displayName="$($sess.displayName)"; role="$($sess.role)"; admin=[bool]$sess.admin
      teams=@(@($u.teams)|Where-Object{ "$_".Trim() }); stations=@(@($u.stations)|Where-Object{ "$_".Trim() })
      primaryStation="$($u.primaryStation)".Trim(); access=@(@($u.access)|Where-Object{ "$_".Trim() })
@@ -213,7 +219,7 @@ function Handle-MyTasks($cn,$me){
   $byDue={ @{Expression={ "$($_.remindOn)" -eq '' }}, @{Expression={ "$($_.remindOn)" }}, @{Expression={ "$($_.created)" };Descending=$true} }
   $assignedT=@($assigned|ForEach-Object{ Task-Proj $_ $info }|Sort-Object (& $byDue))
   $mineT=@($mine|ForEach-Object{ Task-Proj $_ $info }|Sort-Object (& $byDue))
-  $today=(Get-Date).ToString('yyyy-MM-dd')
+  $today=Today-Str
   $dueNow=@($mineT|Where-Object{ $_.remindOn -and "$($_.remindOn)" -le $today }).Count
   @{ assigned=$assignedT; mine=$mineT; assignedOpen=@($assignedT).Count; dueNow=$dueNow; today=$today }
 }
@@ -364,7 +370,7 @@ function Handle-Inbound($cn,$qs){
   # default recency window: hide stale/departed clutter — keep upcoming departures (ETD today+) and recently-booked
   # new bookings (last 90d). showAll=1 reveals everything. (Operators think in weeks; this defaults to ~13 weeks.)
   if(-not $qs['showAll']){
-    $today=(Get-Date).ToString('yyyy-MM-dd'); $cut90=(Get-Date).AddDays(-90).ToString('yyyy-MM-dd')
+    $today=(Today-Date).ToString('yyyy-MM-dd'); $cut90=(Today-Date).AddDays(-90).ToString('yyyy-MM-dd')
     $w+=" AND ( (f.etd IS NOT NULL AND f.etd>=@today) OR (f.etd IS NULL AND (f.booking_date IS NULL OR f.booking_date>=@cut90)) ) "
     $p['today']=$today; $p['cut90']=$cut90
   }
@@ -412,7 +418,9 @@ function Handle-Worklist($cn,$qs,$me){
     if(-not $tu -or -not $shared.Count){ return @{ lens=$lens; who=$who; rows=@(); error='not a teammate' } }
   }
   $p=@{}; $w=" WHERE job_status='active' "
-  if($lens -eq 'all'){ }
+  # admin oversight: an admin sees every shipment without owning the ERP pic_user (no erpUser match needed).
+  # 'all' lens is unfiltered for everyone; the teammate ('user') lens still narrows to the chosen person.
+  if($lens -eq 'all' -or ($lens -ne 'user' -and (Cur-Tier) -eq 'admin')){ }
   else {
     # match the user's WHOLE ERP-alias list (login name != ERP pic_user; see Erp-Aliases)
     $als=@(Erp-Aliases $who)
