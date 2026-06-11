@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin — Control Tower</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .admwrap{max-width:1100px;margin:0 auto;padding:14px}
+  table.usr{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:10px}
+  table.usr th{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  table.usr td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.usr tr:hover td{background:var(--panel2)}
+  .tag{display:inline-block;border:1px solid var(--line);border-radius:20px;padding:0 7px;font-size:10.5px;color:var(--mut);margin:1px 2px 1px 0;white-space:nowrap}
+  .tag.acc{color:var(--accent);border-color:var(--accent)}
+  .tag.erp{color:var(--a);border-color:var(--a)}
+  .editor{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:14px}
+  .editor h3{margin:0 0 10px;font-size:14px}
+  .frow{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .fcol{display:flex;flex-direction:column;gap:3px}
+  .fcol label{font-size:11px;color:var(--mut)}
+  .fcol input,.fcol select{font-size:12.5px;padding:6px 8px}
+  .grp{border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:200px}
+  .grp .gh{font-size:11px;color:var(--mut);margin-bottom:5px}
+  .grp label.ck{display:flex;align-items:center;gap:6px;font-size:12.5px;padding:2px 0;cursor:pointer}
+  .grp .prim{margin-left:auto;display:flex;align-items:center;gap:3px;font-size:10.5px;color:var(--mut)}
+  .tagsin{display:flex;flex-wrap:wrap;gap:4px;align-items:center;border:1px solid var(--line);border-radius:8px;background:var(--panel2);padding:4px 6px;min-width:240px}
+  .tagsin input{border:0;background:transparent;padding:3px;min-width:90px;flex:1}
+  .tagsin .pchip .x{cursor:pointer}
+  .hint{font-size:11px;color:var(--mut)}
+  .warn{color:var(--a);font-size:11.5px}
+  .errline{color:var(--r);font-size:12.5px;min-height:16px;margin-top:8px}
+  .okline{color:var(--g);font-size:12.5px}
+  .bar{display:flex;gap:8px;margin-top:10px;align-items:center}
+  .rowact button{font-size:11px;padding:2px 8px}
+  .tabbar{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-top:10px}
+  .tabbtn{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--mut);padding:8px 16px;font-size:13.5px;cursor:pointer}
+  .tabbtn:hover{color:var(--ink)}
+  .tabbtn.on{color:var(--ink);border-bottom-color:var(--accent)}
+  .toolbar{display:flex;align-items:center;gap:12px;margin:12px 0 2px;flex-wrap:wrap}
+  .toolbar input{font-size:13px;padding:7px 10px;min-width:300px}
+  .toolbar .count{font-size:12px;color:var(--mut)}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="appName">Control Tower — Admin</h1>
+  <span class="spacer"></span>
+  <span class="muted" id="whoami" style="font-size:12px"></span>
+  <a href="index.html" class="ghost" style="text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-size:12px;color:var(--ink)">← Worklist</a>
+  <button class="ghost" id="logoutBtn" style="font-size:12px">Sign out</button>
+</header>
+<div class="admwrap">
+  <div class="tabbar">
+    <button class="tabbtn on" data-tab="users">Users</button>
+    <button class="tabbtn" data-tab="milestones">Milestones &amp; alerts</button>
+  </div>
+
+  <section id="tab-users" class="tabpane">
+  <div class="muted" style="font-size:12px;margin-top:8px">
+    Credentials for the Control Tower. <b>ERP usernames</b> are the pic/created-by names a person owns in the ERP
+    (often different from the login — e.g. login <i>mandy</i> owns <i>leo</i>, <i>corp</i>); "My work" matches the whole list.
+    Empty stations / access = unrestricted. Changes apply immediately — no restart.
+  </div>
+  <div class="toolbar">
+    <input id="usrSearch" type="search" autocomplete="off" placeholder="🔍 Find a user — login, name, email, station, team, ERP name…">
+    <span class="count" id="usrCount"></span>
+    <button class="ghost" id="addUserBtn" style="font-size:12px;margin-left:auto">+ Add user</button>
+  </div>
+  <table class="usr" id="usrTable">
+    <thead><tr>
+      <th>Login</th><th>Display name</th><th>Email</th><th>Role</th><th>Teams</th>
+      <th>ERP usernames</th><th>Stations (primary bold)</th><th>Access</th><th></th>
+    </tr></thead>
+    <tbody id="usrBody"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+  </table>
+
+  <div class="editor" id="editor">
+    <h3 id="edTitle">Add user</h3>
+    <div class="frow">
+      <div class="fcol"><label>Login name</label><input id="fUser" autocomplete="off" placeholder="e.g. mandy"></div>
+      <div class="fcol"><label>Display name</label><input id="fDisp" autocomplete="off" placeholder="optional"></div>
+      <div class="fcol"><label>Email</label><input id="fEmail" autocomplete="off" placeholder="optional, unique"></div>
+      <div class="fcol"><label>Password</label><input id="fPwd" type="password" autocomplete="new-password" placeholder="required for new user"></div>
+      <div class="fcol"><label>Role</label>
+        <select id="fRole"><option value="operator">operator</option><option value="manager">manager</option><option value="admin">admin</option></select>
+      </div>
+      <div class="fcol"><label>Admin page access</label><label class="ck" style="margin-top:6px"><input type="checkbox" id="fAdmin"> may manage users</label></div>
+    </div>
+    <div class="frow">
+      <div class="grp" id="gStations"><div class="gh">Stations (tick = works there; ◉ = primary)</div></div>
+      <div class="grp"><div class="gh">Access — mode·bound pairs <span class="hint">(none ticked = all)</span></div>
+        <label class="ck"><input type="checkbox" class="acc" value="Air-Export"> ✈ Air Export</label>
+        <label class="ck"><input type="checkbox" class="acc" value="Air-Import"> ✈ Air Import</label>
+        <label class="ck"><input type="checkbox" class="acc" value="Sea-Export"> 🚢 Sea Export</label>
+        <label class="ck"><input type="checkbox" class="acc" value="Sea-Import"> 🚢 Sea Import</label>
+      </div>
+      <div class="fcol" style="flex:1;min-width:260px">
+        <label>Teams <span class="hint">(Enter/comma adds)</span></label>
+        <div class="tagsin" id="tTeams"><input placeholder="e.g. HK-Import"></div>
+        <label style="margin-top:8px">ERP usernames <span class="hint">(pic/created-by names this person owns; blank = same as login)</span></label>
+        <div class="tagsin" id="tErp"><input placeholder="e.g. leo, corp"></div>
+        <div class="warn" id="erpWarn"></div>
+      </div>
+    </div>
+    <div class="bar">
+      <button class="primary" id="saveBtn">Save user</button>
+      <button class="ghost" id="resetBtn">Clear form</button>
+      <span class="errline" id="edErr"></span>
+    </div>
+  </div>
+  </section>
+
+  <section id="tab-milestones" class="tabpane" style="display:none">
+  <div class="editor" id="msSection">
+    <h3>Milestones &amp; alerts</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">
+      These definitions drive the traffic lights (Green / Amber / Red) every operator sees on the worklist and
+      shipment drawer — the <b>Alert timing</b> decides when a pending milestone turns Amber/Red.
+      <b>baseline</b> = expected window from 3-yr lane history; <b>fixed</b> = a hard offset from an anchor
+      date field (e.g. 3 days before <i>onboard1</i>); <b>none</b> = no time alert (Green until missed outright).
+      Changes apply to each shipment at its <b>next evaluation run</b> (Air ~2 h, Sea 3×/day, or a manual
+      <code>seed-alerts.ps1</code> re-run) — already-painted lights update then, for all users.
+    </div>
+    <div class="frow">
+      <div class="fcol"><label>Mode</label>
+        <select id="msfMode"><option value="">All</option><option>Sea</option><option>Air</option></select></div>
+      <div class="fcol"><label>Bound</label>
+        <select id="msfBound"><option value="">All</option><option>Export</option><option>Import</option></select></div>
+    </div>
+    <table class="usr" id="msTable">
+      <thead><tr>
+        <th>Seq</th><th>Code</th><th>Name</th><th>Mode</th><th>Bound</th><th>Phase</th><th>Alert timing</th><th>Active</th><th></th>
+      </tr></thead>
+      <tbody id="msBody"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+    </table>
+
+    <div class="editor" style="margin-top:12px" id="msEditor">
+      <h3 id="msTitle">Add milestone</h3>
+      <div class="frow">
+        <div class="fcol"><label>Code</label><input id="mCode" autocomplete="off" placeholder="e.g. M5, A3" style="width:90px"></div>
+        <div class="fcol"><label>Bound</label><select id="mBound"><option>Export</option><option>Import</option></select></div>
+        <div class="fcol"><label>Mode</label><select id="mMode"><option>Sea</option><option>Air</option><option>Both</option></select></div>
+        <div class="fcol" style="flex:1;min-width:200px"><label>Name (shown to operators)</label><input id="mName" autocomplete="off" placeholder="e.g. Customs Clearance"></div>
+        <div class="fcol"><label>Seq</label><input id="mSeq" autocomplete="off" placeholder="1" style="width:60px"></div>
+        <div class="fcol"><label>Phase anchor</label>
+          <select id="mAnchor"><option>booking</option><option>etd</option><option>atd</option><option>eta</option><option>delivery</option></select></div>
+        <div class="fcol"><label>Active</label><label class="ck" style="margin-top:6px"><input type="checkbox" id="mActive" checked> evaluated</label></div>
+      </div>
+      <div class="frow">
+        <div class="fcol"><label>Alert timing</label>
+          <select id="mSlaType"><option value="baseline">baseline (lane history)</option><option value="fixed">fixed offset</option><option value="none">none</option></select></div>
+        <div class="fcol msfix"><label>Offset</label><input id="mOffVal" autocomplete="off" placeholder="3" style="width:60px"></div>
+        <div class="fcol msfix"><label>Unit</label><select id="mOffUnit"><option>day</option><option>hour</option></select></div>
+        <div class="fcol msfix"><label>Direction</label><select id="mDir"><option>before</option><option>after</option></select></div>
+        <div class="fcol msfix"><label>Anchor field</label><input id="mSlaAnchor" autocomplete="off" placeholder="e.g. atd_date, onboard1"></div>
+      </div>
+      <div class="frow">
+        <div class="fcol" style="flex:1;min-width:300px"><label>Qualify rule (JSON — when this milestone applies; blank = always)</label>
+          <textarea id="mQual" rows="2" spellcheck="false" style="font-family:monospace;font-size:11.5px"></textarea></div>
+        <div class="fcol" style="flex:1;min-width:300px"><label>Complete rule (JSON — what auto-closes it; blank = evidence only)</label>
+          <textarea id="mComp" rows="2" spellcheck="false" style="font-family:monospace;font-size:11.5px"></textarea></div>
+      </div>
+      <div class="hint">Rule JSON: <code>{"op":"AND|OR","conds":[{"kind":"field_notnull","field":"…"} | {"kind":"field_eq","field":"…","value":"…"} | {"kind":"field_in","field":"…","set":[…]} | {"kind":"evidence"} | {"kind":"mode_eq","value":"Sea"}]}</code> — leave unchanged unless you know the ERP columns.</div>
+      <div class="bar">
+        <button class="primary" id="msSaveBtn">Save milestone</button>
+        <button class="ghost" id="msResetBtn">Clear form</button>
+        <span class="errline" id="msErr"></span>
+      </div>
+    </div>
+  </div>
+  </section>
+</div>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => ('' + (s ?? '')).replace(/[&<>"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+const arr = v => Array.isArray(v) ? v : (v == null ? [] : [v]);
+let ME = null, USERS = [], STATIONS = [], editing = '';
+
+async function api(path, opts) {
+  opts = opts || {}; opts.cache = 'no-store';
+  if (opts.body && typeof opts.body !== 'string') { opts.body = JSON.stringify(opts.body); opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {}); }
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = 'login.html'; return new Promise(() => {}); }
+  return r.json();
+}
+
+// tags input: chips + free-text entry (Enter / comma); returns current values via .get()
+function tagsInput(rootSel, onChange) {
+  const root = $(rootSel), inp = root.querySelector('input');
+  let vals = [];
+  const draw = () => {
+    root.querySelectorAll('.pchip').forEach(c => c.remove());
+    vals.forEach(v => {
+      const ch = document.createElement('span'); ch.className = 'pchip'; ch.innerHTML = esc(v) + '<span class="x" title="remove">✕</span>';
+      ch.querySelector('.x').onclick = () => { vals = vals.filter(x => x !== v); draw(); if (onChange) onChange(); };
+      root.insertBefore(ch, inp);
+    });
+  };
+  const add = raw => { raw.split(',').forEach(t => { t = t.trim(); if (t && !vals.some(v => v.toLowerCase() === t.toLowerCase())) vals.push(t); }); inp.value = ''; draw(); if (onChange) onChange(); };
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(inp.value); }
+    else if (e.key === 'Backspace' && !inp.value && vals.length) { vals = vals.slice(0, -1); draw(); if (onChange) onChange(); }
+  });
+  inp.addEventListener('blur', () => { if (inp.value.trim()) add(inp.value); });
+  return { get: () => vals.slice(), set: v => { vals = arr(v).slice(); draw(); } };
+}
+let tTeams, tErp;
+
+function buildStations() {
+  const g = $('#gStations');
+  g.querySelectorAll('label.ck').forEach(l => l.remove());
+  STATIONS.forEach(s => {
+    const l = document.createElement('label'); l.className = 'ck';
+    l.innerHTML = '<input type="checkbox" class="stck" value="' + esc(s.code) + '"> ' + esc(s.code) + ' · ' + esc(s.name || s.code) +
+      '<span class="prim"><input type="radio" name="prim" value="' + esc(s.code) + '" disabled> primary</span>';
+    g.appendChild(l);
+    const ck = l.querySelector('.stck'), rd = l.querySelector('input[type=radio]');
+    ck.onchange = () => {
+      rd.disabled = !ck.checked;
+      if (!ck.checked && rd.checked) { rd.checked = false; const first = g.querySelector('.stck:checked'); if (first) g.querySelector('input[type=radio][value="' + first.value + '"]').checked = true; }
+      if (ck.checked && !g.querySelector('input[type=radio]:checked')) rd.checked = true;
+    };
+  });
+}
+function pickedStations() { return [...document.querySelectorAll('#gStations .stck:checked')].map(c => c.value); }
+function pickedPrimary() { const r = document.querySelector('#gStations input[type=radio]:checked'); return r ? r.value : ''; }
+function pickedAccess() { return [...document.querySelectorAll('.acc:checked')].map(c => c.value); }
+
+function warnDupErp() {
+  const mine = tErp.get().map(v => v.toLowerCase());
+  const clashes = [];
+  USERS.forEach(u => { if (u.username === editing) return;
+    arr(u.erpUsers).forEach(a => { if (mine.includes(('' + a).toLowerCase())) clashes.push(a + ' (→ ' + u.username + ')'); }); });
+  $('#erpWarn').textContent = clashes.length ? '⚠ already claimed: ' + clashes.join(', ') + ' — both users will see those shipments' : '';
+}
+
+function fillForm(u) {
+  editing = u ? u.username : '';
+  $('#edTitle').textContent = u ? 'Edit user — ' + u.username : 'Add user';
+  $('#fUser').value = u ? u.username : ''; $('#fUser').disabled = !!u;
+  $('#fDisp').value = u ? (u.displayName || '') : '';
+  $('#fEmail').value = u ? (u.email || '') : '';
+  $('#fPwd').value = ''; $('#fPwd').placeholder = u ? 'leave blank to keep' : 'required for new user';
+  $('#fRole').value = u ? (u.role || 'operator') : 'operator';
+  $('#fAdmin').checked = u ? !!u.admin : false;
+  document.querySelectorAll('#gStations .stck').forEach(c => { c.checked = u ? arr(u.stations).includes(c.value) : false; c.dispatchEvent(new Event('change')); });
+  const prim = u ? (u.primaryStation || '') : '';
+  document.querySelectorAll('#gStations input[type=radio]').forEach(r => { r.checked = (r.value === prim) && !r.disabled; });
+  document.querySelectorAll('.acc').forEach(c => c.checked = u ? arr(u.access).includes(c.value) : false);
+  tTeams.set(u ? arr(u.teams) : []);
+  tErp.set(u ? arr(u.erpUsers) : []);
+  warnDupErp(); $('#edErr').textContent = '';
+}
+
+function userMatches(u, q) {
+  return [u.username, u.displayName, u.email, u.role, u.primaryStation]
+    .concat(arr(u.stations), arr(u.teams), arr(u.erpUsers))
+    .some(v => ('' + (v || '')).toLowerCase().includes(q));
+}
+function renderTable() {
+  const tb = $('#usrBody'); tb.innerHTML = '';
+  const q = ($('#usrSearch').value || '').trim().toLowerCase();
+  const rows = q ? USERS.filter(u => userMatches(u, q)) : USERS;
+  $('#usrCount').textContent = !USERS.length ? '' : (q ? rows.length + ' of ' + USERS.length + ' users' : USERS.length + ' user' + (USERS.length === 1 ? '' : 's'));
+  if (!USERS.length) { tb.innerHTML = '<tr><td colspan="9" class="muted">No users yet — add the first (admin) user below.</td></tr>'; return; }
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="9" class="muted">No users match “' + esc(q) + '”.</td></tr>'; return; }
+  rows.forEach(u => {
+    const tr = document.createElement('tr');
+    const sts = arr(u.stations).map(s => s === u.primaryStation ? '<b>' + esc(s) + '</b>' : esc(s)).join(' · ') || '<span class="muted">all</span>';
+    const acc = arr(u.access).map(a => '<span class="tag acc">' + esc(a) + '</span>').join('') || '<span class="muted">all</span>';
+    const tms = arr(u.teams).map(t => '<span class="tag">' + esc(t) + '</span>').join('') || '—';
+    const erp = arr(u.erpUsers).map(t => '<span class="tag erp">' + esc(t) + '</span>').join('') || '<span class="muted">= login</span>';
+    tr.innerHTML = '<td><b>' + esc(u.username) + '</b>' + (u.admin ? ' <span class="tag acc">admin-ui</span>' : '') + '</td>' +
+      '<td>' + esc(u.displayName || '') + '</td><td>' + esc(u.email || '') + '</td><td>' + esc(u.role || '') + '</td>' +
+      '<td>' + tms + '</td><td>' + erp + '</td><td>' + sts + '</td><td>' + acc + '</td>' +
+      '<td class="rowact"><button class="ghost ed">Edit</button> <button class="ghost del">Delete</button></td>';
+    tr.querySelector('.ed').onclick = () => { fillForm(u); $('#editor').scrollIntoView({ behavior: 'smooth' }); };
+    tr.querySelector('.del').onclick = async () => {
+      if (!confirm('Delete user "' + u.username + '"?')) return;
+      const r = await api('/api-ops/admin/user-delete', { method: 'POST', body: { username: u.username } });
+      if (r.error) { $('#edErr').textContent = r.error; return; }
+      load();
+    };
+    tb.appendChild(tr);
+  });
+}
+
+async function save() {
+  $('#edErr').textContent = '';
+  const body = {
+    username: $('#fUser').value.trim(), displayName: $('#fDisp').value.trim(), email: $('#fEmail').value.trim(),
+    password: $('#fPwd').value, role: $('#fRole').value, admin: $('#fAdmin').checked,
+    teams: tTeams.get(), stations: pickedStations(), primaryStation: pickedPrimary(),
+    access: pickedAccess(), erpUsers: tErp.get()
+  };
+  if (!body.username) { $('#edErr').textContent = 'Login name required'; return; }
+  const r = await api('/api-ops/admin/users', { method: 'POST', body });
+  if (r.error) { $('#edErr').textContent = r.error; return; }
+  $('#edErr').innerHTML = '<span class="okline">✓ saved</span>';
+  fillForm(null); load();
+}
+
+async function load() {
+  const d = await api('/api-ops/admin/users');
+  if (d.error) { $('#usrBody').innerHTML = '<tr><td colspan="9" class="muted">' + esc(d.error) + '</td></tr>'; return; }
+  USERS = arr(d.users); renderTable(); warnDupErp();
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tabpane').forEach(p => p.style.display = (p.id === 'tab-' + name) ? '' : 'none');
+  document.querySelectorAll('.tabbtn').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+}
+
+/* ---------- milestones & alerts (milestone_def editor) ---------- */
+let MS = [], msEditing = null;   // msEditing = {code,bound} when editing an existing row
+
+function slaText(m) {
+  if (m.sla_type === 'fixed') return (m.sla_offset_val || '?') + ' ' + (m.sla_offset_unit || 'day') + '(s) ' + (m.sla_direction || '') + ' ' + (m.sla_anchor || '');
+  if (m.sla_type === 'none') return 'none';
+  return 'baseline (lane history)';
+}
+function syncSlaFields() {
+  const fixed = $('#mSlaType').value === 'fixed';
+  document.querySelectorAll('.msfix').forEach(c => c.style.display = fixed ? '' : 'none');
+}
+function renderMsTable() {
+  const tb = $('#msBody'); tb.innerHTML = '';
+  const fm = $('#msfMode').value, fb = $('#msfBound').value;
+  const rows = MS.filter(m => (!fm || m.mode === fm || m.mode === 'Both') && (!fb || m.bound === fb));
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="9" class="muted">No milestones' + (MS.length ? ' match the filter' : ' yet — run seed-milestone-config.ps1 or add one below') + '.</td></tr>'; return; }
+  rows.forEach(m => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + m.seq + '</td><td><b>' + esc(m.milestone_code) + '</b></td><td>' + esc(m.name) + '</td>' +
+      '<td>' + esc(m.mode) + '</td><td>' + esc(m.bound) + '</td><td>' + esc(m.phase_anchor) + '</td>' +
+      '<td>' + esc(slaText(m)) + '</td>' +
+      '<td>' + (m.active ? '✓' : '<span class="muted">off</span>') + '</td>' +
+      '<td class="rowact"><button class="ghost ed">Edit</button> <button class="ghost del">Delete</button></td>';
+    tr.querySelector('.ed').onclick = () => { fillMsForm(m); $('#msEditor').scrollIntoView({ behavior: 'smooth' }); };
+    tr.querySelector('.del').onclick = async () => {
+      if (!confirm('Delete milestone ' + m.milestone_code + ' (' + m.bound + ')? Shipments stop tracking it at their next evaluation.')) return;
+      const r = await api('/api-ops/admin/milestone-delete', { method: 'POST', body: { code: m.milestone_code, bound: m.bound } });
+      if (r.error) { $('#msErr').textContent = r.error; return; }
+      loadMs();
+    };
+    tb.appendChild(tr);
+  });
+}
+function fillMsForm(m) {
+  msEditing = m ? { code: m.milestone_code, bound: m.bound } : null;
+  $('#msTitle').textContent = m ? 'Edit milestone — ' + m.milestone_code + ' (' + m.bound + ')' : 'Add milestone';
+  $('#mCode').value = m ? m.milestone_code : ''; $('#mCode').disabled = !!m;
+  $('#mBound').value = m ? m.bound : 'Export'; $('#mBound').disabled = !!m;
+  $('#mMode').value = m ? (m.mode || 'Sea') : 'Sea';
+  $('#mName').value = m ? (m.name || '') : '';
+  $('#mSeq').value = m ? m.seq : '';
+  $('#mAnchor').value = m ? (m.phase_anchor || 'etd') : 'etd';
+  $('#mActive').checked = m ? !!m.active : true;
+  $('#mSlaType').value = m ? (m.sla_type || 'baseline') : 'baseline';
+  $('#mOffVal').value = m && m.sla_offset_val != null ? m.sla_offset_val : '';
+  $('#mOffUnit').value = m && m.sla_offset_unit ? m.sla_offset_unit : 'day';
+  $('#mDir').value = m && m.sla_direction ? m.sla_direction : 'before';
+  $('#mSlaAnchor').value = m && m.sla_anchor ? m.sla_anchor : '';
+  $('#mQual').value = m ? (m.qualify_rule || '') : '';
+  $('#mComp').value = m ? (m.complete_rule || '') : '';
+  syncSlaFields(); $('#msErr').textContent = '';
+}
+async function saveMs() {
+  $('#msErr').textContent = '';
+  const body = {
+    code: $('#mCode').value.trim(), bound: $('#mBound').value, mode: $('#mMode').value,
+    name: $('#mName').value.trim(), seq: $('#mSeq').value.trim(), anchor: $('#mAnchor').value,
+    slaType: $('#mSlaType').value, slaOffsetVal: $('#mOffVal').value.trim(), slaOffsetUnit: $('#mOffUnit').value,
+    slaDirection: $('#mDir').value, slaAnchor: $('#mSlaAnchor').value.trim(),
+    qualifyRule: $('#mQual').value.trim(), completeRule: $('#mComp').value.trim(),
+    active: $('#mActive').checked
+  };
+  if (!body.code) { $('#msErr').textContent = 'Code required'; return; }
+  if (!body.name) { $('#msErr').textContent = 'Name required'; return; }
+  const r = await api('/api-ops/admin/milestones', { method: 'POST', body });
+  if (r.error) { $('#msErr').textContent = r.error; return; }
+  $('#msErr').innerHTML = '<span class="okline">✓ saved — applies at the next evaluation run</span>';
+  fillMsForm(null); loadMs();
+}
+async function loadMs() {
+  const d = await api('/api-ops/admin/milestones');
+  if (d.error) { $('#msBody').innerHTML = '<tr><td colspan="9" class="muted">' + esc(d.error) + '</td></tr>'; return; }
+  MS = arr(d.milestones); renderMsTable();
+}
+
+(async function init() {
+  const me = await api('/api-ops/me');
+  if (me.authOn && !me.admin) { document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif">Admin only. <a href="index.html">← back to the worklist</a></div>'; return; }
+  $('#whoami').textContent = (me.displayName || me.username || '') + (me.role ? ' · ' + me.role : '');
+  $('#logoutBtn').onclick = async () => { await fetch('/api-ops/logout', { method: 'POST' }); location.href = 'login.html'; };
+  try { const c = await api('/api-ops/config'); STATIONS = arr(c.stations); $('#appName').textContent = (c.appName || 'Control Tower') + ' — Admin'; } catch (e) {}
+  buildStations();
+  tTeams = tagsInput('#tTeams');
+  tErp = tagsInput('#tErp', warnDupErp);
+  document.querySelectorAll('.tabbtn').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+  $('#usrSearch').oninput = renderTable;
+  $('#addUserBtn').onclick = () => { fillForm(null); $('#editor').scrollIntoView({ behavior: 'smooth' }); };
+  $('#saveBtn').onclick = save;
+  $('#resetBtn').onclick = () => fillForm(null);
+  fillForm(null);
+  load();
+  $('#msfMode').onchange = renderMsTable; $('#msfBound').onchange = renderMsTable;
+  $('#mSlaType').onchange = syncSlaFields;
+  $('#msSaveBtn').onclick = saveMs;
+  $('#msResetBtn').onclick = () => fillMsForm(null);
+  fillMsForm(null);
+  loadMs();
+})();
+</script>
+</body>
+</html>

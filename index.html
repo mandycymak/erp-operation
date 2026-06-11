@@ -11,7 +11,8 @@
   <h1 id="appName">Control Tower</h1>
   <span class="sub" id="appSub"></span>
   <span class="spacer"></span>
-  <span class="muted" style="font-size:12px">Operator</span>
+  <span class="muted" id="userbar" style="font-size:12px"></span>
+  <span class="muted" id="opLabel" style="font-size:12px">Operator</span>
   <select id="userPicker" title="View as operator (demo identity)"></select>
   <button class="ghost" id="tasksBtn" title="My Tasks inbox">📥 My Tasks <span class="badge" id="taskBadge" style="display:none">0</span></button>
   <button class="ghost" id="refreshBtn" title="Refresh">↻</button>
@@ -50,8 +51,12 @@
         <button class="combo-x" id="fCompanyClear" title="Clear company filter" style="display:none">✕</button>
         <div class="mention-pop" id="fCompanyPop"></div>
       </span>
-      <select id="fPol" title="Port of loading"><option value="">All POL</option></select>
-      <select id="fPod" title="Port of discharge"><option value="">All POD</option></select>
+      <span class="combo portchips" id="fPolChips" title="Port of loading — type a code or name (e.g. tokyo, HKHKG, jp:tok); pick several">
+        <input type="text" placeholder="🔍 POL…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span>
+      </span>
+      <span class="combo portchips" id="fPodChips" title="Port of discharge — type a code or name; pick several">
+        <input type="text" placeholder="🔍 POD…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span>
+      </span>
     </div>
     <div id="inboundPanel" class="inbound" style="display:none"></div>
     <div id="worklist"><div class="empty">Loading…</div></div>

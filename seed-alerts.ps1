@@ -13,7 +13,7 @@ param(
 )
 $ErrorActionPreference="Stop"
 . (Join-Path $PSScriptRoot "ops-eval.ps1")
-$cfg=Get-Content $ConfigPath -Raw|ConvertFrom-Json
+$cfg=[IO.File]::ReadAllText($ConfigPath)|ConvertFrom-Json
 function EnvOrConfig($n,$v){ $e=[Environment]::GetEnvironmentVariable($n); if($e -and $e.Trim()){$e}else{$v} }
 $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.auth
 $user=EnvOrConfig "DB_USER" $cfg.user; $pwd=EnvOrConfig "DB_PASSWORD" $cfg.password; $opsDb=EnvOrConfig "DB_OPS_DB" $cfg.opsDb
@@ -56,6 +56,13 @@ function Filter-Cols($db,$table,$wantCsv){
   if($miss.Count){ Write-Host "  [schema] $db.$table missing (dropped): $($miss -join ',')" -ForegroundColor DarkYellow }
   ($keep -join ',')
 }
+# ntext columns (remark etc.) can't be compared/used directly and can be huge — cap them to nvarchar(4000)
+# in the SELECT list (the 512-byte-packet VPN link makes oversized rows expensive). Run AFTER Filter-Cols.
+function Wrap-Ntext($csv,[string[]]$ntextCols){
+  (@($csv -split ',' | Where-Object { $_ }) | ForEach-Object {
+    if($ntextCols -contains $_){ "CONVERT(nvarchar(4000),$_) AS $_" } else { $_ }
+  }) -join ','
+}
 
 # ---- config ----
 $defs = Query $opsDb "SELECT milestone_code,bound,name,seq,phase_anchor,qualify_rule,complete_rule,sla_type,sla_offset_val,sla_offset_unit,sla_direction,sla_anchor,mode FROM dbo.milestone_def WHERE active=1"
@@ -64,12 +71,14 @@ $evmap = Query $opsDb "SELECT milestone_code,bound,source_kind,source_table,sour
 # ---- candidate shipments: active house bills/AWBs as of AsOf, recent first (mode-specific source table) ----
 if($Mode -eq 'Air'){
   # awbhead = the air waybill table; awb_type H=house, S=straight/direct are the operator's shipments (M=consol master, B=booking)
-  $cols="jobn,hawb,mawb,po_no,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,t_book_qty,t_book_wgt,t_book_cwt,t_rece_qty,ttl_cwt"
+  $cols="jobn,hawb,mawb,po_no,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,t_book_qty,t_book_wgt,t_book_cwt,t_rece_qty,ttl_cwt,t_book_cbm,t_rece_cbm,to1,to3,dest,deli,flight2,flight3,f_date2,f_date3,f_time1,f_time2,f_time3,fa_date1,fa_date2,fa_date3,rout_by_1,pol_name,pod_name,to1_name,to3_name,dest_name,deli_name,goods_delivery,remark,special_remark"
   $cols=Filter-Cols $Station 'awbhead' $cols
+  $cols=Wrap-Ntext $cols @('remark','special_remark')
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type IN('H','S') AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 } else {
-  $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,vessel_2,voyage_2,onboard1,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure2,crtdate"
+  $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,vessel_2,voyage_2,onboard1,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure1,departure2,arrival1,arrival1d,arrival2,arrival2d,arrival3,deli,dest,pol_name,pod_name,deli_name,dest_name,available_date,spotid,sono,t_book_qty,t_book_wgt,t_book_cbm,t_rece_qty,t_rece_wgt,t_rece_cbm,remark,crtdate"
   $cols=Filter-Cols $Station 'blhead' $cols
+  $cols=Wrap-Ntext $cols @('remark')
   $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='H' AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 }
 if(-not $ships.Count){ Write-Host "No candidate $Mode shipments in $Station as of $($AsOf.ToString('yyyy-MM-dd'))." -ForegroundColor Red; exit }
@@ -92,6 +101,19 @@ if($Mode -ne 'Air'){
     $cont = Query $Station "SELECT blh, cont_type, load_wgt, load_cbm, container, lsno, liner FROM dbo.blcont WHERE blh IN ($($ins -join ','))" $p
     foreach($d in $cont){ $k="$($d.blh)"; if(-not $contByRef.ContainsKey($k)){ $contByRef[$k]=@() }; $contByRef[$k]+=$d }
   }
+}
+
+# ---- batch goods-description lines for the selected header refs (sea blitem / air awbdetl; both child
+#      tables key on blh = header.ref with a supporting index). Same chunked IN-seek pattern as below.
+#      Sea commodity lives in good_desc1, air in good_desc2 (per the operations user); capped to 400 chars. ----
+$itemByRef=@{}
+$itemTable = if($Mode -eq 'Air'){'awbdetl'}else{'blitem'}
+$itemRefs=@($ships | ForEach-Object { $_.ref } | Where-Object { $null -ne $_ })
+for($off=0; $off -lt $itemRefs.Count; $off+=500){
+  $chunk=@($itemRefs[$off..([Math]::Min($off+499,$itemRefs.Count-1))])
+  $p=@{}; $ins=@(); $i=0; foreach($rf in $chunk){ $ins+="@b$i"; $p["b$i"]=$rf; $i++ }
+  $rows = Query $Station "SELECT blh, item_seq, CONVERT(nvarchar(400),good_desc1) AS good_desc1, CONVERT(nvarchar(400),good_desc2) AS good_desc2 FROM dbo.$itemTable WHERE blh IN ($($ins -join ','))" $p
+  foreach($d in $rows){ $k="$($d.blh)"; if(-not $itemByRef.ContainsKey($k)){ $itemByRef[$k]=@() }; $itemByRef[$k]+=$d }
 }
 
 # ---- resolve vessel codes -> names from the veslmstr master (sea only). One chunked keyed seek on
@@ -166,16 +188,22 @@ WHEN MATCHED THEN UPDATE SET station=@station,mode=@mode,cargo_type=@cargo,bound
   container_count=@ccount,total_weight=@twgt,total_cbm=@tcbm,arrival_state=@astate,sort_key=@skey,
   house_bill=@house,master_bill=@master,incoterm=@inco,cust_ref=@cref,container_no=@cno,liner_so=@lso,cargo_ready=@cready,
   shipper_code=@shpr,consignee_code=@cgne,agent_code=@agent,ctrl_code=@ctrl,pol=@pol,pod=@pod,
+  route_summary=@rsum,route_json=@rjson,detail_json=@djson,commodity=@commod,sono=@sono,
+  available_date=@avail,eta_delivery=@etadel,goods_delivery=@gdel,erp_ref=@eref,
   milestone_checklist=@chk,updated_at=SYSDATETIME()
 WHEN NOT MATCHED THEN INSERT(job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,
   last_updated_by,anchor_date,etd,eta,atd,ata,job_status,worst_light,open_amber,open_red,next_due,auto_done,manual_done,
   consignee_name,shipper_name,cust_contact,cust_phone,cust_email,vessel_voyage,container_summary,container_count,
   total_weight,total_cbm,arrival_state,sort_key,house_bill,master_bill,incoterm,cust_ref,container_no,liner_so,cargo_ready,
-  shipper_code,consignee_code,agent_code,ctrl_code,pol,pod,milestone_checklist,updated_at)
+  shipper_code,consignee_code,agent_code,ctrl_code,pol,pod,
+  route_summary,route_json,detail_json,commodity,sono,available_date,eta_delivery,goods_delivery,erp_ref,
+  milestone_checklist,updated_at)
   VALUES(@job,@station,@mode,@cargo,@bound,@lane,@carrier,@cust,@salesman,@pic,@cby,@uby,@anchor,@etd,@eta,@atd,@ata,
   @jstat,@worst,@amber,@red,@nextdue,@auto,@man,@cgname,@shipname,@ccontact,@cphone,@cemail,@vv,@csum,@ccount,
   @twgt,@tcbm,@astate,@skey,@house,@master,@inco,@cref,@cno,@lso,@cready,
-  @shpr,@cgne,@agent,@ctrl,@pol,@pod,@chk,SYSDATETIME());
+  @shpr,@cgne,@agent,@ctrl,@pol,@pod,
+  @rsum,@rjson,@djson,@commod,@sono,@avail,@etadel,@gdel,@eref,
+  @chk,SYSDATETIME());
 "@
 function DOnly($d){ if($d -is [datetime]){ $d.ToString('yyyy-MM-dd') } else { $null } }
 $n=0; $dist=@{G=0;A=0;R=0}
@@ -205,6 +233,7 @@ foreach($b in $ships){
     $dep=$ship.atd_date; $eta=$null; $assigned=($fl -ne '' -or $cr -ne '')
     $houseBill=$ship.hawb; $masterBill=$ship.mawb; $incoterm=$ship.incoterm; $custRef=$ship.po_no
     $cargoReady=$ship.cargoready; $carrierVal=$cr
+    $sono=$ship.booking; $availDate=$null; $etaDel=$null; $gdsDel=$b.goods_delivery
   } else {
     # Export carries the ocean vessel in vessel_2/voyage_2; Import the arriving vessel in vessel_1/voyage_1.
     if($ship.bound -eq 'Export'){ $vcode=("$($b.vessel_2)").Trim(); $voy=("$($b.voyage_2)").Trim() }
@@ -212,13 +241,39 @@ foreach($b in $ships){
     $vsl = if($vcode -and $vslByCode[$vcode]){ $vslByCode[$vcode] } else { $vcode }   # name, fallback to code
     $vv = if($vsl -and $voy){ "$vsl / $voy" } elseif($vsl){ $vsl } elseif($voy){ $voy } else { '' }
     $cp = ContSummary @($contByRef["$($b.ref)"])
-    $etdV=$ship.departure2; $etaV=$ship.eta_delivery; $atdV=$ship.atd_date; $ataV=$ship.ata_date
-    $dep=$ship.departure2; $eta=$ship.eta_delivery; $assigned=($vsl -ne '' -or $voy -ne '')
-    $houseBill=("$($b.blno)").Trim(); $masterBill=("$($b.mobl)").Trim(); $incoterm=$ship.incoterm; $custRef=''
+    # Bound-aware legs (operations spec): Export rides leg-2 (departure2 -> arrival2), Import leg-1
+    # (departure1 -> arrival1). eta_delivery is the separate "expected delivery" date, kept below.
+    if($ship.bound -eq 'Import'){ $etdV=$ship.departure1; $etaV=$ship.arrival1 }
+    else                        { $etdV=$ship.departure2; $etaV=$ship.arrival2 }
+    $atdV=$ship.atd_date; $ataV=$ship.ata_date
+    $dep=$etdV; $eta=$etaV; $assigned=($vsl -ne '' -or $voy -ne '')
+    $houseBill=("$($b.blno)").Trim(); $masterBill=("$($b.mobl)").Trim(); $incoterm=$ship.incoterm
+    $custRef=("$($b.spotid)").Trim()   # sea customer ref = shipment/spot ID
     $cargoReady=$ship.cargoready
     $carrierVal=("$($b.carr)").Trim(); if(-not $carrierVal -and $cp.liner){ $carrierVal=$cp.liner }   # carr is empty in these copies -> use blcont.liner
+    $sono=("$($b.sono)").Trim(); $availDate=$b.available_date; $etaDel=$ship.eta_delivery; $gdsDel=$ship.goods_delivery
   }
   $containerNo=$cp.first_cont; $linerSo=$cp.liner_so
+  # ---- full route (shared builders in ops-eval.ps1) + goods description + deep-detail snapshot ----
+  $routePts = if($Mode -eq 'Air'){ Get-AirRoutePoints $b } else { Get-SeaRoutePoints $b $ship.bound $vv }
+  $routeJson = if(@($routePts).Count){ ConvertTo-JsonArray $routePts 4 } else { $null }
+  $routeSummary = (@($routePts) | ForEach-Object { "$($_.code)" }) -join (' ' + [char]0x2192 + ' ')
+  if(-not $routeSummary){ $routeSummary=$null } elseif($routeSummary.Length -gt 120){ $routeSummary=$routeSummary.Substring(0,120) }
+  $descField = if($Mode -eq 'Air'){'good_desc2'}else{'good_desc1'}
+  $descLines=@(); foreach($it in @($itemByRef["$($b.ref)"] | Sort-Object { "$($_.item_seq)" })){
+    $dv=("$($it.$descField)").Trim(); if($dv -and $descLines -notcontains $dv){ $descLines+=$dv }
+  }
+  $commod = if($descLines.Count){ $descLines[0] } else { $null }
+  if($commod -and $commod.Length -gt 120){ $commod=$commod.Substring(0,120) }
+  $remark=("$($b.remark)").Trim(); if(-not $remark){ $remark=$null }
+  $specialRemark= if($Mode -eq 'Air'){ ("$($b.special_remark)").Trim() } else { '' }; if(-not $specialRemark){ $specialRemark=$null }
+  $cargoBlk = Get-CargoBlock $b $Mode
+  $det=[ordered]@{}
+  if($remark){ $det.remark=$remark }
+  if($specialRemark){ $det.special_remark=$specialRemark }
+  if($descLines.Count){ $det.commodity=@($descLines | Select-Object -First 5) }
+  if($cargoBlk.Count){ $det.cargo=$cargoBlk }
+  $detailJson = if($det.Count){ $det | ConvertTo-Json -Depth 6 -Compress } else { $null }
   # party/port codes for the worklist filters (company filter matches the picked code against ANY role)
   $shprCode=("$($b.shpr_code)").Trim(); $cgneCode=("$($b.cgne_code)").Trim()
   $agentCode=("$($b.agn2_code)").Trim(); $ctrlCode=("$($b.rcustomer)").Trim()
@@ -257,6 +312,8 @@ foreach($b in $ships){
     csum=$cp.summary; ccount=$cp.count; twgt=$cp.wgt; tcbm=$cp.cbm; astate=$astate; skey=(DOnly $skey);
     house=$houseBill; master=$masterBill; inco=$incoterm; cref=$custRef; cno=$containerNo; lso=$linerSo; cready=(DOnly $cargoReady);
     shpr=$shprCode; cgne=$cgneCode; agent=$agentCode; ctrl=$ctrlCode; pol=$polCode; pod=$podCode;
+    rsum=$routeSummary; rjson=$routeJson; djson=$detailJson; commod=$commod; sono=$(if("$sono".Trim()){"$sono".Trim()}else{$null});
+    avail=(DOnly $availDate); etadel=(DOnly $etaDel); gdel=(DOnly $gdsDel); eref=$(if($null -ne $b.ref){"$($b.ref)"}else{$null});
     chk=($checklist | ConvertTo-Json -Depth 8 -Compress) }
   $dist[$res.worst]++; $n++
 }

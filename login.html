@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — Control Tower</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .loginwrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .logincard { width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 28px; }
+  .logincard h1 { font-size: 20px; margin: 0 0 4px; }
+  .logincard .sub { color: var(--mut); font-size: 13px; margin-bottom: 18px; }
+  .logincard label { display: block; font-size: 12px; color: var(--mut); margin: 12px 0 4px; }
+  .logincard input { width: 100%; box-sizing: border-box; padding: 10px; font-size: 14px; }
+  .logincard button { width: 100%; margin-top: 18px; padding: 11px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .logincard button:disabled { opacity: .6; cursor: default; }
+  .loginerr { color: var(--r); font-size: 13px; margin-top: 12px; min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="loginwrap">
+  <form class="logincard" id="loginForm">
+    <h1 id="brandingTitle">Control Tower</h1>
+    <div class="sub">Sign in to continue</div>
+    <label for="u">Username</label>
+    <input id="u" autocomplete="username" autofocus>
+    <label for="p">Password</label>
+    <input id="p" type="password" autocomplete="current-password">
+    <button type="submit" id="btn">Sign in</button>
+    <div class="loginerr" id="err"></div>
+  </form>
+</div>
+<script>
+(function () {
+  fetch('/api-ops/config').then(function (r) { return r.ok ? r.json() : Promise.reject(); }).then(function (cfg) {
+    var name = (cfg.appName || 'Control Tower') + (cfg.instanceName ? ' — ' + cfg.instanceName : '');
+    document.title = 'Sign in — ' + name;
+    var h = document.getElementById('brandingTitle'); if (h) h.textContent = name;
+  }).catch(function () {});
+})();
+var f = document.getElementById("loginForm"), btn = document.getElementById("btn"), err = document.getElementById("err");
+f.addEventListener("submit", async function (e) {
+  e.preventDefault(); err.textContent = ""; btn.disabled = true; btn.textContent = "Signing in…";
+  try {
+    var r = await fetch("/api-ops/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: document.getElementById("u").value, password: document.getElementById("p").value }) });
+    if (r.ok) { location.href = "index.html"; return; }
+    var d = {}; try { d = await r.json(); } catch (e2) {}
+    err.textContent = d.error || "Sign in failed";
+  } catch (e3) { err.textContent = "Cannot reach the service."; }
+  btn.disabled = false; btn.textContent = "Sign in";
+});
+</script>
+</body>
+</html>

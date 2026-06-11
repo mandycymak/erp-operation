@@ -25,7 +25,8 @@ function New-ShipContext($b){
     comp_date=(D $b.comp_date); ata_date=(D $b.ata_date); not1_date=(D $b.not1_date); release_date=(D $b.release_date)
     broker=("$($b.broker)").Trim(); customer_pickup=(D $b.customer_pickup); wh_code=("$($b.wh_code)").Trim()
     ad_date=(D $b.ad_date); ware_date=(D $b.ware_date); pd_date=(D $b.pd_date)
-    departure2=(D $b.departure2); crtdate=(D $b.crtdate)
+    departure1=(D $b.departure1); departure2=(D $b.departure2); arrival1=(D $b.arrival1); arrival2=(D $b.arrival2)
+    crtdate=(D $b.crtdate)
     ref=$b.ref; vessel_1=("$($b.vessel_1)").Trim(); voyage_1=("$($b.voyage_1)").Trim()
   }
 }
@@ -94,7 +95,10 @@ function _PlannedDue($S,$d){
     if("$($d.sla_offset_unit)" -eq 'hour'){ return $base.AddHours($off) } else { return $base.AddDays($off) }
   } elseif("$($d.sla_type)" -eq 'baseline'){
     if("$($d.phase_anchor)" -in 'booking','etd'){
-      $etd = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.atd_date } elseif($S.ship.departure2){$S.ship.departure2}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null}
+      # Sea ETD anchor is bound-aware: Import legs run on departure1/arrival1, Export on departure2.
+      $etd = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.atd_date }
+             elseif("$($S.bound)" -eq 'Import'){ if($S.ship.departure1){$S.ship.departure1}elseif($S.ship.arrival1){$S.ship.arrival1}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null} }
+             elseif($S.ship.departure2){$S.ship.departure2}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null}
       if($etd -is [datetime]){ return $etd.AddDays(-$S.lead) }
     }
     return $null
@@ -143,4 +147,82 @@ function Eval-Milestones($S,$defs,$manual){
   }
   $worst = if($red){'R'}elseif($amber){'A'}else{'G'}
   @{ items=$items; worst=$worst; open_amber=$amber; open_red=$red; next_due=$(if($nextDue){$nextDue.ToString('yyyy-MM-dd')}else{$null}); auto_done=$auto; manual_done=$man }
+}
+
+# ============================================================================================================
+#  ROUTE / CARGO builders — pure, shared by seed-alerts.ps1 (snapshot) and serve-ops.ps1 (/api-ops/erp-detail).
+#  Each returns plain hashtable "points" {role,code,name,dep,arr,flight,vessel,time}; blank-code points are
+#  omitted and consecutive duplicate codes merged, so sparse ERP rows degrade to POL -> POD gracefully.
+#  Tolerates missing columns (schema-variant stations): a dropped column reads as $null.
+# ============================================================================================================
+function _RS([object]$x){ $s = "$x".Trim(); if($s){ $s } else { $null } }   # string-or-null (DBNull-safe)
+function _RD([object]$x){ if($null -eq $x -or $x -is [System.DBNull] -or "$x" -eq ''){ $null } else { ([datetime]$x).ToString('yyyy-MM-dd') } }
+function _RN([object]$x){ if($null -eq $x -or $x -is [System.DBNull] -or "$x" -eq ''){ $null } else { try { [math]::Round([double]$x,2) } catch { $null } } }
+
+function _RoutePack($pts){
+  # drop blank codes; merge consecutive duplicates (later point's non-null props fill the kept one)
+  $out=@()
+  foreach($p in @($pts)){
+    if(-not $p.code){ continue }
+    $prev = if($out.Count){ $out[$out.Count-1] } else { $null }
+    if($prev -and $prev.code -eq $p.code){
+      foreach($k in @($p.Keys)){ if($null -ne $p[$k] -and ($null -eq $prev[$k] -or $k -eq 'role')){ $prev[$k]=$p[$k] } }
+      continue
+    }
+    # strip null-valued keys so the stored JSON stays compact
+    $q=[ordered]@{}; foreach($k in 'role','code','name','dep','time','arr','flight','vessel'){ if($null -ne $p[$k]){ $q[$k]=$p[$k] } }
+    $out += ,$q
+  }
+  ,$out
+}
+
+# Sea: Export rides leg-2 fields (departure2/arrival2, place-of-delivery arrival2d, final dest arrival3);
+# Import rides leg-1 (departure1/arrival1/arrival1d). pol/pod/deli are ERP-mandatory, dest optional.
+# $vesselDisplay: resolved "NAME / VOY" from the caller's veslmstr map (falls back to raw code+voyage).
+function Get-SeaRoutePoints($b,$bound,$vesselDisplay){
+  $exp = ("$bound" -eq 'Export')
+  $vsl = _RS $vesselDisplay
+  if(-not $vsl){
+    $vc = if($exp){ _RS $b.vessel_2 } else { _RS $b.vessel_1 }
+    $vy = if($exp){ _RS $b.voyage_2 } else { _RS $b.voyage_1 }
+    if($vc){ $vsl = (@($vc,$vy) | Where-Object { $_ }) -join ' / ' }
+  }
+  $pts = @(
+    @{ role='POL';  code=(_RS $b.pol);  name=(_RS $b.pol_name);  dep=(_RD $(if($exp){$b.departure2}else{$b.departure1})); vessel=$vsl },
+    @{ role='POD';  code=(_RS $b.pod);  name=(_RS $b.pod_name);  arr=(_RD $(if($exp){$b.arrival2}else{$b.arrival1})) },
+    @{ role='DELI'; code=(_RS $b.deli); name=(_RS $b.deli_name); arr=(_RD $(if($exp){$b.arrival2d}else{$b.arrival1d})) },
+    @{ role='DEST'; code=(_RS $b.dest); name=(_RS $b.dest_name); arr=(_RD $b.arrival3) }
+  )
+  _RoutePack $pts
+}
+
+# Air: stops pol -> to1 -> to3 -> dest; flightN/f_dateN/f_timeN belong to the DEPARTING stop of leg N and
+# fa_dateN is that leg's arrival at the NEXT stop. Airline is embedded in the flight no (CX909); rout_by_1
+# only confirms leg-1's carrier. deli appended when it differs from dest.
+function Get-AirRoutePoints($b){
+  $pts = @(
+    @{ role='POL';  code=(_RS $b.pol);  name=(_RS $b.pol_name);  flight=(_RS $b.flight1); dep=(_RD $b.f_date1); time=(_RS $b.f_time1) },
+    @{ role='VIA';  code=(_RS $b.to1);  name=(_RS $b.to1_name);  arr=(_RD $b.fa_date1); flight=(_RS $b.flight2); dep=(_RD $b.f_date2); time=(_RS $b.f_time2) },
+    @{ role='VIA';  code=(_RS $b.to3);  name=(_RS $b.to3_name);  arr=(_RD $b.fa_date2); flight=(_RS $b.flight3); dep=(_RD $b.f_date3); time=(_RS $b.f_time3) },
+    @{ role='DEST'; code=(_RS $(if(_RS $b.dest){$b.dest}else{$b.pod})); name=(_RS $(if(_RS $b.dest){$b.dest_name}else{$b.pod_name})); arr=(_RD $(if($b.fa_date3){$b.fa_date3}else{$b.ata_date})) },
+    @{ role='DELI'; code=(_RS $b.deli); name=(_RS $b.deli_name) }
+  )
+  _RoutePack $pts
+}
+
+# Booked-vs-received cargo block for detail_json / erp-detail: {book:{qty,wgt,cbm,cwt}, rece:{...}} (nulls dropped).
+function Get-CargoBlock($b,$mode){
+  function _pack($pairs){ $h=[ordered]@{}; foreach($k in $pairs.Keys){ $v=_RN $pairs[$k]; if($null -ne $v){ $h[$k]=$v } }; $h }
+  $book = _pack ([ordered]@{ qty=$b.t_book_qty; wgt=$b.t_book_wgt; cbm=$b.t_book_cbm; cwt=$b.t_book_cwt })
+  $rece = _pack ([ordered]@{ qty=$b.t_rece_qty; wgt=$b.t_rece_wgt; cbm=$b.t_rece_cbm; cwt=$b.ttl_cwt })
+  $out=[ordered]@{}
+  if($book.Count){ $out.book=$book }
+  if($rece.Count){ $out.rece=$rece }
+  $out
+}
+
+# PS 5.1: ConvertTo-Json flattens a 1-element array to a bare object — serialize each element and join.
+function ConvertTo-JsonArray($items,[int]$depth=6){
+  $parts = @($items) | Where-Object { $null -ne $_ } | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth $depth }
+  '[' + ($parts -join ',') + ']'
 }

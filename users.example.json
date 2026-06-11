@@ -1,0 +1,32 @@
+{
+  "_comment": "Template for users.json (gitignored - NEVER commit the real file). When users.json is absent or empty the app runs in OPEN/demo mode (operator picker, no login). Copy this file to users.json, create your admin, then manage everyone with admin-ops.html.",
+  "_fields": {
+    "username": "login name (letters, digits, . _ -). This is the APP identity used for notes, @-mentions and sessions.",
+    "displayName": "shown in the header / rosters (optional; falls back to username)",
+    "email": "contact / future SSO match key; must be unique across users (optional)",
+    "salt_pwdHash": "set via admin-ops.html (password box). Manually: salt = 16 hex chars, pwdHash = SHA256('salt:password') hex.",
+    "role": "admin | manager | operator. admin+manager see every user in rosters and any teammate's worklist; operators only their own teams. The admin FLAG (below) gates admin-ops.html.",
+    "admin": "true = may open admin-ops.html and manage users",
+    "teams": "team tags; operators see only colleagues sharing at least one team (teammate lens, @-mentions, Assign roster)",
+    "stations": "station codes this user works (must exist in ops.config stations[]). EMPTY = unrestricted (HQ view). The worklist and pre-arrival feed are limited to these.",
+    "primaryStation": "the default station selected at login; must be one of stations[]",
+    "access": "mode-bound pairs the user may handle, from: Air-Export, Air-Import, Sea-Export, Sea-Import. EMPTY = all four. Example below = air both ways plus sea export only.",
+    "erpUsers": "THE LOGIN<->ERP BRIDGE: the ERP pic_user / created_by names this person owns (free text in the ERP, often different from the login - e.g. mandy owns 'leo' and 'corp'). 'My work' matches the WHOLE list. EMPTY = the login name itself. Staff turnover = re-point these tags in admin-ops.html, no ERP change."
+  },
+  "users": [
+    {
+      "username": "mandy",
+      "displayName": "Mandy Mak",
+      "email": "mandy@example.com",
+      "salt": "0123456789abcdef",
+      "pwdHash": "<sha256 of 'salt:password' - set via admin-ops.html>",
+      "role": "admin",
+      "admin": true,
+      "teams": ["HK-Import"],
+      "stations": ["HKG", "SHA"],
+      "primaryStation": "HKG",
+      "access": ["Air-Export", "Air-Import", "Sea-Export"],
+      "erpUsers": ["leo", "corp"]
+    }
+  ]
+}

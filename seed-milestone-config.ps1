@@ -12,7 +12,7 @@
 #>
 param([string]$ConfigPath = (Join-Path $PSScriptRoot "ops.config.json"))
 $ErrorActionPreference = "Stop"
-$cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+$cfg = [IO.File]::ReadAllText($ConfigPath) | ConvertFrom-Json
 function EnvOrConfig($name, $cfgVal) { $v = [Environment]::GetEnvironmentVariable($name); if ($v -and $v.Trim() -ne "") { $v } else { $cfgVal } }
 $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.auth
 $user=EnvOrConfig "DB_USER" $cfg.user; $password=EnvOrConfig "DB_PASSWORD" $cfg.password

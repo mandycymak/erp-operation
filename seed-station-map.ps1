@@ -22,7 +22,7 @@ param(
   [ValidateSet('Sea','Air','Both')][string]$Mode='Both'
 )
 $ErrorActionPreference="Stop"
-$cfg=Get-Content $ConfigPath -Raw|ConvertFrom-Json
+$cfg=[IO.File]::ReadAllText($ConfigPath)|ConvertFrom-Json
 function EnvOrConfig($n,$v){ $e=[Environment]::GetEnvironmentVariable($n); if($e -and $e.Trim()){$e}else{$v} }
 $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.auth
 $user=EnvOrConfig "DB_USER" $cfg.user; $pwd=EnvOrConfig "DB_PASSWORD" $cfg.password; $opsDb=EnvOrConfig "DB_OPS_DB" $cfg.opsDb

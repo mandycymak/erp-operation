@@ -9,7 +9,7 @@
 #>
 param([string]$ConfigPath = (Join-Path $PSScriptRoot "ops.config.json"))
 $ErrorActionPreference = "Stop"
-$cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+$cfg = [IO.File]::ReadAllText($ConfigPath) | ConvertFrom-Json   # NOT Get-Content: PS5.1 reads BOM-less UTF-8 as ANSI
 function EnvOrConfig($name, $cfgVal) { $v = [Environment]::GetEnvironmentVariable($name); if ($v -and $v.Trim() -ne "") { $v } else { $cfgVal } }
 $server   = EnvOrConfig "DB_SERVER"   $cfg.server
 $auth     = EnvOrConfig "DB_AUTH"     $cfg.auth
@@ -155,6 +155,44 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_pol' AND object_i
   CREATE INDEX IX_alerts_pol ON dbo.shipment_alerts(pol);
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_pod' AND object_id=OBJECT_ID('dbo.shipment_alerts'))
   CREATE INDEX IX_alerts_pod ON dbo.shipment_alerts(pod);
+"@
+
+# --- 1.2e shipment_alerts route/deep-detail fields (added in place): the full leg route the operator quotes
+#     to stakeholders, plus the deep-detail snapshot for the drawer (refreshed each listener pass).
+#       route_summary = point codes joined ' → ' (worklist-flat; e.g. 'HKHKG → USLAX → USCHI').
+#       route_json    = JSON array of points {role,code,name,dep,arr,flight,vessel,voyage} (drawer only).
+#       detail_json   = JSON {remark,special_remark,commodity[],cargo:{book,rece}} (drawer only).
+#       commodity     = first goods description (sea blitem.good_desc1 | air awbdetl.good_desc2).
+#       sono          = SO/booking number (blhead.sono | awbhead.booking) — stable from booking stage.
+#       available_date / eta_delivery / goods_delivery = pickup-available / expected / actual delivery (sea).
+#       erp_ref       = source header PK (blhead.ref | awbhead.ref) — keyed seek handle for the on-demand
+#                       /api-ops/erp-detail lookup and the blitem/awbdetl child reads.
+ExecSql $opsDb @"
+IF COL_LENGTH('dbo.shipment_alerts','route_summary')  IS NULL ALTER TABLE dbo.shipment_alerts ADD route_summary  nvarchar(120) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','route_json')     IS NULL ALTER TABLE dbo.shipment_alerts ADD route_json     nvarchar(max) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','detail_json')    IS NULL ALTER TABLE dbo.shipment_alerts ADD detail_json    nvarchar(max) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','commodity')      IS NULL ALTER TABLE dbo.shipment_alerts ADD commodity      nvarchar(120) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','sono')           IS NULL ALTER TABLE dbo.shipment_alerts ADD sono           nvarchar(40)  NULL;
+IF COL_LENGTH('dbo.shipment_alerts','available_date') IS NULL ALTER TABLE dbo.shipment_alerts ADD available_date date          NULL;
+IF COL_LENGTH('dbo.shipment_alerts','eta_delivery')   IS NULL ALTER TABLE dbo.shipment_alerts ADD eta_delivery   date          NULL;
+IF COL_LENGTH('dbo.shipment_alerts','goods_delivery') IS NULL ALTER TABLE dbo.shipment_alerts ADD goods_delivery date          NULL;
+IF COL_LENGTH('dbo.shipment_alerts','erp_ref')        IS NULL ALTER TABLE dbo.shipment_alerts ADD erp_ref        nvarchar(24)  NULL;
+"@
+
+# --- 2.8 port_dim — full port/airport master copy (ERP portmstr: ~3.9k sea UN/LOCODEs + ~1.5k IATA codes)
+#     so the UI port pickers can search by NAME as well as code (Tokyo -> TYO/HND/JPTYO) without the request
+#     path touching the ERP. Refreshed weekly by seed-ports.ps1. PK (code,module): the same code can exist
+#     in both modules. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.port_dim') IS NULL
+CREATE TABLE dbo.port_dim (
+  code       nvarchar(8)  NOT NULL,
+  module     char(3)      NOT NULL,        -- 'SEA'|'AIR' (portmstr.module)
+  name       nvarchar(80) NULL,            -- portmstr.port_ldes1
+  country    nvarchar(4)  NULL,
+  updated_at datetime2    NOT NULL,
+  CONSTRAINT PK_port_dim PRIMARY KEY (code, module)
+);
 "@
 
 # --- 2.7 company_dim — code->name lookup so the UI's company filter can show real names without the request
@@ -357,5 +395,5 @@ CREATE TABLE dbo.feed_watermark (
 
 Write-Host "Operational database [$opsDb] ready (10 tables + indexes):" -ForegroundColor Green
 Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
-Write-Host "  milestone_event_log, company_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
+Write-Host "  milestone_event_log, company_dim, port_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
 Write-Host "Next: map the alias/evidence fields to real ERP columns, then run listener-engine.ps1 -Mode Sea on the pilot station." -ForegroundColor Cyan

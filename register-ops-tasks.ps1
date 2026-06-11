@@ -14,7 +14,7 @@ param(
   [int]$AirEveryHours=2                              # Air publish repetition interval
 )
 $ErrorActionPreference="Stop"
-$cfg=Get-Content $ConfigPath -Raw|ConvertFrom-Json
+$cfg=[IO.File]::ReadAllText($ConfigPath)|ConvertFrom-Json
 $pub=Join-Path $PSScriptRoot "publish-bookings.ps1"
 $map=Join-Path $PSScriptRoot "seed-station-map.ps1"
 $principal=New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
@@ -48,4 +48,9 @@ foreach($s in $stations){
 $mapTrig=New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At "03:00"
 Register-OpsTask "Ops Station Map Refresh" "$map`" -ConfigPath `"$ConfigPath`"" $mapTrig
 
-Write-Host "Done. Registered feed tasks for $($stations.Count) station(s). Review in Task Scheduler under the names 'Ops Publish *' / 'Ops Station Map Refresh'." -ForegroundColor Cyan
+# --- weekly port-master refresh (Sunday 03:30, after the map; portmstr barely changes) ---
+$portsScript=Join-Path $PSScriptRoot "seed-ports.ps1"
+$portsTrig=New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At "03:30"
+Register-OpsTask "Ops Port Dim Refresh" "$portsScript`" -ConfigPath `"$ConfigPath`"" $portsTrig
+
+Write-Host "Done. Registered feed tasks for $($stations.Count) station(s). Review in Task Scheduler under the names 'Ops Publish *' / 'Ops Station Map Refresh' / 'Ops Port Dim Refresh'." -ForegroundColor Cyan

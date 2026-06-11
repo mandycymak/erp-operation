@@ -71,6 +71,15 @@ These are proven and lift over almost verbatim — read them in `..\pgs-dashboar
 - **Cross-DB collation:** the reporting/ops DB is Latin1, station DBs are Chinese_HK. Text joins across DBs need `COLLATE DATABASE_DEFAULT`.
 - **Secrets are gitignored — never commit them.** `ops.config.json`, `users.json`, `roles.json`, `ops-lists/`, `*-audit.log`. Verify with `git status` before any commit. Only `*.example.json` is tracked.
 - **When killing test servers by command-line match, exclude `$PID`** or you kill your own shell.
+- **Never read a text/JSON file with bare `Get-Content`** — PS 5.1 decodes BOM-less UTF-8 as ANSI, turning
+  `—`/`·` into `â€”`/`Â·` mojibake on screen (this bit the config subtitle). Read with
+  `[IO.File]::ReadAllText($path)` (UTF-8 + BOM detection) and write with
+  `[IO.File]::WriteAllText($path, $s, (New-Object System.Text.UTF8Encoding($false)))`. Every new HTML page
+  needs `<meta charset="utf-8">` (and `Ctype` already sends `charset=utf-8`). Prefer plain ASCII separators
+  (`-`, not `—`/`·`) in user-visible default strings. **The same applies to `.ps1` source itself**: PS 5.1
+  runs BOM-less scripts as ANSI, and an em-dash's last byte decodes to a smart quote (`”`) that *terminates
+  the string* — a runtime parse error that `PSParser`-on-decoded-text won't catch. Keep `.ps1` files
+  ASCII-only.
 - **The source station ERP DBs are READ-ONLY.** All writes go to `pgsops` only. Never `INSERT`/`UPDATE`/`ALTER` an ERP table.
 
 ## How to run (once built; mirrors pgs-dashboard)

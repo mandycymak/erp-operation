@@ -8,26 +8,53 @@ const arr = v => Array.isArray(v) ? v : (v == null ? [] : [v]);   // coerce PS s
 const isYmd = s => !s || /^\d{4}-\d{2}-\d{2}$/.test(('' + s).trim());   // house date standard: yyyy-mm-dd only
 
 const state = { user: localStorage.getItem('opsUser') || '', roster: [], lens: 'mine', teammate: '', bound: localStorage.getItem('opsBound') || 'Import', tmode: localStorage.getItem('opsMode') || 'Sea',
-  from: '', to: '', company: '', pol: '', pod: '', station: localStorage.getItem('opsStation') || '', _companies: [], _ports: { pol: [], pod: [] }, _stations: [] };
+  from: '', to: '', company: '', pols: [], pods: [], station: localStorage.getItem('opsStation') || '', _companies: [], _portDim: [], _activePorts: { pol: [], pod: [] }, _stations: [],
+  ib: { origin: '', party: '', q: '', pols: [], pods: [] } };   // inbound (pre-arrival) panel search
 let allCollapsed = false;   // collapse-all toggle for vessel groups
 
+let ME = null;   // /api-ops/me payload; ME.authOn = real login mode (identity from the session, not the picker)
 async function api(path, opts) {
   opts = opts || {};
   opts.cache = 'no-store';
   opts.headers = Object.assign({ 'X-Ops-User': state.user || '(open)' }, opts.headers || {});
   if (opts.body && typeof opts.body !== 'string') { opts.body = JSON.stringify(opts.body); opts.headers['Content-Type'] = 'application/json'; }
   const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = 'login.html'; return new Promise(() => {}); }   // halt in-flight init
   return r.json();
 }
+// access gating: ME.access = allowed mode-bound pairs; empty/open mode = everything allowed
+function hasPair(m, b) { return !ME || !ME.authOn || !arr(ME.access).length || arr(ME.access).includes(m + '-' + b); }
 
 // ---------- init ----------
 async function init() {
+  ME = await api('/api-ops/me');   // FIRST: 401 here bounces to login.html before anything renders
   try { const c = await api('/api-ops/config'); $('#appName').textContent = c.appName || 'Control Tower'; $('#appSub').textContent = c.appSubtitle || ''; document.title = c.appName || 'Control Tower'; state._stations = arr(c.stations); } catch (e) {}
+  if (ME.authOn) {
+    state.user = ME.username;                          // session identity replaces the demo picker
+    $('#userPicker').style.display = 'none'; const ol = $('#opLabel'); if (ol) ol.style.display = 'none';
+    const ub = $('#userbar');
+    if (ub) {
+      ub.innerHTML = '<b>' + esc(ME.displayName || ME.username) + '</b> · ' + esc(ME.role || '') +
+        (ME.admin ? ' · <a href="admin-ops.html" style="color:var(--accent)">Admin</a>' : '') +
+        ' · <a href="#" id="signOut" style="color:var(--accent)">Sign out</a>';
+      ub.querySelector('#signOut').onclick = async e => { e.preventDefault(); await fetch('/api-ops/logout', { method: 'POST' }); location.href = 'login.html'; };
+    }
+    // sanitize the persisted mode/bound against my access BEFORE the first load
+    if (!hasPair(state.tmode, state.bound)) {
+      const all = [['Air', 'Export'], ['Air', 'Import'], ['Sea', 'Export'], ['Sea', 'Import']];
+      const keep = all.find(p => p[0] === state.tmode && hasPair(p[0], p[1])) || all.find(p => hasPair(p[0], p[1]));
+      if (keep) { state.tmode = keep[0]; state.bound = keep[1]; localStorage.setItem('opsMode', state.tmode); localStorage.setItem('opsBound', state.bound); }
+    }
+    // station selection limited to my stations, defaulting to my primary
+    const mySts = arr(ME.stations);
+    if (mySts.length && (!state.station || !mySts.includes(state.station))) state.station = ME.primaryStation || mySts[0] || '';
+  }
   buildStationPicker();
   const rost = await api('/api-ops/roster'); state.roster = arr(rost.users).map(u => u.username);
   if (!state.user && state.roster.length) state.user = state.roster[0];
   buildUserPicker(); buildTeammate();
   wireLens(); wireBound(); wireMode(); wireFilters();
+  applyAccessGating();
   await loadFilters();
   $('#refreshBtn').onclick = refreshAll;
   $('#collapseAll').onclick = () => {
@@ -52,9 +79,12 @@ function buildTeammate() {
 }
 function buildStationPicker() {
   const sel = $('#stationPicker'); if (!sel) return;
-  sel.innerHTML = '<option value="">All stations</option>';
-  state._stations.forEach(s => { const o = el('option'); o.value = s.code; o.textContent = s.code + ' · ' + (s.name || s.code); if (s.code === state.station) o.selected = true; sel.appendChild(o); });
-  sel.style.display = state._stations.length > 1 ? '' : 'none';   // hide for single-station instances
+  // auth mode with station scope: only MY stations, defaulting to the primary; '' = all MY stations
+  const mySts = (ME && ME.authOn) ? arr(ME.stations) : [];
+  const list = mySts.length ? state._stations.filter(s => mySts.includes(s.code)) : state._stations;
+  sel.innerHTML = '<option value="">' + (mySts.length ? 'All my stations' : 'All stations') + '</option>';
+  list.forEach(s => { const o = el('option'); o.value = s.code; o.textContent = s.code + ' · ' + (s.name || s.code); if (s.code === state.station) o.selected = true; sel.appendChild(o); });
+  sel.style.display = list.length > 1 ? '' : 'none';   // hide for single-station users/instances
   sel.onchange = () => { state.station = sel.value; localStorage.setItem('opsStation', state.station); loadWorklist(); };
 }
 function wireLens() {
@@ -69,8 +99,10 @@ function wireBound() {
   document.querySelectorAll('#boundSeg button').forEach(b => {
     if (b.dataset.bound === state.bound) b.classList.add('on'); else b.classList.remove('on');
     b.onclick = () => {
+      if (b.classList.contains('disabled')) return;   // outside my access pairs
       document.querySelectorAll('#boundSeg button').forEach(x => x.classList.remove('on'));
       b.classList.add('on'); state.bound = b.dataset.bound; localStorage.setItem('opsBound', state.bound);
+      applyAccessGating();
       loadWorklist(); loadInbound();
     };
   });
@@ -79,12 +111,32 @@ function wireMode() {
   document.querySelectorAll('#modeSeg button').forEach(b => {
     if (b.dataset.tmode === state.tmode) b.classList.add('on'); else b.classList.remove('on');
     b.onclick = () => {
+      if (b.classList.contains('disabled')) return;   // no pair at all for that mode
       document.querySelectorAll('#modeSeg button').forEach(x => x.classList.remove('on'));
       b.classList.add('on'); state.tmode = b.dataset.tmode; localStorage.setItem('opsMode', state.tmode);
-      state.pol = ''; state.pod = '';   // POL/POD lists are mode-specific; reset when switching transport mode
+      // if the current bound isn't allowed for this mode, auto-select the one that is
+      // (e.g. Air-both + Sea-Export only: choosing Sea forces Export)
+      if (!hasPair(state.tmode, state.bound)) {
+        const nb = hasPair(state.tmode, 'Export') ? 'Export' : (hasPair(state.tmode, 'Import') ? 'Import' : state.bound);
+        state.bound = nb; localStorage.setItem('opsBound', nb);
+        document.querySelectorAll('#boundSeg button').forEach(x => x.classList.toggle('on', x.dataset.bound === nb));
+      }
+      applyAccessGating();
+      // POL/POD code spaces are mode-specific (5-letter sea vs 3-letter air) — clear picks on mode switch
+      state.pols = []; state.pods = []; state.ib.pols = []; state.ib.pods = [];
       renderFilterOptions();
       loadWorklist(); loadInbound();
     };
+  });
+}
+// disable the mode/bound buttons my access pairs don't cover (open mode / empty access: everything enabled)
+function applyAccessGating() {
+  document.querySelectorAll('#modeSeg button').forEach(b => {
+    const m = b.dataset.tmode;
+    b.classList.toggle('disabled', !(hasPair(m, 'Import') || hasPair(m, 'Export')));
+  });
+  document.querySelectorAll('#boundSeg button').forEach(b => {
+    b.classList.toggle('disabled', !hasPair(state.tmode, b.dataset.bound));
   });
 }
 // ---------- filters (date window + company + POL/POD) ----------
@@ -99,12 +151,76 @@ function wireFilters() {
   $('#thisWeek').onclick = () => { const w = currentWeek(); state.from = w.from; state.to = w.to; ff.value = w.from; ft.value = w.to; loadWorklist(); };
   $('#allDates').onclick = () => { state.from = ''; state.to = ''; ff.value = ''; ft.value = ''; loadWorklist(); };
   wireCompanyCombo();
-  $('#fPol').onchange = e => { state.pol = e.target.value; loadWorklist(); };
-  $('#fPod').onchange = e => { state.pod = e.target.value; loadWorklist(); };
+  state._polChips = makePortChips('#fPolChips', { kind: 'pol', get: () => state.pols, set: v => { state.pols = v; }, onChange: loadWorklist });
+  state._podChips = makePortChips('#fPodChips', { kind: 'pod', get: () => state.pods, set: v => { state.pods = v; }, onChange: loadWorklist });
+}
+// Multi-select port picker: type-ahead over the FULL port master (code OR name, e.g. "tokyo" → TYO/HND/JPTYO),
+// optional country narrowing with a "jp:" prefix, removable chips, OR-filter. Scoped to the current transport
+// mode's code space (SEA 5-letter / AIR 3-letter). Ports already on active shipments rank first.
+function makePortChips(rootSel, opts) {
+  const root = $(rootSel); if (!root) return { refresh: () => {} };
+  const inp = root.querySelector('input'), pop = root.querySelector('.mention-pop'), chiprow = root.querySelector('.chiprow');
+  let items = [], active = -1;
+  const close = () => { pop.style.display = 'none'; active = -1; };
+  const moduleNow = () => state.tmode === 'Air' ? 'AIR' : 'SEA';
+  const activeCodes = () => new Set(((state._activePorts || {})[opts.kind] || []).filter(x => !x.mode || x.mode === state.tmode).map(x => x.code));
+  const render = q => {
+    let ql = ('' + q).trim().toLowerCase(), cc = '';
+    const m = ql.match(/^([a-z]{2}):\s*(.*)$/); if (m) { cc = m[1].toUpperCase(); ql = m[2]; }   // "jp:tok" → country JP
+    const cur = new Set(opts.get()); const act = activeCodes();
+    let cand = (state._portDim || []).filter(p => p.module === moduleNow() && !cur.has(p.code));
+    if (cc) cand = cand.filter(p => (p.country || '') === cc);
+    if (ql) cand = cand.filter(p => p.code.toLowerCase().includes(ql) || (p.name || '').toLowerCase().includes(ql));
+    cand.sort((a, b) => {
+      const aa = act.has(a.code) ? 0 : 1, ba = act.has(b.code) ? 0 : 1; if (aa !== ba) return aa - ba;
+      const ap = ql && a.code.toLowerCase().startsWith(ql) ? 0 : 1, bp = ql && b.code.toLowerCase().startsWith(ql) ? 0 : 1; if (ap !== bp) return ap - bp;
+      return a.code < b.code ? -1 : a.code > b.code ? 1 : 0;
+    });
+    items = cand.slice(0, 12);
+    if (!items.length) { pop.innerHTML = '<div class="mut">no ' + (cc ? cc + ' ' : '') + 'port matches' + (ql ? ' “' + esc(ql) + '”' : '') + '</div>'; pop.style.display = 'block'; active = -1; return; }
+    pop.innerHTML = '';
+    items.forEach((p, i) => {
+      const d = el('div', i === 0 ? 'sel' : '', '<b>' + esc(p.code) + '</b> · ' + esc(p.name || '') +
+        ' <span class="mut">(' + esc(p.country || '') + ')' + (act.has(p.code) ? ' · active' : '') + '</span>');
+      d.onmousedown = e => { e.preventDefault(); pick(p); };
+      pop.appendChild(d);
+    });
+    active = 0; pop.style.display = 'block';
+  };
+  const pick = p => {
+    const cur = opts.get(); if (!cur.includes(p.code)) opts.set(cur.concat(p.code));
+    inp.value = ''; close(); drawChips(); opts.onChange();
+  };
+  const drawChips = () => {
+    chiprow.innerHTML = '';
+    opts.get().forEach(code => {
+      const port = (state._portDim || []).find(p => p.code === code);
+      const ch = el('span', 'pchip', esc(code) + '<span class="x" title="remove">✕</span>');
+      if (port && port.name) ch.title = port.name + (port.country ? ' (' + port.country + ')' : '');
+      ch.querySelector('.x').onclick = () => { opts.set(opts.get().filter(c => c !== code)); drawChips(); opts.onChange(); };
+      chiprow.appendChild(ch);
+    });
+  };
+  const hi = () => { [...pop.children].forEach((d, i) => d.className = i === active ? 'sel' : ''); };
+  inp.addEventListener('focus', () => { render(inp.value); });
+  inp.addEventListener('input', () => render(inp.value));
+  inp.addEventListener('keydown', e => {
+    if (pop.style.display !== 'block') return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, items.length - 1); hi(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); hi(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (items[active]) pick(items[active]); }
+    else if (e.key === 'Escape') { close(); inp.blur(); }
+    else if (e.key === 'Backspace' && !inp.value) { const cur = opts.get(); if (cur.length) { opts.set(cur.slice(0, -1)); drawChips(); opts.onChange(); } }
+  });
+  inp.addEventListener('blur', () => setTimeout(close, 120));
+  drawChips();
+  return { refresh: drawChips };
 }
 // Company type-ahead: search the active-worklist companies by NAME (or code) — bounded list loaded client-side,
 // so it's instant and never queries the 300k master. (You can only filter shipments by a company that has one.)
 function companyLabel(code) { const c = (state._companies || []).find(x => x.code === code); return c ? c.name + ' (' + c.code + ')' : (code || ''); }
+// code -> display name via the loaded active-company list (covers every role code on an active shipment)
+function compName(code) { if (!code) return ''; const c = (state._companies || []).find(x => x.code === code); return (c && c.name) || code; }
 function setCompany(code) {
   state.company = code || '';
   const inp = $('#fCompany'); if (inp) inp.value = code ? companyLabel(code) : '';
@@ -138,19 +254,17 @@ function wireCompanyCombo() {
 }
 async function loadFilters() {
   try { const c = await api('/api-ops/companies'); state._companies = arr(c.companies); } catch (e) { state._companies = []; }
-  try { const p = await api('/api-ops/ports'); state._ports = { pol: arr(p.pol), pod: arr(p.pod) }; } catch (e) { state._ports = { pol: [], pod: [] }; }
+  // full port master (~5k rows, served from a 15-min server-side cache) + the active pol/pod codes for ranking
+  try { const p = await api('/api-ops/ports'); state._portDim = arr(p.ports); state._activePorts = { pol: arr(p.activePol), pod: arr(p.activePod) }; }
+  catch (e) { state._portDim = []; state._activePorts = { pol: [], pod: [] }; }
   renderFilterOptions();
 }
 function renderFilterOptions() {
   setCompany(state.company);   // refresh the combo's displayed name now that the company list is loaded
-  buildPortSelect('#fPol', (state._ports || {}).pol || [], state.pol, 'All POL');
-  buildPortSelect('#fPod', (state._ports || {}).pod || [], state.pod, 'All POD');
-}
-function buildPortSelect(sel, list, cur, allLabel) {
-  const s = $(sel); if (!s) return;
-  const codes = [...new Set(list.filter(x => !x.mode || x.mode === state.tmode).map(x => x.code).filter(Boolean))].sort();
-  s.innerHTML = '<option value="">' + allLabel + '</option>';
-  codes.forEach(code => { const o = el('option'); o.value = code; o.textContent = code; if (code === cur) o.selected = true; s.appendChild(o); });
+  if (state._polChips) state._polChips.refresh();
+  if (state._podChips) state._podChips.refresh();
+  if (state._ibPolChips) state._ibPolChips.refresh();
+  if (state._ibPodChips) state._ibPodChips.refresh();
 }
 function refreshAll() { loadWorklist(); loadTasks(); loadInbound(); }
 
@@ -165,25 +279,61 @@ const IB_STAGES = [
 ];
 function ibStage(r) { return (r.vesselFlight || r.etd) ? 'sched' : 'new'; }
 function ibByDate(a, b) { const x = a.etd || a.cargoReady || a.bookingDate || '9999'; const y = b.etd || b.cargoReady || b.bookingDate || '9999'; return x < y ? -1 : x > y ? 1 : 0; }
+// The panel shell (header + search bar) is built ONCE and only the list body re-renders — rebuilding the
+// whole panel per keystroke would destroy the focused search input. Text inputs are debounced 300ms.
+function debounce(fn, ms) { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms || 300); }; }
+function buildInboundShell(panel) {
+  if (panel.dataset.built) return;
+  panel.dataset.built = '1';
+  panel.innerHTML =
+    '<div class="ib-head">📥 Inbound bookings (pre-arrival)<span class="ib-station"></span> <span class="cnt ib-count"></span>' +
+      '<button class="ghost ib-alltoggle"></button><button class="ghost ib-collapse" title="Collapse">▾</button></div>' +
+    '<div class="ib-search">' +
+      '<select id="ibOrigin" title="Origin office that received the booking"><option value="">All origins</option></select>' +
+      '<input type="text" id="ibParty" placeholder="🔍 shipper / consignee / customer" autocomplete="off" title="Match a party name or code in any role">' +
+      '<input type="text" id="ibQ" placeholder="🔍 booking / ship-id / PO / HBL / ctr" autocomplete="off" title="Search booking no, spot/ship ID, PO, house or master bill, container">' +
+      '<span class="combo portchips" id="ibPolChips" title="POL — type a code or name"><input type="text" placeholder="POL…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span></span>' +
+      '<span class="combo portchips" id="ibPodChips" title="POD — type a code or name"><input type="text" placeholder="POD…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span></span>' +
+    '</div>' +
+    '<div class="ib-body"></div>';
+  const orig = panel.querySelector('#ibOrigin');
+  state._stations.forEach(s => { const o = el('option'); o.value = s.code; o.textContent = s.code; orig.appendChild(o); });
+  orig.onchange = () => { state.ib.origin = orig.value; loadInbound(); };
+  const party = panel.querySelector('#ibParty'), qIn = panel.querySelector('#ibQ');
+  party.addEventListener('input', debounce(() => { state.ib.party = party.value.trim(); loadInbound(); }));
+  qIn.addEventListener('input', debounce(() => { state.ib.q = qIn.value.trim(); loadInbound(); }));
+  state._ibPolChips = makePortChips('#ibPolChips', { kind: 'pol', get: () => state.ib.pols, set: v => { state.ib.pols = v; }, onChange: loadInbound });
+  state._ibPodChips = makePortChips('#ibPodChips', { kind: 'pod', get: () => state.ib.pods, set: v => { state.ib.pods = v; }, onChange: loadInbound });
+  panel.querySelector('.ib-collapse').onclick = () => { const b = panel.querySelector('.ib-body'), s = panel.querySelector('.ib-search'); const hide = b.style.display !== 'none'; b.style.display = hide ? 'none' : ''; s.style.display = hide ? 'none' : ''; };
+  panel.querySelector('.ib-alltoggle').onclick = () => { state.ibShowAll = !state.ibShowAll; loadInbound(); };
+}
 async function loadInbound() {
   const panel = $('#inboundPanel'); if (!panel) return;
-  if (state.bound !== 'Import') { panel.style.display = 'none'; panel.innerHTML = ''; return; }
+  // pre-arrival is import-by-nature: shown on the Import view AND only if I may handle imports in this mode
+  if (state.bound !== 'Import' || !hasPair(state.tmode, 'Import')) { panel.style.display = 'none'; return; }
   panel.style.display = '';
-  const data = await api('/api-ops/inbound?mode=' + encodeURIComponent(state.tmode) + (state.ibShowAll ? '&showAll=1' : ''));
+  buildInboundShell(panel);
+  const tg = panel.querySelector('.ib-alltoggle');
+  tg.textContent = state.ibShowAll ? 'recent only' : 'show all';
+  tg.title = state.ibShowAll ? 'Showing all — click to show only recent/upcoming' : 'Showing recent + upcoming — click to show all';
+  let q = '/api-ops/inbound?mode=' + encodeURIComponent(state.tmode) + (state.ibShowAll ? '&showAll=1' : '');
+  if (state.ib.origin) q += '&origin=' + encodeURIComponent(state.ib.origin);
+  if (state.ib.party) q += '&party=' + encodeURIComponent(state.ib.party);
+  if (state.ib.q) q += '&q=' + encodeURIComponent(state.ib.q);
+  if (state.ib.pols.length) q += '&pol=' + encodeURIComponent(state.ib.pols.join(','));
+  if (state.ib.pods.length) q += '&pod=' + encodeURIComponent(state.ib.pods.join(','));
+  const data = await api(q);
   const rows = arr(data.rows); const station = data.station || '';
-  const head = '📥 Inbound bookings (pre-arrival)' + (station ? ' · ' + esc(station) : '');
-  // toggle: default view hides stale/departed + already-received; "show all" reveals the full feed
-  const toggle = '<button class="ghost ib-alltoggle" title="' + (state.ibShowAll ? 'Showing all — click to show only recent/upcoming' : 'Showing recent + upcoming — click to show all') + '">'
-    + (state.ibShowAll ? 'recent only' : 'show all') + '</button>';
-  const headHtml = '<div class="ib-head">' + head + ' <span class="cnt">' + rows.length + '</span>' + toggle
-    + '<button class="ghost ib-collapse" title="Collapse">▾</button></div>';
+  panel.querySelector('.ib-station').textContent = station ? ' · ' + station : '';
+  panel.querySelector('.ib-count').textContent = rows.length;
+  const body = panel.querySelector('.ib-body'); body.innerHTML = '';
+  const searching = !!(state.ib.origin || state.ib.party || state.ib.q || state.ib.pols.length || state.ib.pods.length);
   if (!rows.length) {
-    panel.innerHTML = headHtml + '<div class="ib-body"><div class="bh" style="opacity:.7">nothing ' + (state.ibShowAll ? '' : 'recent/upcoming ') + 'in the feed' + (state.ibShowAll ? '' : ' — try “show all”') + '</div></div>';
-    const t0 = panel.querySelector('.ib-alltoggle'); if (t0) t0.onclick = () => { state.ibShowAll = !state.ibShowAll; loadInbound(); };
+    body.appendChild(el('div', 'bh', 'nothing ' + (state.ibShowAll ? '' : 'recent/upcoming ') + 'in the feed' +
+      (searching ? ' matching the search' : '') + (state.ibShowAll ? '' : ' — try “show all”')));
+    body.firstChild.style.opacity = '.7';
     return;
   }
-  panel.innerHTML = headHtml;
-  const body = el('div', 'ib-body');
   if (state.tmode === 'Air') {
     // Air: group by flight no so scattered bookings on the same flight sit together ('(no flight yet)' last)
     const fmap = new Map();
@@ -206,14 +356,14 @@ async function loadInbound() {
       gs.forEach(r => body.appendChild(inboundCard(r)));
     });
   }
-  panel.appendChild(body);
-  panel.querySelector('.ib-collapse').onclick = () => { body.style.display = body.style.display === 'none' ? '' : 'none'; };
-  const tg = panel.querySelector('.ib-alltoggle'); if (tg) tg.onclick = () => { state.ibShowAll = !state.ibShowAll; loadInbound(); };
 }
 function inboundCard(r) {
   const c = el('div', 'ibcard ' + (r.light || 'G'));
-  // the CONSIGNEE is who receives the cargo at destination — the party this operator coordinates with
+  // headline = CONTROLLING CUSTOMER (rcustomer) when the origin recorded one; else the consignee.
+  // The full party set (shpr/cgne/agnt) lives on its own clickable subline.
   const cnee = r.consigneeName || r.consigneeCode || '—';
+  const ctrl = r.ctrlName || r.ctrlCode || '';
+  const headWho = ctrl ? 'cust: ' + esc(ctrl) : 'cgne: ' + esc(cnee);
   const route = [r.pol, r.pod].filter(Boolean).join(' → ');
   // service label only meaningful for sea (FCL/LCL); for air "Air" is redundant (mode already selected)
   const svc = (r.cargoType && r.cargoType.toUpperCase() !== 'AIR') ? (r.service ? r.cargoType + ' (' + r.service.trim() + ')' : r.cargoType) : '';
@@ -231,17 +381,29 @@ function inboundCard(r) {
   // line 3: the reference numbers used when talking to the consignee / tracing the box
   const ids = [r.masterBill ? (r.mode === 'Air' ? 'MAWB ' : 'MBL ') + esc(r.masterBill) : '',
     r.containerNo ? '📦 ' + esc(r.containerNo) : '', r.spotId ? 'ship-id ' + esc(r.spotId) : '',
-    r.poNo ? 'PO ' + esc(r.poNo) : '', r.shipperName ? 'shpr ' + esc(r.shipperName) : '']
+    r.poNo ? 'PO ' + esc(r.poNo) : '']
     .filter(Boolean).join('  ·  ');
+  // parties subline: clickable — fills the panel's party search (matches name or code in any role)
+  const mkPty = (lbl, name, code, title) => (name || code)
+    ? '<span class="pty" data-q="' + esc(code || name) + '" title="' + esc(title) + ' — click to search the feed for this company">' + lbl + ' ' + esc(name || code) + '</span>' : '';
+  const pty = [mkPty('shpr', r.shipperName, r.shipperCode, 'shipper'), mkPty('cgne', r.consigneeName, r.consigneeCode, 'consignee'),
+    mkPty('agnt', r.agentName, r.agentCode, 'agent (agn2)')].filter(Boolean).join('  ·  ');
   c.innerHTML =
     '<div class="r1"><span class="mref">' + esc(r.bookingNo) + '</span>' +
       (r.incoterm ? '<span class="minco">' + esc(r.incoterm) + '</span>' : '') +
-      '<span class="mwho" title="consignee">cgne: ' + esc(cnee) + '</span><span class="mspacer"></span>' + asg + '</div>' +
+      '<span class="mwho" title="' + (ctrl ? 'controlling customer (rcustomer)' : 'consignee') + '">' + headWho + '</span><span class="mspacer"></span>' + asg + '</div>' +
     '<div class="ib-dates">' + dateRow + '</div>' +
     (sub ? '<div class="r2">' + sub + '</div>' : '') +
+    (pty ? '<div class="r2 pty-row">' + pty + '</div>' : '') +
     (ids ? '<div class="r2 ib-ids">' + ids + '</div>' : '');
   const ab = c.querySelector('.ib-assign'); if (ab) ab.onclick = e => { e.stopPropagation(); assignInbound(r); };
   const ac = c.querySelector('.ib-asg'); if (ac) ac.onclick = e => { e.stopPropagation(); assignInbound(r); };
+  c.querySelectorAll('.pty').forEach(p => p.onclick = e => {
+    e.stopPropagation();
+    state.ib.party = p.dataset.q;
+    const inp = $('#ibParty'); if (inp) inp.value = p.dataset.q;
+    loadInbound();
+  });
   return c;
 }
 function assignInbound(r) {
@@ -285,8 +447,8 @@ async function loadWorklist() {
   if (state.from) q += '&from=' + encodeURIComponent(state.from);
   if (state.to) q += '&to=' + encodeURIComponent(state.to);
   if (state.company) q += '&company=' + encodeURIComponent(state.company);
-  if (state.pol) q += '&pol=' + encodeURIComponent(state.pol);
-  if (state.pod) q += '&pod=' + encodeURIComponent(state.pod);
+  if (state.pols.length) q += '&pol=' + encodeURIComponent(state.pols.join(','));
+  if (state.pods.length) q += '&pod=' + encodeURIComponent(state.pods.join(','));
   if (state.station) q += '&station=' + encodeURIComponent(state.station);
   const data = await api(q);
   const rows = arr(data.rows).filter(r => (r.bound || 'Import') === state.bound && (r.mode || 'Sea') === state.tmode);
@@ -295,7 +457,7 @@ async function loadWorklist() {
   if (!rows.length) {
     $('#wlCount').textContent = '0 ' + word + ' shipments';
     const win = (state.from || state.to) ? ' in ' + esc(state.from || '…') + ' → ' + esc(state.to || '…') + ' (try “All dates”)' : '';
-    const filt = (state.company || state.pol || state.pod) ? ' matching the active filters' : '';
+    const filt = (state.company || state.pols.length || state.pods.length) ? ' matching the active filters' : '';
     wl.innerHTML = '<div class="empty">No ' + esc(word) + ' shipments' + filt + win + '.</div>'; return;
   }
   const buckets = BUCKETS[state.bound] || BUCKETS.Import;
@@ -339,7 +501,11 @@ function vesselGroup(g) {
   const unit = isAir ? '' : (totalCont ? ' · ' + totalCont + ' ctr' : '');
   const box = el('div', 'vgroup' + (allCollapsed ? ' collapsed' : ''));
   const head = el('div', 'vhead ' + worst);
-  head.innerHTML = '<span class="vtoggle">▾</span><span class="vname">' + icon + ' ' + esc(g.vv) + '</span>' +
+  // air group headers add the flight (vesselVoyage = airline+flight) and the leg route — flight numbers repeat
+  // weekly, so MAWB + flight + route together identify the consol at a glance
+  const airBits = isAir ? [sample.vesselVoyage ? esc(sample.vesselVoyage) : '', sample.routeSummary ? '<span class="vroute">' + esc(sample.routeSummary) + '</span>' : '']
+    .filter(Boolean).map(s => ' · ' + s).join('') : '';
+  head.innerHTML = '<span class="vtoggle">▾</span><span class="vname">' + icon + ' ' + esc(g.vv) + airBits + '</span>' +
     arrivalChip(sample) + '<span class="vmeta">' + rs.length + ' shp' + unit + '</span>';
   const list = el('div', 'vlist');
   rs.forEach(r => list.appendChild(miniCard(r)));
@@ -381,12 +547,22 @@ function miniCard(r) {
   const c = el('div', 'mcard ' + r.worst);
   const isImport = (r.bound || 'Import') === 'Import';
   const isAir = r.mode === 'Air';
-  const who = isImport ? (r.consigneeName || r.custCode) : (r.shipperName || r.custCode);
+  // headline = the CONTROLLING CUSTOMER (rcustomer) — whose business this is; falls back to the
+  // consignee/shipper when no controlling customer is recorded. The parties live on their own subline.
+  const ctrlName = r.ctrlCode ? compName(r.ctrlCode) : '';
+  const who = ctrlName || (isImport ? (r.consigneeName || r.custCode) : (r.shipperName || r.custCode));
   const cargo = cargoProfile(r);
   const sev = r.openRed ? '<span class="pill R">' + r.openRed + 'R</span>' : (r.openAmber ? '<span class="pill A">' + r.openAmber + 'A</span>' : '');
   const updLbl = r.updateMilestoneName || r.updateMilestone || '';
   const updTip = (r.updateMilestone ? r.updateMilestone + ' — ' : '') + (r.updateMilestoneName || 'status update') + ' (updated, no remark)';
-  const note = (r.hasNotes ? '<span class="note-ind" title="has a remark / note">💬</span>' : '')
+  // 💬 tooltip shows WHAT was written (latest note), prefixed by its milestone code — e.g. "A3: Temporary Release".
+  // Milestone-tick notes are stored as "Ticked A3 complete: <reason>" — strip the boilerplate, keep the reason.
+  let noteTip = 'has a remark / note';
+  if (r.noteText) {
+    const txt = r.noteText.replace(/^Ticked\s+\S+\s+complete:?\s*/i, '').replace(/^Re-opened\s+\S+\s*:?\s*/i, '');
+    noteTip = (r.noteMilestone ? r.noteMilestone + ': ' : '') + (txt || r.noteText);
+  }
+  const note = (r.hasNotes ? '<span class="note-ind" title="' + esc(noteTip) + '">💬</span>' : '')
     + (r.hasUpdate ? '<span class="upd-ind" title="' + esc(updTip) + '">🔄' + (updLbl ? ' ' + esc(updLbl) : '') + '</span>' : '');
   const docLbl = isAir ? 'HAWB' : 'HBL';
   const mLbl = isAir ? 'MAWB' : 'MBL';
@@ -400,18 +576,30 @@ function miniCard(r) {
   // import: show the master (OBL for sea, MAWB for air); fall back to our job no when no master is issued yet
   const otherBill = isImport ? (mLbl + ' ' + esc(r.masterBill || r.jobNo))
                              : (r.houseBill ? docLbl + ' ' + esc(r.houseBill) : '');
-  const po = r.custRef ? 'PO ' + esc(r.custRef) : '';
+  // sea custRef = spot/ship ID, air = customer PO (both are what the customer quotes back)
+  const po = r.custRef ? (isAir ? 'PO ' : 'ship-id ') + esc(r.custRef) : '';
+  const sono = r.sono ? 'bkg ' + esc(r.sono) : '';
+  const commod = r.commodity ? '<span title="' + esc(r.commodity) + '">📦 ' + esc(r.commodity.length > 28 ? r.commodity.slice(0, 28) + '…' : r.commodity) + '</span>' : '';
   const exp = !isImport ? [r.cargoReady ? 'cargo-ready ' + esc(r.cargoReady) : '', r.etd ? 'ETD ' + esc(r.etd) : ''].filter(Boolean).join(' · ') : '';
+  // import logistics dates: pickup-available and (expected or actual) delivery — the consignee's questions
+  const impDates = isImport ? [r.availableDate ? 'avail ' + esc(r.availableDate) : '',
+    r.goodsDelivery ? 'dlvd ' + esc(r.goodsDelivery) : (r.etaDelivery ? 'dlv ' + esc(r.etaDelivery) : '')].filter(Boolean).join(' · ') : '';
   const jobTag = (isImport && r.houseBill) ? esc(r.jobNo) : '';   // keep our job no visible when HBL is primary
-  const sub = [diff, cargo, po, otherBill, exp, esc(r.lane || ''), jobTag].filter(Boolean).join('  ·  ');
+  const sub = [diff, cargo, commod, po, sono, otherBill, exp, impDates, esc(r.routeSummary || r.lane || ''), jobTag].filter(Boolean).join('  ·  ');
+  // parties subline: shipper / consignee / agent — each clickable to apply the company filter
+  const mkPty = (lbl, code, title) => code
+    ? '<span class="pty" data-code="' + esc(code) + '" title="' + esc(title) + ' — click to filter the worklist by this company">' + lbl + ' ' + esc(compName(code)) + '</span>' : '';
+  const pty = [mkPty('shpr', r.shipperCode, 'shipper'), mkPty('cgne', r.consigneeCode, 'consignee'), mkPty('agnt', r.agentCode, 'agent (agn2)')].filter(Boolean).join('  ·  ');
   c.innerHTML =
     '<div class="r1">' +
       '<span class="mref">' + (primary || '—') + '</span>' + inco +
-      '<span class="mwho">' + esc(who || '—') + '</span>' +
+      '<span class="mwho" title="controlling customer (rcustomer)">' + esc(who || '—') + '</span>' +
       '<span class="mspacer"></span>' + sev + note +
     '</div>' +
-    (sub ? '<div class="r2">' + sub + '</div>' : '');
+    (sub ? '<div class="r2">' + sub + '</div>' : '') +
+    (pty ? '<div class="r2 pty-row">' + pty + '</div>' : '');
   c.onclick = () => openShipment(r.jobNo);
+  c.querySelectorAll('.pty').forEach(p => p.onclick = e => { e.stopPropagation(); setCompany(p.dataset.code); loadWorklist(); });
   return c;
 }
 
@@ -442,7 +630,16 @@ function renderShipment(job, data) {
   if (sh.container_no) refBits.push('Ctr ' + esc(sh.container_no) + (sh.container_count > 1 ? ' +' + (sh.container_count - 1) : ''));
   else if (sh.liner_so) refBits.push('Liner SO ' + esc(sh.liner_so));
   if (sh.cargo_ready) refBits.push('Cargo-ready ' + esc(sh.cargo_ready));
+  const ex = data.extra || {};
+  if (ex.sono) refBits.push('Bkg/SO ' + esc(ex.sono));
+  if (ex.availableDate) refBits.push('Avail pickup ' + esc(ex.availableDate));
+  if (ex.goodsDelivery) refBits.push('Delivered ' + esc(ex.goodsDelivery));
+  else if (ex.etaDelivery) refBits.push('Exp delivery ' + esc(ex.etaDelivery));
   if (refBits.length) { const rd = el('div', 'refdocs', refBits.join(' &nbsp;·&nbsp; ')); body.appendChild(rd); }
+
+  // route timeline + cargo + internal remark (seeded snapshot, refreshable live from the ERP)
+  body.appendChild(deepDetailSection(job, data));
+
   const actions = el('div'); actions.style.cssText = 'margin-bottom:10px';
   const rb = el('button', 'ghost', '🔔 Remind me'); rb.style.fontSize = '12px'; rb.onclick = () => remindMe(job);
   actions.appendChild(rb); body.appendChild(actions);
@@ -534,6 +731,73 @@ function openArrangeForm(job, type, wrap) {
     await api('/api-ops/notes', { method: 'POST', body: { job_no: job, kind: 'arrangement', arr_type: type, party, contact, arr_status, note: note || ('Arrange ' + type), mentions } });
     const d = await api('/api-ops/shipment?job=' + encodeURIComponent(job)); renderShipment(job, d); loadTasks(); loadWorklist();
   };
+}
+// ---------- deep detail: route timeline + cargo + internal remark (snapshot ⇄ live ERP) ----------
+// Normalize the two payload shapes into one: the seeded /api-ops/shipment response (route[], detail{}) and
+// the live /api-ops/erp-detail response (top-level remark/commodity/cargo/route).
+function normDeep(d) {
+  const det = d.detail || {};
+  return {
+    route: arr(d.route),
+    remark: det.remark || d.remark || '',
+    special: det.special_remark || d.specialRemark || '',
+    commodity: arr(det.commodity || d.commodity),
+    cargo: det.cargo || d.cargo || null,
+    stamp: d.fetchedAt || ((d.extra || {}).snapshotAt || ''),
+  };
+}
+function routeTimeline(route) {
+  const pts = arr(route); if (!pts.length) return '';
+  return '<div class="rt">' + pts.map(p => {
+    const dates = [p.dep ? 'dep <b>' + esc(p.dep) + (p.time ? ' ' + esc(p.time) : '') + '</b>' : '',
+      p.arr ? 'arr <b>' + esc(p.arr) + '</b>' : ''].filter(Boolean).join(' · ');
+    const conv = [p.flight ? '✈ ' + esc(p.flight) : '', p.vessel ? '🚢 ' + esc(p.vessel) : ''].filter(Boolean).join(' ');
+    return '<div class="rt-pt"><span class="rt-role ' + esc(p.role || '') + '">' + esc(p.role || '') + '</span>' +
+      '<span class="rt-port"><b>' + esc(p.code || '') + '</b>' + (p.name ? ' · ' + esc(p.name) : '') + '</span>' +
+      (conv ? '<span class="rt-conv">' + conv + '</span>' : '') +
+      (dates ? '<span class="rt-dates">' + dates + '</span>' : '') + '</div>';
+  }).join('') + '</div>';
+}
+function cargoLine(c) {
+  if (!c) return '';
+  const f = o => [o.qty != null ? fmtNum(o.qty) + ' pcs' : '', o.wgt != null ? fmtNum(o.wgt) + ' kg' : '',
+    o.cbm != null ? o.cbm + ' cbm' : '', o.cwt != null ? fmtNum(o.cwt) + ' cwt' : ''].filter(Boolean).join(' · ');
+  const bits = [];
+  if (c.book) { const s = f(c.book); if (s) bits.push('booked <b>' + s + '</b>'); }
+  if (c.rece) { const s = f(c.rece); if (s) bits.push('received <b>' + s + '</b>'); }
+  return bits.join(' &nbsp;|&nbsp; ');
+}
+function deepDetailSection(job, data) {
+  const wrap = el('div', 'deep');
+  const h = el('div', 'deep-head');
+  h.innerHTML = '<h3>🧭 Route & ERP detail</h3>';
+  const stamp = el('span', 'deep-stamp mut', '');
+  const btn = el('button', 'ghost deep-btn', '🔄 Refresh from ERP');
+  btn.title = 'Fetch this shipment live from the station ERP (one keyed lookup) — remark, route and cargo as of right now';
+  h.appendChild(stamp); h.appendChild(btn);
+  const inner = el('div', 'deep-body');
+  wrap.appendChild(h); wrap.appendChild(inner);
+  const renderInner = (d, live) => {
+    let html = routeTimeline(d.route);
+    const cg = cargoLine(d.cargo); if (cg) html += '<div class="deep-cargo">⚖ ' + cg + '</div>';
+    if (d.commodity.length) html += '<div class="deep-comm">📦 ' + d.commodity.map(esc).join(' · ') + '</div>';
+    if (d.remark) html += '<div class="deep-rem"><span class="lbl">Internal remark</span><div class="rem">' + esc(d.remark) + '</div></div>';
+    if (d.special) html += '<div class="deep-rem"><span class="lbl">Special remark</span><div class="rem">' + esc(d.special) + '</div></div>';
+    inner.innerHTML = html || '<div class="empty">No route / remark on the snapshot yet — try “Refresh from ERP”.</div>';
+    stamp.className = 'deep-stamp ' + (live ? 'live' : 'mut');
+    stamp.textContent = live ? ('live · ' + (d.stamp || '')) : (d.stamp ? 'snapshot · ' + d.stamp : '');
+  };
+  renderInner(normDeep(data), false);
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = '⏳ fetching…';
+    try {
+      const live = await api('/api-ops/erp-detail?job=' + encodeURIComponent(job));
+      if (live && live.error) { stamp.className = 'deep-stamp err'; stamp.textContent = live.error; }
+      else renderInner(normDeep(live), true);
+    } catch (e) { stamp.className = 'deep-stamp err'; stamp.textContent = 'ERP fetch failed — is the VPN/source DB reachable?'; }
+    btn.disabled = false; btn.textContent = '🔄 Refresh from ERP';
+  };
+  return wrap;
 }
 function milestoneRow(job, m) {
   const tracked = m.tracked !== false && m.state !== 'n/a';
