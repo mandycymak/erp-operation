@@ -19,6 +19,9 @@ user-lists/
 # Generated / local
 data.js
 
+# Local Claude Code workspace (skills, scheduled-task lock) - keep local
+.claude/
+
 # OS / editor cruft
 Thumbs.db
 .DS_Store
