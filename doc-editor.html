@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Document Editor</title>
+<link rel="stylesheet" href="/bl-review.css">
+</head>
+<body>
+<div class="page">
+  <div class="bar">
+    <h1 id="title">Document</h1>
+    <span class="badge" id="status"></span>
+    <span class="muted" id="meta"></span>
+    <span class="spacer"></span>
+    <button class="noprint" id="sizeBtn" title="Toggle print paper size">Paper: A4</button>
+    <button class="noprint" id="printBtn">Print / Save PDF</button>
+    <button class="noprint" id="backBtn" onclick="window.close()">Close</button>
+  </div>
+  <div id="msg"></div>
+  <div class="card noprint" id="verCard">
+    <b>Versions</b>
+    <div class="verlist" id="verList" style="margin-top:6px"></div>
+  </div>
+  <div class="card noprint" id="diffCard" style="display:none">
+    <b id="diffTitle">Changes</b>
+    <div id="diffBody" style="margin-top:6px"></div>
+  </div>
+  <div id="doc"></div>
+  <div class="card noprint" id="attCard">
+    <b>Attachment files</b> <span class="muted">(rider documents - PDF/PNG/JPEG, max 5 MB; pushed to the ERP files at issue)</span>
+    <div id="attList" style="margin-top:6px"></div>
+    <div id="attUpload" style="margin-top:8px">
+      <input type="file" id="attFile" accept="application/pdf,image/png,image/jpeg">
+    </div>
+  </div>
+  <div class="card noprint" id="actions"></div>
+  <div class="card noprint" id="evtCard">
+    <b>History</b>
+    <div id="evtBody" style="margin-top:6px"><div class="empty">Loading...</div></div>
+  </div>
+</div>
+<script src="/bl-form.js"></script>
+<script src="/doc-editor.js"></script>
+</body>
+</html>

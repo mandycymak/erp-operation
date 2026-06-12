@@ -92,8 +92,10 @@ function _ClosingField($S,$json,$code){
   $null
 }
 function _PlannedDue($S,$d){
+  # ERP "empty" dates are stored as 1900-01-01 - a due derived from one is junk (it polluted next_due
+  # with 1900-01-0x values and made every row "overdue"). Anything before 1990 is treated as no date.
   if("$($d.sla_type)" -eq 'fixed' -and $d.sla_anchor){
-    $base=_FieldVal $S $d.sla_anchor; if(-not ($base -is [datetime])){ return $null }
+    $base=_FieldVal $S $d.sla_anchor; if(-not ($base -is [datetime]) -or $base.Year -lt 1990){ return $null }
     $off=[int]$d.sla_offset_val; if("$($d.sla_direction)" -eq 'before'){ $off=-$off }
     if("$($d.sla_offset_unit)" -eq 'hour'){ return $base.AddHours($off) } else { return $base.AddDays($off) }
   } elseif("$($d.sla_type)" -eq 'baseline'){
@@ -102,7 +104,7 @@ function _PlannedDue($S,$d){
       $etd = if("$($S.ship.mode)" -eq 'Air'){ $S.ship.atd_date }
              elseif("$($S.bound)" -eq 'Import'){ if($S.ship.departure1){$S.ship.departure1}elseif($S.ship.arrival1){$S.ship.arrival1}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null} }
              elseif($S.ship.departure2){$S.ship.departure2}elseif($S.ship.eta_delivery){$S.ship.eta_delivery}else{$null}
-      if($etd -is [datetime]){ return $etd.AddDays(-$S.lead) }
+      if($etd -is [datetime] -and $etd.Year -ge 1990){ return $etd.AddDays(-$S.lead) }
     }
     return $null
   }

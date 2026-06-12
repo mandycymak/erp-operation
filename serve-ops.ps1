@@ -12,6 +12,7 @@ param([string]$ConfigPath=(Join-Path $PSScriptRoot "ops.config.json"), [string]$
 $ErrorActionPreference="Stop"
 $cfg=[IO.File]::ReadAllText($ConfigPath)|ConvertFrom-Json   # NOT Get-Content: PS5.1 reads BOM-less UTF-8 as ANSI (mojibake)
 . (Join-Path $PSScriptRoot "ops-eval.ps1")   # pure helpers only (route/cargo builders for /api-ops/erp-detail)
+. (Join-Path $PSScriptRoot "erp-doc-api.ps1") # ERP document-issue client (mock mode until the real API is mapped)
 function EnvOrConfig($n,$v){ $e=[Environment]::GetEnvironmentVariable($n); if($e -and $e.Trim()){$e}else{$v} }
 $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.auth
 $user=EnvOrConfig "DB_USER" $cfg.user; $password=EnvOrConfig "DB_PASSWORD" $cfg.password; $opsDb=EnvOrConfig "DB_OPS_DB" $cfg.opsDb
@@ -116,6 +117,13 @@ function Send-File($ctx,$path){
   $ctx.Response.Headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"; $ctx.Response.Headers["Pragma"]="no-cache"
   $ctx.Response.OutputStream.Write($bytes,0,$bytes.Length); $ctx.Response.OutputStream.Close()
 }
+# binary sibling of Send-File for DB-stored blobs (doc attachments) - same no-store headers
+function Send-Blob($ctx,[byte[]]$bytes,$ctype,$name){
+  $ctx.Response.StatusCode=200; $ctx.Response.ContentType=$ctype
+  $ctx.Response.Headers["Content-Disposition"]=('inline; filename="' + ("$name" -replace '"','') + '"')
+  $ctx.Response.Headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"; $ctx.Response.Headers["Pragma"]="no-cache"
+  $ctx.Response.OutputStream.Write($bytes,0,$bytes.Length); $ctx.Response.OutputStream.Close()
+}
 # prebuilt-string sibling of Send-Json (same no-store headers) — for the cached /api-ops/ports payload, where
 # ConvertTo-Json over ~5k port objects would take seconds on every request (the server is single-threaded).
 function Send-JsonRaw($ctx,[string]$json,$code=200){
@@ -136,7 +144,9 @@ function Reset-Conn($cn){ try{ if($cn.State -ne 'Open'){ $cn.Close(); $cn.Open()
 function RunQ($cn,$sql,$params,$timeoutSec=45){
   for($attempt=1;;$attempt++){ try{
     $cmd=$cn.CreateCommand(); $cmd.CommandText=$sql; $cmd.CommandTimeout=$timeoutSec
-    foreach($k in $params.Keys){ $v=$params[$k]; [void]$cmd.Parameters.AddWithValue("@$k",$(if($null -eq $v){[DBNull]::Value}else{$v})) }
+    # assign-then-pass, NOT a $(if...) subexpression: a subexpression ENUMERATES array values, turning a
+    # byte[] (attachment blob) into Object[] which SqlClient cannot map to a provider type
+    foreach($k in $params.Keys){ $v=$params[$k]; if($null -eq $v){ $v=[DBNull]::Value }; [void]$cmd.Parameters.AddWithValue("@$k",$v) }
     $r=$cmd.ExecuteReader(); $rows=@()
     while($r.Read()){ $o=[ordered]@{}; for($i=0;$i -lt $r.FieldCount;$i++){ $v=$r.GetValue($i); if($v -is [DBNull]){$v=$null}; $o[$r.GetName($i)]=$v }; $rows+=[pscustomobject]$o }
     $r.Close(); return $rows
@@ -437,10 +447,24 @@ function Handle-Worklist($cn,$qs,$me){
   }
   if($qs['station']){ $w+=" AND station=@st "; $p['st']=$qs['station'] }
   if($qs['mode']){ $w+=" AND mode=@md "; $p['md']=$qs['mode'] }
-  # date window on sort_key (the per-shipment operationally-relevant date: ATA/ETA arriving, ETD/cargo-ready
-  # for export). NULL-keyed rows are kept so a window never silently hides a shipment that lacks a date.
-  if($qs['from']){ $w+=" AND (sort_key IS NULL OR sort_key>=@from) "; $p['from']="$($qs['from'])" }
-  if($qs['to']){   $w+=" AND (sort_key IS NULL OR sort_key<=@to) ";   $p['to']="$($qs['to'])" }
+  # date window = "needs my attention in this range". A row stays when ANY of these dates hits the window:
+  #   sort_key    - it is MOVING then (ATA/ETA for import, ETD/cargo-ready for export)
+  #   next_due    - WORK is due then (milestone due dates derive from ETD, so a booking sailing in 2-3
+  #                 weeks still surfaces the week its early milestones fall due)
+  #   anchor_date - it was CREATED then (a brand-new booking surfaces immediately, before any due date)
+  # Plus: OVERDUE work (next_due in the last 30 days, still pending) stays visible in any window.
+  # Older overdue = zombie jobs nobody closed (some date back years) - they only appear under "All dates",
+  # otherwise they would drown the default week view (418 of 622 rows on the live test DB).
+  # Rows with none of the three dates are kept so a window never silently hides a shipment.
+  if($qs['from'] -or $qs['to']){
+    $p['dlo']=$(if($qs['from']){"$($qs['from'])"}else{'0001-01-01'})
+    $p['dhi']=$(if($qs['to']){"$($qs['to'])"}else{'9999-12-31'})
+    $p['dtoday']=(Today-Date).ToString('yyyy-MM-dd')
+    $w+=" AND ( (sort_key IS NULL AND next_due IS NULL AND anchor_date IS NULL) " +
+        "OR sort_key BETWEEN @dlo AND @dhi OR next_due BETWEEN @dlo AND @dhi " +
+        "OR (next_due<@dtoday AND next_due>=DATEADD(day,-30,CONVERT(date,@dtoday))) " +
+        "OR anchor_date BETWEEN @dlo AND @dhi ) "
+  }
   # company filter: match the picked code against ANY role the company may play on a shipment
   if($qs['company']){ $w+=" AND @co IN (cust_code,shipper_code,consignee_code,agent_code,ctrl_code) "; $p['co']="$($qs['company'])" }
   # POL/POD accept comma-separated multi-select lists (chips UI) -> parameterised IN
@@ -511,7 +535,9 @@ $script:ErpCols=@{}   # per (db|table) Filter-Cols cache so repeat clicks skip I
 $SeaDetailCols="jobn,ref,blno,mobl,bound,routing,pol,pod,deli,dest,pol_name,pod_name,deli_name,dest_name,vessel_1,voyage_1,vessel_2,voyage_2,departure1,departure2,arrival1,arrival1d,arrival2,arrival2d,arrival3,available_date,eta_delivery,goods_delivery,cargoready,spotid,sono,t_book_qty,t_book_wgt,t_book_cbm,t_rece_qty,t_rece_wgt,t_rece_cbm,remark"
 $AirDetailCols="jobn,ref,hawb,mawb,bound,routing,booking,po_no,pol,pod,to1,to3,dest,deli,pol_name,pod_name,to1_name,to3_name,dest_name,deli_name,flight1,flight2,flight3,f_date1,f_date2,f_date3,f_time1,f_time2,f_time3,fa_date1,fa_date2,fa_date3,rout_by_1,atd_date,ata_date,cargoready,goods_delivery,t_book_qty,t_book_wgt,t_book_cwt,t_book_cbm,t_rece_qty,t_rece_cbm,ttl_cwt,remark,special_remark"
 function Get-ErpCols($srcCn,$db,$table,$wantCsv,[string[]]$ntextCols){
-  $key="$db|$table"
+  # key includes the want-list: erp-detail and the doc seeder ask for DIFFERENT columns of the same table,
+  # and a db|table-only key would hand one caller the other's (possibly narrower) cached list
+  $key="$db|$table|$wantCsv"
   if($script:ErpCols[$key]){ return $script:ErpCols[$key] }
   $have=@{}; foreach($r in @(RunQ $srcCn "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=@t" @{ t=$table } 8)){ $have["$($r.COLUMN_NAME)".ToLower()]=1 }
   $keep=@(@($wantCsv -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $have[$_.ToLower()] })
@@ -601,6 +627,664 @@ function Save-MilestoneClose($cn,$ctx,$me){
   $newNote=[pscustomobject]@{ id=[guid]::NewGuid().ToString(); created=(Get-Date).ToString('o'); user=$me; job_no=$job; milestone_code=$code; kind=$kind; note=$txt; mentions=$ment; status='open'; doneBy=''; doneAt=''; silent=$silent }
   Write-Notes (@(Read-Notes) + $newNote)
   @{ ok=$true; jobNo=$job; milestone_code=$code; state=$(if($reopen){'pending'}else{'bypassed'}); worst=$worst; openAmber=$amber; openRed=$red; nextDue=$nd }
+}
+
+# ============================================================================================================
+#  DRAFT DOCUMENT REVIEW (House BL / HAWB customer agreement loop)
+#  Staff create a draft from the shipment snapshot (+ a bounded ERP enrichment read at creation time only),
+#  send the customer a tokenized link (/bl-review/<token>, no login), the customer edits the on-screen bill
+#  and submits; staff diff/correct/resend until both sides agree, then erp-doc-api.ps1 issues the official
+#  document. All state in pgsops doc_* tables; every action appended to doc_event_log. Raw tokens are never
+#  stored (SHA-256 at rest); every send revokes prior tokens; issue revokes all.
+#  Status machine:
+#    DRAFT -send-> SENT -submit-> CUSTOMER_SUBMITTED -staff save-> DRAFT (resend v+1)
+#                    \-approve-> CUSTOMER_APPROVED -agree-> AGREED -issue-> ISSUED
+#    ISSUED -amend(amend_count++, fee)-> AMEND_DRAFT -> (cycle repeats) -> ISSUED
+# ============================================================================================================
+$DocFieldsPath=Join-Path $Root "doc-fields.json"
+function Doc-FieldDefs($type){
+  if(-not $script:DocDict){
+    $j=[IO.File]::ReadAllText($DocFieldsPath)|ConvertFrom-Json
+    $script:DocDict=@{ HBL=@($j.HBL); HAWB=@($j.HAWB) }
+  }
+  @($script:DocDict[$type])
+}
+function New-RawToken {
+  $b=New-Object byte[] 32
+  $rng=[System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try{ $rng.GetBytes($b) } finally { $rng.Dispose() }
+  ([Convert]::ToBase64String($b)).Replace('+','-').Replace('/','_').TrimEnd('=')   # base64url, 43 chars
+}
+function Token-Hash($raw){
+  $sha=[System.Security.Cryptography.SHA256]::Create()
+  try{ ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$raw")) | ForEach-Object { $_.ToString('x2') }) -join '' } finally { $sha.Dispose() }
+}
+function Doc-Event($cn,$docId,$ver,$evt,$actor,$tokenHash,$ip,$detail){
+  RunQ $cn "INSERT INTO dbo.doc_event_log(doc_id,version_no,event,actor,token_hash,ip,detail,occurred_at) VALUES(@d,@v,@e,@a,@t,@i,@x,SYSDATETIME())" @{ d="$docId"; v=$ver; e="$evt"; a="$actor"; t=$tokenHash; i="$ip"; x=$detail } | Out-Null
+}
+# Whitelist + clamp incoming fields against the dictionary: ONLY known codes survive, each capped to maxlen.
+# kind 'table' (container grid) / 'riders' (attachment pages) values are arrays of row objects: every row is
+# REBUILT in dictionary column order (unknown keys dropped, per-cell maxlen clamp, all-blank rows removed,
+# capped at maxRows) so the serialized JSON is canonical and diffs stay stable across save/parse round trips.
+# Accepts a hashtable (server seed) or PSCustomObject (client JSON). Returns an ordered PSCustomObject.
+function Doc-CleanStr($v,$maxlen){
+  $s=''; if($null -ne $v){ $s="$v" }
+  $s=$s.Replace("`r`n","`n").Replace("`r","`n")
+  $ml=0; [void][int]::TryParse("$maxlen",[ref]$ml)
+  if($ml -gt 0 -and $s.Length -gt $ml){ $s=$s.Substring(0,$ml) }
+  $s
+}
+function Doc-CleanFields($type,$src){
+  $o=[ordered]@{}
+  foreach($f in (Doc-FieldDefs $type)){
+    $c="$($f.code)"
+    $raw=$null
+    if($src -is [hashtable]){ if($src.ContainsKey($c)){ $raw=$src[$c] } }
+    elseif($src -and $src.PSObject.Properties[$c]){ $raw=$src.$c }
+    if("$($f.kind)" -in 'table','riders'){
+      $maxR=10; [void][int]::TryParse("$($f.maxRows)",[ref]$maxR); if($maxR -lt 1){ $maxR=10 }
+      $rows=@()
+      foreach($r in @($raw)){
+        if($null -eq $r -or $r -is [string]){ continue }   # legacy/garbage value -> skipped, never crashes
+        $row=[ordered]@{}
+        foreach($col in @($f.columns)){
+          $cc="$($col.code)"; $cv=$null
+          if($r -is [hashtable]){ if($r.ContainsKey($cc)){ $cv=$r[$cc] } }
+          elseif($r.PSObject.Properties[$cc]){ $cv=$r.$cc }
+          $row[$cc]=Doc-CleanStr $cv $col.maxlen
+        }
+        $blank=$true; foreach($k in $row.Keys){ if("$($row[$k])".Trim()){ $blank=$false; break } }
+        if(-not $blank){ $rows+=,$row }
+        if($rows.Count -ge $maxR){ break }
+      }
+      $o[$c]=@($rows)
+    } else {
+      $o[$c]=Doc-CleanStr $raw $f.maxlen
+    }
+  }
+  [pscustomobject]$o
+}
+# canonical comparable string for a field value: strings as-is, structured values as compact JSON.
+# NB: -InputObject (not pipeline) - piping a 1-row array to ConvertTo-Json unrolls it to a bare object.
+function Doc-ValStr($v){
+  if($null -eq $v){ return '' }
+  if($v -is [string]){ return $v }
+  ConvertTo-Json -InputObject $v -Depth 6 -Compress
+}
+# Field codes whose value differs between an old snapshot (JSON string) and a cleaned new object.
+# EMITS items (no comma-wrap) - call sites collect with @(Doc-Changed ...). A `,@()` return here +
+# @() at the call site double-wraps: Count is then always 1 and ConvertTo-Json nests the array.
+function Doc-Changed($oldJson,$newObj){
+  $old=$null; try{ $old="$oldJson"|ConvertFrom-Json }catch{}
+  foreach($p in $newObj.PSObject.Properties){
+    $ov=$null; if($old -and $old.PSObject.Properties[$p.Name]){ $ov=$old.($p.Name) }
+    if((Doc-ValStr $ov) -ne (Doc-ValStr $p.Value)){ $p.Name }
+  }
+}
+function Get-DocHead($cn,$docId){
+  $r=@(RunQ $cn "SELECT TOP 1 doc_id,job_no,doc_type,station,mode,bound,status,current_version,customer_email,customer_name,erp_doc_no,CONVERT(varchar(19),issued_at,120) issued_at,amend_count,created_by,CONVERT(varchar(19),created_at,120) created_at,CONVERT(varchar(19),updated_at,120) updated_at FROM dbo.doc_draft WHERE doc_id=@d" @{ d="$docId" })
+  if(-not $r.Count){ return $null }
+  if(-not (Test-JobScope $r[0])){ return $null }   # out-of-scope = 'not found' (no existence oracle)
+  $r[0]
+}
+function Doc-HeadProj($cn,$h){
+  $tok=@(RunQ $cn "SELECT TOP 1 customer_email,customer_name,CONVERT(varchar(16),expires_at,120) expires_at,view_count,CONVERT(varchar(16),last_view_at,120) last_view_at FROM dbo.doc_review_token WHERE doc_id=@d AND revoked=0 AND expires_at>SYSDATETIME() ORDER BY created_at DESC" @{ d="$($h.doc_id)" })
+  $t=$null
+  if($tok.Count){ $t=@{ customerEmail=[string]$tok[0].customer_email; customerName=[string]$tok[0].customer_name; expiresAt=[string]$tok[0].expires_at; viewCount=[int]$tok[0].view_count; lastViewAt=[string]$tok[0].last_view_at } }
+  [pscustomobject]@{ docId=[string]$h.doc_id; jobNo=[string]$h.job_no; docType=[string]$h.doc_type; station=[string]$h.station
+    status=[string]$h.status; currentVersion=[int]$h.current_version; customerEmail=[string]$h.customer_email; customerName=[string]$h.customer_name
+    erpDocNo=[string]$h.erp_doc_no; issuedAt=[string]$h.issued_at; amendCount=[int]$h.amend_count
+    createdBy=[string]$h.created_by; createdAt=[string]$h.created_at; updatedAt=[string]$h.updated_at; activeToken=$t }
+}
+# the 'back to editing' status: plain DRAFT before first issue, AMEND_DRAFT once an amendment cycle started
+function Doc-DraftState($h){ if([int]$h.amend_count -gt 0){ 'AMEND_DRAFT' } else { 'DRAFT' } }
+
+# seed from the pgsops shipment snapshot (always available; no ERP touch)
+function Doc-SaSeed($a,$type){
+  $f=@{}
+  if($type -eq 'HBL'){
+    $f['hbl_no']="$($a.house_bill)"; $f['shipper']="$($a.shipper_name)"; $f['consignee']="$($a.consignee_name)"
+    $f['export_refs']="$($a.cust_ref)"; $f['vessel_voyage']="$($a.vessel_voyage)"
+    $f['port_of_loading']="$($a.pol)"; $f['port_of_discharge']="$($a.pod)"
+    $f['freight_terms']="$($a.incoterm)"; $f['date_of_issue']=(Today-Str)
+    if("$($a.total_weight)".Trim()){ $f['gross_weight']="$($a.total_weight)".Trim()+' KGS' }
+    if("$($a.total_cbm)".Trim()){ $f['measurement']="$($a.total_cbm)".Trim()+' CBM' }
+    if("$($a.container_no)".Trim()){ $f['containers']=@(@{ container_no="$($a.container_no)".Trim() }) }   # fallback row; ERP seed replaces with the full blcont detail
+    if("$($a.commodity)".Trim()){ $f['description']="$($a.commodity)".Trim() }
+  } else {
+    $f['hawb_no']="$($a.house_bill)"; $f['mawb_no']="$($a.master_bill)"
+    $f['shipper']="$($a.shipper_name)"; $f['consignee']="$($a.consignee_name)"
+    $f['airport_departure']="$($a.pol)"; $f['airport_destination']="$($a.pod)"
+    $f['routing']="$($a.route_summary)"; $f['executed_date']=(Today-Str)
+    if("$($a.total_weight)".Trim()){ $f['gross_weight']="$($a.total_weight)".Trim() }
+    if("$($a.commodity)".Trim()){ $f['nature_quantity_goods']="$($a.commodity)".Trim() }
+  }
+  $f
+}
+# party box text: name on the first line, then the address lines (Split-PartyBox in erp-doc-api.ps1
+# reads it back the same way: first line = partyName, rest = address). Skips blanks and an address
+# line that just repeats the name.
+function Doc-PartyText($name,$adds){
+  $ls=@(); $nv="$name".Trim(); if($nv){ $ls+=$nv }
+  foreach($x in @($adds)){ $xv="$x".Trim(); if($xv -and $xv -ne $nv){ $ls+=$xv } }
+  ($ls -join "`n")
+}
+# customer-master lookup (custsub): code -> "name\naddress" using the documentation English block,
+# falling back to the mailing block. Returns '' when the code/table is absent (seed stays blank).
+function Doc-CustLookup($srcCn,$db,$code){
+  $code="$code".Trim(); if(-not $code){ return '' }
+  $cols=Get-ErpCols $srcCn $db 'custsub' 'code,doc_e_name,doc_e_add1,doc_e_add2,doc_e_add3,doc_e_add4,doc_e_add5,mal_e_name,mal_e_add1,mal_e_add2,mal_e_add3,mal_e_add4,mal_e_add5' @()
+  if(-not $cols){ return '' }
+  $r=@(RunQ $srcCn "SELECT TOP 1 $cols FROM dbo.custsub WHERE code=@c" @{ c=$code } 8)
+  if(-not $r.Count){ return '' }
+  $b=$r[0]
+  $t=Doc-PartyText $b.doc_e_name @($b.doc_e_add1,$b.doc_e_add2,$b.doc_e_add3,$b.doc_e_add4,$b.doc_e_add5)
+  if(-not $t){ $t=Doc-PartyText $b.mal_e_name @($b.mal_e_add1,$b.mal_e_add2,$b.mal_e_add3,$b.mal_e_add4,$b.mal_e_add5) }
+  $t
+}
+# Best-effort ERP enrichment at DRAFT-CREATION time only (staff click; never on a customer request path).
+# Same bounded pattern as Handle-ErpDetail: keyed seek, Connect Timeout=5, CommandTimeout=8, Packet Size=512.
+# Returns '' on success or a note string; failure leaves the affected boxes on their snapshot/blank values.
+function Doc-ErpSeed($a,$f){
+  $db=$DbByStation["$($a.station)".Trim().ToUpper()]; if(-not $db){ return "no ERP database mapped for station $($a.station)" }
+  $key="$($a.erp_ref)".Trim(); if(-not $key){ return 'no erp_ref on the snapshot' }
+  $isAir=("$($a.mode)" -eq 'Air')
+  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=5;Packet Size=512"
+  try{
+    $srcCn.Open()
+    if($isAir){
+      $cols=Get-ErpCols $srcCn $db 'awbhead' 'pol_name,pod_name,flight1,f_date1,t_book_qty,t_book_wgt,ttl_cwt,special_remark,shpr_name,shpr_add1,shpr_add2,shpr_add3,shpr_add4,shpr_add5,cgne_name,cgne_add1,cgne_add2,cgne_add3,cgne_add4,cgne_add5,agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5,issu_at' @('special_remark')
+      $hdr=@(); if($cols){ $hdr=@(RunQ $srcCn "SELECT TOP 1 $cols FROM dbo.awbhead WHERE ref=@k" @{ k=$key } 8) }
+      if($hdr.Count){
+        $b=$hdr[0]
+        if("$($b.pol_name)".Trim()){ $f['airport_departure']="$($b.pol_name)".Trim() }
+        if("$($b.pod_name)".Trim()){ $f['airport_destination']="$($b.pod_name)".Trim() }
+        # party boxes print name + FULL address (awbhead carries the printed blocks denormalized)
+        $stx=Doc-PartyText $b.shpr_name @($b.shpr_add1,$b.shpr_add2,$b.shpr_add3,$b.shpr_add4,$b.shpr_add5)
+        if($stx){ $f['shipper']=$stx }
+        $ctx=Doc-PartyText $b.cgne_name @($b.cgne_add1,$b.cgne_add2,$b.cgne_add3,$b.cgne_add4,$b.cgne_add5)
+        if($ctx){ $f['consignee']=$ctx }
+        $atx=Doc-PartyText $b.agnt_name @($b.agnt_add1,$b.agnt_add2,$b.agnt_add3,$b.agnt_add4,$b.agnt_add5)
+        if($atx){ $f['issuing_carrier_agent']=$atx }
+        if("$($b.issu_at)".Trim()){ $f['executed_place']="$($b.issu_at)".Trim() }
+        $fl=@(); if("$($b.flight1)".Trim()){ $fl+="$($b.flight1)".Trim() }
+        if($b.f_date1){ try{ $fl+=([datetime]$b.f_date1).ToString('yyyy-MM-dd') }catch{} }
+        if($fl.Count){ $f['flight_date']=($fl -join ' / ') }
+        if("$($b.t_book_qty)".Trim()){ $f['pieces']="$($b.t_book_qty)".Trim() }
+        if("$($b.t_book_wgt)".Trim()){ $f['gross_weight']="$($b.t_book_wgt)".Trim() }
+        if("$($b.ttl_cwt)".Trim()){ $f['chargeable_weight']="$($b.ttl_cwt)".Trim() }
+        if("$($b.special_remark)".Trim()){ $f['handling_info']="$($b.special_remark)".Trim() }
+      }
+      $items=@(RunQ $srcCn "SELECT TOP 10 item_seq, CONVERT(nvarchar(400),good_desc2) AS gd FROM dbo.awbdetl WHERE blh=@r ORDER BY item_seq" @{ r=$key } 8)
+      $descs=@(); foreach($it in $items){ $dv="$($it.gd)".Trim(); if($dv -and $descs -notcontains $dv){ $descs+=$dv } }
+      if($descs.Count){ $f['nature_quantity_goods']=($descs -join "`n") }
+    } else {
+      $cols=Get-ErpCols $srcCn $db 'blhead' 'pol_name,pod_name,deli_name,dest_name,t_book_qty,t_book_wgt,t_book_cbm,no_orig,telex_rel,frt_terms,shpr_name,shpr_add1,shpr_add2,shpr_add3,shpr_add4,shpr_add5,cgne_name,cgne_add1,cgne_add2,cgne_add3,cgne_add4,cgne_add5,not1_name,not1_add1,not1_add2,not1_add3,not1_add4,not1_add5,carr_name,rece_name,issu_at,payable_at,agn2_code,agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5' @()
+      $hdr=@(); if($cols){ $hdr=@(RunQ $srcCn "SELECT TOP 1 $cols FROM dbo.blhead WHERE ref=@k" @{ k=$key } 8) }
+      if($hdr.Count){
+        $b=$hdr[0]
+        if("$($b.pol_name)".Trim()){ $f['port_of_loading']="$($b.pol_name)".Trim() }
+        if("$($b.pod_name)".Trim()){ $f['port_of_discharge']="$($b.pod_name)".Trim() }
+        if("$($b.deli_name)".Trim()){ $f['place_of_delivery']="$($b.deli_name)".Trim() }
+        if("$($b.dest_name)".Trim()){ $f['final_destination']="$($b.dest_name)".Trim() }
+        if("$($b.t_book_qty)".Trim()){ $f['num_pkgs']="$($b.t_book_qty)".Trim() }
+        if("$($b.t_book_wgt)".Trim()){ $f['gross_weight']="$($b.t_book_wgt)".Trim()+' KGS' }
+        if("$($b.t_book_cbm)".Trim()){ $f['measurement']="$($b.t_book_cbm)".Trim()+' CBM' }
+        # GUARDRAIL: telex release means NO original B/L is issued -> the box must say 0
+        $telex=$false; if($b.PSObject.Properties['telex_rel']){ try{ $telex=[bool]$b.telex_rel }catch{} }
+        if($telex){ $f['num_originals']='0' }
+        elseif("$($b.no_orig)".Trim()){ $f['num_originals']="$($b.no_orig)".Trim() }
+        # freight terms presentation: PP -> FREIGHT PREPAID, else FREIGHT COLLECT, incoterm bracketed.
+        # PRESENTATION-ONLY box: the user may erase the incoterm part; the ERP value is never written back.
+        $ftv="$($b.frt_terms)".Trim().ToUpper()
+        if($ftv){
+          $ft= if($ftv -eq 'PP'){ 'FREIGHT PREPAID' } else { 'FREIGHT COLLECT' }
+          $inco="$($a.incoterm)".Trim()
+          $f['freight_terms']= if($inco){ "$ft ($inco)" } else { $ft }
+        }
+        # party boxes print name + FULL address (where the cargo comes from / delivers to) - blhead
+        # carries each printed block denormalized: shpr_/cgne_/not1_/agnt_ name+add1..5
+        $stx=Doc-PartyText $b.shpr_name @($b.shpr_add1,$b.shpr_add2,$b.shpr_add3,$b.shpr_add4,$b.shpr_add5)
+        if($stx){ $f['shipper']=$stx }
+        $ctx=Doc-PartyText $b.cgne_name @($b.cgne_add1,$b.cgne_add2,$b.cgne_add3,$b.cgne_add4,$b.cgne_add5)
+        if($ctx){ $f['consignee']=$ctx }
+        $ntx=Doc-PartyText $b.not1_name @($b.not1_add1,$b.not1_add2,$b.not1_add3,$b.not1_add4,$b.not1_add5)
+        if($ntx){ $f['notify']=$ntx }
+        if("$($b.carr_name)".Trim()){ $f['precarriage_by']="$($b.carr_name)".Trim() }
+        if("$($b.rece_name)".Trim()){ $f['place_of_receipt']="$($b.rece_name)".Trim() }
+        if("$($b.issu_at)".Trim()){ $f['place_of_issue']="$($b.issu_at)".Trim() }
+        if("$($b.payable_at)".Trim()){ $f['freight_payable_at']="$($b.payable_at)".Trim() }
+        # delivery agent: the blhead agent block (agnt_*) prints on the bill; fall back to the
+        # customer-master record of agn2_code when the block is blank
+        $datx=Doc-PartyText $b.agnt_name @($b.agnt_add1,$b.agnt_add2,$b.agnt_add3,$b.agnt_add4,$b.agnt_add5)
+        if(-not $datx){ $datx=Doc-CustLookup $srcCn $db $b.agn2_code }
+        if($datx){ $f['delivery_agent']=$datx }
+      }
+      # forwarding agent = OUR issuing office: fm3kco.site maps this station db -> owncode (e.g. HK01
+      # site -> fm3khkg -> S0001). The S-codes have no custsub master reachable with the read login, so
+      # after trying the master we fall back to the latest blhead whose agn2 IS the own office - its
+      # denormalized agnt_* block carries the office name+address. fm3kco is absent on the local dev
+      # server - the bounded try just leaves the box blank there.
+      try{
+        $oc=@(RunQ $srcCn "SELECT TOP 1 owncode FROM fm3kco.dbo.site WHERE dbname=@d" @{ d=$db } 8)
+        if($oc.Count -and "$($oc[0].owncode)".Trim()){
+          $ocv="$($oc[0].owncode)".Trim()
+          $own=Doc-CustLookup $srcCn $db $ocv
+          if(-not $own){
+            $ob=@(RunQ $srcCn "SELECT TOP 1 agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5 FROM dbo.blhead WHERE agn2_code=@c AND LTRIM(RTRIM(ISNULL(agnt_name,'')))<>'' ORDER BY ref DESC" @{ c=$ocv } 8)
+            if($ob.Count){ $own=Doc-PartyText $ob[0].agnt_name @($ob[0].agnt_add1,$ob[0].agnt_add2,$ob[0].agnt_add3,$ob[0].agnt_add4,$ob[0].agnt_add5) }
+          }
+          if($own){ $f['forwarding_agent']=$own }
+        }
+      }catch{}
+      # marks + description: blitem good_desc1 is often blank - the real text lives in the ntext pair
+      # mark2/desc2 (mark3/desc3 = continuation). When the joined text overflows its on-bill box, the
+      # FULL text seeds attachment/rider page 1 and the box prints the standard pointer instead.
+      $icols=Get-ErpCols $srcCn $db 'blitem' 'item_seq,good_desc1,mark2,desc2,mark3,desc3' @('mark2','desc2','mark3','desc3')
+      $items=@(); if($icols){ $items=@(RunQ $srcCn "SELECT TOP 10 $icols FROM dbo.blitem WHERE blh=@r ORDER BY item_seq" @{ r=$key } 8) }
+      $marks=@(); $descs=@()
+      foreach($it in $items){
+        $mv=("$($it.mark2)".Trim()+"`n"+"$($it.mark3)".Trim()).Trim(); if($mv -and $marks -notcontains $mv){ $marks+=$mv }
+        $dv="$($it.good_desc1)".Trim(); if(-not $dv){ $dv="$($it.desc2)".Trim() }
+        $d3="$($it.desc3)".Trim(); if($d3){ $dv=("$dv`n$d3").Trim() }
+        if($dv -and $descs -notcontains $dv){ $descs+=$dv }
+      }
+      $mtx=($marks -join "`n"); $dtx=($descs -join "`n")
+      $mMax=1000; $dMax=2000   # box maxlens; read from the dictionary so a doc-fields.json change carries over
+      foreach($dd in @(Doc-FieldDefs 'HBL')){
+        if("$($dd.code)" -eq 'marks_numbers' -and $dd.maxlen){ $mMax=[int]$dd.maxlen }
+        if("$($dd.code)" -eq 'description' -and $dd.maxlen){ $dMax=[int]$dd.maxlen }
+      }
+      # overflow moves marks AND description TOGETHER (their lines belong side by side on the rider);
+      # the pointer prints in the Description box only - the Marks box goes blank, else the words
+      # 'AS PER ATTACHED SHEET' would print twice side by side
+      if(($mtx -and $mtx.Length -gt $mMax) -or ($dtx -and $dtx.Length -gt $dMax)){
+        $pg=@{}
+        if($mtx){ $pg['marks']=$mtx }
+        if($dtx){ $pg['description']=$dtx }
+        $f['marks_numbers']=''
+        $f['description']='AS PER ATTACHED SHEET'
+        $f['rider_pages']=@($pg)
+      } else {
+        if($mtx){ $f['marks_numbers']=$mtx }
+        if($dtx){ $f['description']=$dtx }
+      }
+      # structured container particulars (table field 'containers'); columns guarded per station schema
+      $ccols=Get-ErpCols $srcCn $db 'blcont' 'container,seal,cont_type,load_qty,pkgs_unit,load_wgt,load_cbm' @()
+      $cont=@(); if($ccols){ $cont=@(RunQ $srcCn "SELECT TOP 50 $ccols FROM dbo.blcont WHERE blh=@r ORDER BY container" @{ r=$key } 8) }
+      $crows=@()
+      foreach($cr in $cont){
+        $row=@{}
+        $row['container_no']= if($cr.PSObject.Properties['container']){ "$($cr.container)".Trim() } else { '' }
+        $row['seal_no']=      if($cr.PSObject.Properties['seal']){ "$($cr.seal)".Trim() } else { '' }
+        $row['cont_type']=    if($cr.PSObject.Properties['cont_type']){ "$($cr.cont_type)".Trim() } else { '' }
+        $row['qty']=          if($cr.PSObject.Properties['load_qty']){ "$($cr.load_qty)".Trim() } else { '' }
+        $row['qty_unit']=     if($cr.PSObject.Properties['pkgs_unit']){ "$($cr.pkgs_unit)".Trim() } else { '' }
+        $row['weight_kgs']=   if($cr.PSObject.Properties['load_wgt']){ "$($cr.load_wgt)".Trim() } else { '' }
+        $row['cbm']=          if($cr.PSObject.Properties['load_cbm']){ "$($cr.load_cbm)".Trim() } else { '' }
+        $hasAny=$false; foreach($k in $row.Keys){ if($row[$k]){ $hasAny=$true; break } }
+        if($hasAny){ $crows+=,$row }
+      }
+      if($crows.Count){ $f['containers']=@($crows) }
+    }
+    ''
+  }catch{ "ERP enrichment skipped: $($_.Exception.Message)" } finally{ try{ $srcCn.Close() }catch{} }
+}
+
+# ---- staff handlers (session-gated; routed inside the $cn switch) ----
+function Handle-DocList($cn,$qs){
+  $job="$($qs['job'])".Trim(); if(-not $job){ return @{error='job required'} }
+  $rows=@(RunQ $cn "SELECT doc_id,job_no,doc_type,station,mode,bound,status,current_version,customer_email,customer_name,erp_doc_no,CONVERT(varchar(19),issued_at,120) issued_at,amend_count,created_by,CONVERT(varchar(19),created_at,120) created_at,CONVERT(varchar(19),updated_at,120) updated_at FROM dbo.doc_draft WHERE job_no=@j ORDER BY doc_type" @{ j=$job })
+  $rows=@($rows|Where-Object{ Test-JobScope $_ })
+  @{ jobNo=$job; docs=@($rows|ForEach-Object{ Doc-HeadProj $cn $_ }) }
+}
+function Save-DocCreate($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.job_no){ return @{error='invalid payload'} }
+  $job="$($j.job_no)".Trim()
+  $a=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound,erp_ref,house_bill,master_bill,shipper_name,consignee_name,vessel_voyage,incoterm,cust_ref,pol,pod,CONVERT(varchar(20),total_weight) total_weight,CONVERT(varchar(20),total_cbm) total_cbm,container_no,route_summary,commodity FROM dbo.shipment_alerts WHERE job_no=@j" @{ j=$job })
+  if(-not $a.Count){ return @{error='not found'} }
+  if(-not (Test-JobScope $a[0])){ return @{error='not found'} }
+  $a=$a[0]
+  $type= if("$($a.mode)" -eq 'Air'){ 'HAWB' } else { 'HBL' }   # doc type follows the shipment mode
+  if($j.doc_type -and "$($j.doc_type)" -ne $type){ return @{error="this $($a.mode) shipment takes a $type document"} }
+  $dup=@(RunQ $cn "SELECT TOP 1 doc_id FROM dbo.doc_draft WHERE job_no=@j AND doc_type=@t" @{ j=$job; t=$type })
+  if($dup.Count){ return @{error='document already exists for this shipment'; docId=[string]$dup[0].doc_id} }
+  $f=Doc-SaSeed $a $type
+  $seedNote=Doc-ErpSeed $a $f
+  $clean=Doc-CleanFields $type $f
+  $fjson=$clean|ConvertTo-Json -Depth 6 -Compress
+  $docId=[guid]::NewGuid().ToString()
+  RunQ $cn "INSERT INTO dbo.doc_draft(doc_id,job_no,doc_type,station,mode,bound,status,current_version,created_by,created_at,updated_at) VALUES(@d,@j,@t,@s,@m,@b,'DRAFT',1,@u,SYSDATETIME(),SYSDATETIME())" @{ d=$docId; j=$job; t=$type; s="$($a.station)"; m="$($a.mode)"; b="$($a.bound)"; u=$me } | Out-Null
+  RunQ $cn "INSERT INTO dbo.doc_version(doc_id,version_no,side,base_version,fields,comment,created_by,created_at) VALUES(@d,1,'staff',NULL,@f,@c,@u,SYSDATETIME())" @{ d=$docId; f=$fjson; c=$(if($seedNote){"seeded from shipment snapshot ($seedNote)"}else{'seeded from shipment + ERP'}); u=$me } | Out-Null
+  Doc-Event $cn $docId 1 'created' $me $null '' (@{ seedNote=$seedNote }|ConvertTo-Json -Compress)
+  Audit $me "doc-create $type for $job ($docId)$(if($seedNote){' - '+$seedNote})"
+  @{ ok=$true; docId=$docId; docType=$type; status='DRAFT'; version=1; seedNote=$seedNote }
+}
+function Handle-DocGet($cn,$qs){
+  $id="$($qs['id'])".Trim(); if(-not $id){ return @{error='id required'} }
+  $h=Get-DocHead $cn $id; if(-not $h){ return @{error='not found'} }
+  $vno=[int]$h.current_version
+  if("$($qs['v'])".Trim() -match '^\d+$'){ $vno=[int]"$($qs['v'])".Trim() }
+  $ver=@(RunQ $cn "SELECT TOP 1 version_no,side,base_version,fields,comment,created_by,CONVERT(varchar(19),created_at,120) created_at FROM dbo.doc_version WHERE doc_id=@d AND version_no=@v" @{ d=$id; v=$vno })
+  if(-not $ver.Count){ return @{error='version not found'} }
+  $flds=$null; try{ $flds="$($ver[0].fields)"|ConvertFrom-Json }catch{}
+  $baseNo=$null
+  if("$($qs['base'])".Trim() -match '^\d+$'){ $baseNo=[int]"$($qs['base'])".Trim() }
+  elseif($ver[0].base_version){ $baseNo=[int]$ver[0].base_version }
+  $baseFlds=$null
+  if($baseNo -and $baseNo -ne $vno){
+    $bv=@(RunQ $cn "SELECT TOP 1 fields FROM dbo.doc_version WHERE doc_id=@d AND version_no=@v" @{ d=$id; v=$baseNo })
+    if($bv.Count){ try{ $baseFlds="$($bv[0].fields)"|ConvertFrom-Json }catch{} }
+  }
+  $vers=@(RunQ $cn "SELECT version_no,side,base_version,comment,created_by,CONVERT(varchar(19),created_at,120) created_at FROM dbo.doc_version WHERE doc_id=@d ORDER BY version_no" @{ d=$id })
+  @{ head=(Doc-HeadProj $cn $h)
+     version=@{ no=[int]$ver[0].version_no; side=[string]$ver[0].side; baseVersion=$baseNo; fields=$flds; comment=[string]$ver[0].comment; createdBy=[string]$ver[0].created_by; createdAt=[string]$ver[0].created_at }
+     baseFields=$baseFlds
+     versions=@($vers|ForEach-Object{ [pscustomobject]@{ no=[int]$_.version_no; side=[string]$_.side; base=$_.base_version; comment=[string]$_.comment; createdBy=[string]$_.created_by; createdAt=[string]$_.created_at } }) }
+}
+function Handle-DocEvents($cn,$qs){
+  $id="$($qs['id'])".Trim(); if(-not $id){ return @{error='id required'} }
+  $h=Get-DocHead $cn $id; if(-not $h){ return @{error='not found'} }
+  $rows=@(RunQ $cn "SELECT version_no,event,actor,ip,detail,CONVERT(varchar(19),occurred_at,120) occurred_at FROM dbo.doc_event_log WHERE doc_id=@d ORDER BY occurred_at,id" @{ d=$id })
+  @{ docId=$id; events=@($rows|ForEach-Object{
+      $det=$null; try{ if("$($_.detail)".Trim()){ $det="$($_.detail)"|ConvertFrom-Json } }catch{}
+      [pscustomobject]@{ version=$_.version_no; event=[string]$_.event; actor=[string]$_.actor; ip=[string]$_.ip; detail=$det; at=[string]$_.occurred_at } }) }
+}
+function Save-DocSave($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.doc_id){ return @{error='invalid payload'} }
+  $h=Get-DocHead $cn "$($j.doc_id)"; if(-not $h){ return @{error='not found'} }
+  if("$($h.status)" -notin 'DRAFT','CUSTOMER_SUBMITTED','CUSTOMER_APPROVED','AMEND_DRAFT'){ return @{error="cannot edit while status is $($h.status)$(if("$($h.status)" -eq 'SENT'){' - revoke the customer link first'})"} }
+  $clean=Doc-CleanFields "$($h.doc_type)" $j.fields
+  $cur=@(RunQ $cn "SELECT TOP 1 fields FROM dbo.doc_version WHERE doc_id=@d AND version_no=@v" @{ d="$($h.doc_id)"; v=[int]$h.current_version })
+  $changed=@(Doc-Changed $(if($cur.Count){"$($cur[0].fields)"}else{''}) $clean)
+  if(-not $changed.Count){ return @{error='no changes to save'} }
+  $newVer=[int]$h.current_version+1
+  $cmt="$($j.comment)".Trim(); if($cmt.Length -gt 1000){ $cmt=$cmt.Substring(0,1000) }
+  $newStatus=Doc-DraftState $h
+  RunQ $cn "INSERT INTO dbo.doc_version(doc_id,version_no,side,base_version,fields,comment,created_by,created_at) VALUES(@d,@v,'staff',@b,@f,@c,@u,SYSDATETIME())" @{ d="$($h.doc_id)"; v=$newVer; b=[int]$h.current_version; f=($clean|ConvertTo-Json -Depth 6 -Compress); c=$cmt; u=$me } | Out-Null
+  RunQ $cn "UPDATE dbo.doc_draft SET current_version=@v,status=@s,updated_at=SYSDATETIME() WHERE doc_id=@d" @{ v=$newVer; s=$newStatus; d="$($h.doc_id)" } | Out-Null
+  Doc-Event $cn "$($h.doc_id)" $newVer 'edited' $me $null '' (@{ changed=@($changed); comment=$cmt }|ConvertTo-Json -Depth 4 -Compress)
+  Audit $me "doc-save $($h.doc_type) $($h.job_no) v$newVer (changed: $($changed -join ','))"
+  @{ ok=$true; version=$newVer; status=$newStatus; changed=@($changed) }
+}
+function Save-DocSend($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.doc_id){ return @{error='invalid payload'} }
+  $h=Get-DocHead $cn "$($j.doc_id)"; if(-not $h){ return @{error='not found'} }
+  if("$($h.status)" -notin 'DRAFT','AMEND_DRAFT','SENT','CUSTOMER_SUBMITTED','CUSTOMER_APPROVED'){ return @{error="cannot send while status is $($h.status)"} }
+  $email="$($j.customer_email)".Trim(); $cname="$($j.customer_name)".Trim()
+  if($email -and $email -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$'){ return @{error='invalid customer email'} }
+  $days=14; $pd=0; if([int]::TryParse("$($j.expires_days)",[ref]$pd) -and $pd -ge 1 -and $pd -le 90){ $days=$pd }
+  # every send invalidates earlier links - exactly one live link per document
+  $old=@(RunQ $cn "UPDATE dbo.doc_review_token SET revoked=1 OUTPUT INSERTED.token_hash WHERE doc_id=@d AND revoked=0" @{ d="$($h.doc_id)" })
+  $raw=New-RawToken; $hash=Token-Hash $raw
+  RunQ $cn "INSERT INTO dbo.doc_review_token(token_hash,doc_id,sent_version,customer_email,customer_name,expires_at,revoked,created_by,created_at,view_count) VALUES(@h,@d,@v,@e,@n,DATEADD(day,@days,SYSDATETIME()),0,@u,SYSDATETIME(),0)" @{ h=$hash; d="$($h.doc_id)"; v=[int]$h.current_version; e=$(if($email){$email}else{$null}); n=$(if($cname){$cname}else{$null}); days=$days; u=$me } | Out-Null
+  RunQ $cn "UPDATE dbo.doc_draft SET status='SENT',customer_email=COALESCE(NULLIF(@e,''),customer_email),customer_name=COALESCE(NULLIF(@n,''),customer_name),updated_at=SYSDATETIME() WHERE doc_id=@d" @{ e=$email; n=$cname; d="$($h.doc_id)" } | Out-Null
+  Doc-Event $cn "$($h.doc_id)" ([int]$h.current_version) 'sent' $me $hash '' (@{ to=$email; expiresDays=$days; revokedPrior=@($old).Count }|ConvertTo-Json -Compress)
+  $base= if($cfg.publicBaseUrl -and "$($cfg.publicBaseUrl)".Trim()){ "$($cfg.publicBaseUrl)".Trim().TrimEnd('/') } else { "http://localhost:$Port" }
+  $link="$base/bl-review/$raw"
+  Audit $me "doc-send $($h.doc_type) $($h.job_no) v$($h.current_version) to '$email' (expires ${days}d)"
+  @{ ok=$true; link=$link; expiresDays=$days; sentVersion=[int]$h.current_version; status='SENT' }
+}
+function Save-DocTokenRevoke($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.doc_id){ return @{error='invalid payload'} }
+  $h=Get-DocHead $cn "$($j.doc_id)"; if(-not $h){ return @{error='not found'} }
+  $old=@(RunQ $cn "UPDATE dbo.doc_review_token SET revoked=1 OUTPUT INSERTED.token_hash WHERE doc_id=@d AND revoked=0" @{ d="$($h.doc_id)" })
+  $newStatus="$($h.status)"
+  if($newStatus -eq 'SENT'){ $newStatus=Doc-DraftState $h; RunQ $cn "UPDATE dbo.doc_draft SET status=@s,updated_at=SYSDATETIME() WHERE doc_id=@d" @{ s=$newStatus; d="$($h.doc_id)" } | Out-Null }
+  Doc-Event $cn "$($h.doc_id)" $null 'token_revoked' $me $null '' (@{ revoked=@($old).Count }|ConvertTo-Json -Compress)
+  Audit $me "doc-token-revoke $($h.doc_type) $($h.job_no) ($(@($old).Count) link(s))"
+  @{ ok=$true; revoked=@($old).Count; status=$newStatus }
+}
+function Save-DocAgree($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.doc_id){ return @{error='invalid payload'} }
+  $h=Get-DocHead $cn "$($j.doc_id)"; if(-not $h){ return @{error='not found'} }
+  if("$($h.status)" -ne 'CUSTOMER_APPROVED'){ return @{error="agree requires CUSTOMER_APPROVED (now $($h.status))"} }
+  # push the AGREED data to the ERP booking now (so nobody retypes it). The agree itself never blocks on
+  # the ERP: the push result is logged and shown, the workflow status is a fact between the two humans.
+  $ver=@(RunQ $cn "SELECT TOP 1 fields FROM dbo.doc_version WHERE doc_id=@d AND version_no=@v" @{ d="$($h.doc_id)"; v=[int]$h.current_version })
+  $flds=$null; if($ver.Count){ try{ $flds="$($ver[0].fields)"|ConvertFrom-Json }catch{} }
+  $sa=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound,sono,carrier,pol,pod,commodity,master_bill,incoterm FROM dbo.shipment_alerts WHERE job_no=@j" @{ j="$($h.job_no)" })
+  $saRow=$null; if($sa.Count){ $saRow=$sa[0] }
+  $erp=Invoke-ErpDocAgree $h $flds $saRow $me
+  RunQ $cn "UPDATE dbo.doc_draft SET status='AGREED',updated_at=SYSDATETIME() WHERE doc_id=@d" @{ d="$($h.doc_id)" } | Out-Null
+  Doc-Event $cn "$($h.doc_id)" ([int]$h.current_version) 'agreed' $me $null '' $null
+  if($erp.ok -and -not $erp.rejected){ Doc-Event $cn "$($h.doc_id)" ([int]$h.current_version) 'erp_booking_saved' $me $null '' (@{ mock=[bool]$erp.mock; steps=@($erp.steps) }|ConvertTo-Json -Depth 4 -Compress) }
+  else { Doc-Event $cn "$($h.doc_id)" ([int]$h.current_version) 'erp_error' $me $null '' (@{ step='booking/update'; error="$(if($erp.error){$erp.error}else{@($erp.steps)[-1]})" }|ConvertTo-Json -Compress) }
+  Audit $me "doc-agree $($h.doc_type) $($h.job_no) v$($h.current_version) [erp: $(@($erp.steps) -join '; ')$(if($erp.error){' ERR '+$erp.error})]"
+  @{ ok=$true; status='AGREED'; erp=@{ ok=[bool]$erp.ok; mock=[bool]$erp.mock; rejected=[bool]$erp.rejected; steps=@($erp.steps); error="$($erp.error)" } }
+}
+function Save-DocIssue($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.doc_id){ return @{error='invalid payload'} }
+  $h=Get-DocHead $cn "$($j.doc_id)"; if(-not $h){ return @{error='not found'} }
+  if("$($h.status)" -ne 'AGREED'){ return @{error="issue requires AGREED (now $($h.status))"} }
+  $ver=@(RunQ $cn "SELECT TOP 1 fields FROM dbo.doc_version WHERE doc_id=@d AND version_no=@v" @{ d="$($h.doc_id)"; v=[int]$h.current_version })
+  $flds=$null; if($ver.Count){ try{ $flds="$($ver[0].fields)"|ConvertFrom-Json }catch{} }
+  # the booking payload needs snapshot columns the head row does not carry (sono, port codes, carrier...)
+  $sa=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound,sono,carrier,pol,pod,commodity,master_bill,incoterm FROM dbo.shipment_alerts WHERE job_no=@j" @{ j="$($h.job_no)" })
+  $saRow=$null; if($sa.Count){ $saRow=$sa[0] }
+  # optional operator-attached agreed PDF (browser print-to-PDF), forwarded to /file/upload
+  $att=$null
+  if("$($j.pdf_base64)".Trim()){
+    $nm="$($j.pdf_name)".Trim() -replace '[^\w.\- ]',''
+    if(-not $nm){ $nm="agreed-$($h.doc_type)-$($h.job_no).pdf" }
+    $att=@{ name=$nm; base64="$($j.pdf_base64)".Trim() }
+  }
+  # every live rider attachment file goes to the ERP /file/upload as well
+  $riders=@()
+  foreach($ar in @(RunQ $cn "SELECT file_name,bytes FROM dbo.doc_attachment WHERE doc_id=@d AND deleted=0 ORDER BY uploaded_at" @{ d="$($h.doc_id)" })){
+    $riders+=,@{ name="$($ar.file_name)"; base64=[Convert]::ToBase64String([byte[]]$ar.bytes) }
+  }
+  $r=Invoke-ErpDocIssue $h $flds $saRow $me $att $riders
+  if(-not $r.ok){
+    Doc-Event $cn "$($h.doc_id)" ([int]$h.current_version) 'erp_error' $me $null '' (@{ error="$($r.error)" }|ConvertTo-Json -Compress)
+    return @{error="$($r.error)"}
+  }
+  RunQ $cn "UPDATE dbo.doc_draft SET status='ISSUED',erp_doc_no=@no,issued_at=SYSDATETIME(),updated_at=SYSDATETIME() WHERE doc_id=@d" @{ no="$($r.docNo)"; d="$($h.doc_id)" } | Out-Null
+  RunQ $cn "UPDATE dbo.doc_review_token SET revoked=1 WHERE doc_id=@d AND revoked=0" @{ d="$($h.doc_id)" } | Out-Null
+  Doc-Event $cn "$($h.doc_id)" ([int]$h.current_version) 'issued' $me $null '' (@{ erpDocNo="$($r.docNo)"; mock=[bool]$r.mock; steps=@($r.steps); pdfAttached=[bool]$att }|ConvertTo-Json -Depth 4 -Compress)
+  Audit $me "doc-issue $($h.doc_type) $($h.job_no) v$($h.current_version) -> $($r.docNo)$(if($r.mock){' (MOCK)'}) [$(@($r.steps) -join '; ')]"
+  @{ ok=$true; status='ISSUED'; erpDocNo="$($r.docNo)"; mock=[bool]$r.mock; steps=@($r.steps) }
+}
+function Save-DocAmend($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.doc_id){ return @{error='invalid payload'} }
+  $h=Get-DocHead $cn "$($j.doc_id)"; if(-not $h){ return @{error='not found'} }
+  if("$($h.status)" -ne 'ISSUED'){ return @{error="amend requires ISSUED (now $($h.status))"} }
+  $reason="$($j.reason)".Trim()
+  RunQ $cn "UPDATE dbo.doc_draft SET status='AMEND_DRAFT',amend_count=amend_count+1,updated_at=SYSDATETIME() WHERE doc_id=@d" @{ d="$($h.doc_id)" } | Out-Null
+  Doc-Event $cn "$($h.doc_id)" ([int]$h.current_version) 'amend_opened' $me $null '' (@{ reason=$reason; feeApplies=$true; amendNo=([int]$h.amend_count+1) }|ConvertTo-Json -Compress)
+  Audit $me "doc-amend $($h.doc_type) $($h.job_no) (amend #$([int]$h.amend_count+1), fee applies)$(if($reason){': '+$reason})"
+  @{ ok=$true; status='AMEND_DRAFT'; amendCount=([int]$h.amend_count+1); feeApplies=$true }
+}
+
+# ---- attachment files (rider documents uploaded by staff OR customer; pushed to ERP /file/upload at issue) ----
+# Body cap 7MB (5MB file as base64 + envelope); decoded max 5MB; pdf/png/jpeg only with magic-byte check.
+$DocAttachMagic=@{ 'application/pdf'=@(0x25,0x50,0x44,0x46); 'image/png'=@(0x89,0x50,0x4E,0x47); 'image/jpeg'=@(0xFF,0xD8) }
+function Doc-AttachValidate($fileName,$contentType,$b64){
+  $name="$fileName".Trim() -replace '[^\w.\- ]',''
+  if(-not $name){ return @{ ok=$false; err='file name required' } }
+  $ct="$contentType".Trim().ToLower()
+  if(-not $DocAttachMagic.ContainsKey($ct)){ return @{ ok=$false; err='only PDF, PNG or JPEG files are accepted' } }
+  $bytes=$null; try{ $bytes=[Convert]::FromBase64String("$b64") }catch{ return @{ ok=$false; err='invalid file data' } }
+  if(-not $bytes -or $bytes.Length -lt 16){ return @{ ok=$false; err='file is empty' } }
+  if($bytes.Length -gt 5242880){ return @{ ok=$false; err='file too large (max 5 MB)' } }
+  $magic=$DocAttachMagic[$ct]
+  for($i=0;$i -lt $magic.Count;$i++){ if($bytes[$i] -ne $magic[$i]){ return @{ ok=$false; err='file content does not match its type' } } }
+  @{ ok=$true; name=$name; ctype=$ct; bytes=$bytes }
+}
+# emits projection items - collect with @(Doc-AttachList ...) at call sites (house array rule)
+function Doc-AttachList($cn,$docId){
+  $rows=@(RunQ $cn "SELECT att_id,file_name,content_type,size_bytes,uploaded_side,uploaded_by,CONVERT(varchar(19),uploaded_at,120) uploaded_at FROM dbo.doc_attachment WHERE doc_id=@d AND deleted=0 ORDER BY uploaded_at" @{ d="$docId" })
+  $rows|ForEach-Object{ [pscustomobject]@{ id=[string]$_.att_id; name=[string]$_.file_name; contentType=[string]$_.content_type; size=[int]$_.size_bytes; side=[string]$_.uploaded_side; by=[string]$_.uploaded_by; at=[string]$_.uploaded_at } }
+}
+function Save-DocAttach($cn,$ctx,$me){
+  if($ctx.Request.ContentLength64 -gt 7340032){ return @{error='file too large (max 5 MB)'} }   # cap BEFORE reading body
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.doc_id){ return @{error='invalid payload'} }
+  $h=Get-DocHead $cn "$($j.doc_id)"; if(-not $h){ return @{error='not found'} }
+  if("$($h.status)" -eq 'ISSUED'){ return @{error='document is issued - open an amendment first'} }
+  $cnt=@(RunQ $cn "SELECT COUNT(*) n FROM dbo.doc_attachment WHERE doc_id=@d AND deleted=0" @{ d="$($h.doc_id)" })
+  if([int]$cnt[0].n -ge 20){ return @{error='attachment limit reached (20)'} }
+  $v=Doc-AttachValidate $j.file_name $j.content_type $j.base64
+  if(-not $v.ok){ return @{error=$v.err} }
+  $attId=[guid]::NewGuid().ToString()
+  RunQ $cn "INSERT INTO dbo.doc_attachment(att_id,doc_id,file_name,content_type,bytes,size_bytes,uploaded_side,uploaded_by,uploaded_at,deleted) VALUES(@a,@d,@n,@c,@b,@s,'staff',@u,SYSDATETIME(),0)" @{ a=$attId; d="$($h.doc_id)"; n=$v.name; c=$v.ctype; b=$v.bytes; s=$v.bytes.Length; u=$me } | Out-Null
+  Doc-Event $cn "$($h.doc_id)" $null 'attach_added' $me $null '' (@{ name=$v.name; size=$v.bytes.Length }|ConvertTo-Json -Compress)
+  Audit $me "doc-attach $($h.doc_type) $($h.job_no): $($v.name) ($($v.bytes.Length) bytes)"
+  @{ ok=$true; id=$attId; attachments=@(Doc-AttachList $cn "$($h.doc_id)") }
+}
+function Handle-DocAttachListQ($cn,$qs){
+  $id="$($qs['id'])".Trim(); if(-not $id){ return @{error='id required'} }
+  $h=Get-DocHead $cn $id; if(-not $h){ return @{error='not found'} }
+  @{ attachments=@(Doc-AttachList $cn $id) }
+}
+# streams the blob itself; returns $true on success so the router knows not to send JSON
+function Handle-DocAttachFile($cn,$ctx,$qs){
+  $id="$($qs['id'])".Trim(); $att="$($qs['att'])".Trim()
+  if(-not $id -or -not $att){ return $false }
+  $h=Get-DocHead $cn $id; if(-not $h){ return $false }
+  $r=@(RunQ $cn "SELECT TOP 1 file_name,content_type,bytes FROM dbo.doc_attachment WHERE att_id=@a AND doc_id=@d AND deleted=0" @{ a=$att; d=$id })
+  if(-not $r.Count){ return $false }
+  Send-Blob $ctx ([byte[]]$r[0].bytes) "$($r[0].content_type)" "$($r[0].file_name)"
+  $true
+}
+function Save-DocAttachDelete($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.doc_id -or -not $j.att_id){ return @{error='invalid payload'} }
+  $h=Get-DocHead $cn "$($j.doc_id)"; if(-not $h){ return @{error='not found'} }
+  if("$($h.status)" -eq 'ISSUED'){ return @{error='document is issued - attachments are locked'} }
+  $old=@(RunQ $cn "UPDATE dbo.doc_attachment SET deleted=1 OUTPUT INSERTED.file_name WHERE att_id=@a AND doc_id=@d AND deleted=0" @{ a="$($j.att_id)"; d="$($h.doc_id)" })
+  if(-not $old.Count){ return @{error='not found'} }
+  Doc-Event $cn "$($h.doc_id)" $null 'attach_removed' $me $null '' (@{ name="$($old[0].file_name)" }|ConvertTo-Json -Compress)
+  Audit $me "doc-attach-delete $($h.doc_type) $($h.job_no): $($old[0].file_name)"
+  @{ ok=$true; attachments=@(Doc-AttachList $cn "$($h.doc_id)") }
+}
+
+# ---- public customer handlers (/api-doc/*: token IS the authority - no session, no cookies) ----
+# Each validates the token SHAPE before touching SQL, opens its own short-lived connection, reads only
+# doc_* tables (8s timeouts), and logs every access with IP. All failure modes return ONE generic message.
+$DocLinkErr=@{ error='This review link is invalid, expired, or already closed. Please contact your forwarder for a fresh link.' }
+function Get-DocByToken($cn,$raw){
+  if("$raw" -notmatch '^[A-Za-z0-9_-]{40,64}$'){ return $null }
+  $r=@(RunQ $cn "SELECT TOP 1 t.token_hash,t.doc_id,t.sent_version,t.customer_email,t.customer_name,t.expires_at,t.revoked,d.status,d.doc_type,d.job_no,d.current_version FROM dbo.doc_review_token t JOIN dbo.doc_draft d ON d.doc_id=t.doc_id WHERE t.token_hash=@h" @{ h=(Token-Hash $raw) } 8)
+  if(-not $r.Count){ return $null }
+  $t=$r[0]
+  if([bool]$t.revoked){ return $null }
+  if([datetime]$t.expires_at -lt (Get-Date)){ return $null }
+  $t
+}
+function Client-Ip($ctx){ try{ "$($ctx.Request.RemoteEndPoint.Address)" }catch{ '' } }
+function Handle-PublicDocView($ctx){
+  $raw="$($ctx.Request.QueryString['t'])".Trim()
+  if($raw -notmatch '^[A-Za-z0-9_-]{40,64}$'){ return $DocLinkErr }   # garbage rejected before any SQL
+  $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
+  try{
+    $t=Get-DocByToken $cn $raw; if(-not $t){ return $DocLinkErr }
+    if("$($t.status)" -notin 'SENT','CUSTOMER_SUBMITTED','CUSTOMER_APPROVED'){ return $DocLinkErr }
+    $editable=("$($t.status)" -eq 'SENT')
+    # while SENT the customer sees the version staff sent; after submitting they see their own (read-only)
+    $vno= if($editable){ [int]$t.sent_version } else { [int]$t.current_version }
+    $ver=@(RunQ $cn "SELECT TOP 1 fields FROM dbo.doc_version WHERE doc_id=@d AND version_no=@v" @{ d="$($t.doc_id)"; v=$vno } 8)
+    if(-not $ver.Count){ return $DocLinkErr }
+    $flds=$null; try{ $flds="$($ver[0].fields)"|ConvertFrom-Json }catch{}
+    RunQ $cn "UPDATE dbo.doc_review_token SET view_count=view_count+1,last_view_at=SYSDATETIME() WHERE token_hash=@h" @{ h="$($t.token_hash)" } 8 | Out-Null
+    Doc-Event $cn "$($t.doc_id)" $vno 'viewed' 'customer' "$($t.token_hash)" (Client-Ip $ctx) $null
+    @{ docType=[string]$t.doc_type; jobNo=[string]$t.job_no; status=[string]$t.status; editable=$editable
+       versionNo=$vno; fields=$flds; customerName=[string]$t.customer_name }
+  } finally { $cn.Close() }
+}
+function Handle-PublicDocSubmit($ctx,$approveOnly){
+  if($ctx.Request.ContentLength64 -gt 1048576){ return @{ error='request too large' } }   # 1MB cap BEFORE reading body (structured fields inflate the JSON; file uploads have their own route + cap)
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  $raw="$($j.t)".Trim()
+  if($raw -notmatch '^[A-Za-z0-9_-]{40,64}$'){ return $DocLinkErr }
+  $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
+  try{
+    $t=Get-DocByToken $cn $raw; if(-not $t){ return $DocLinkErr }
+    if("$($t.status)" -ne 'SENT'){ return $DocLinkErr }   # customer can act only while SENT
+    $cmt="$($j.comment)".Trim(); if($cmt.Length -gt 1000){ $cmt=$cmt.Substring(0,1000) }
+    $by='customer'+$(if("$($t.customer_email)".Trim()){ ':'+"$($t.customer_email)".Trim() }else{ '' })
+    if($approveOnly){
+      RunQ $cn "UPDATE dbo.doc_draft SET status='CUSTOMER_APPROVED',updated_at=SYSDATETIME() WHERE doc_id=@d" @{ d="$($t.doc_id)" } 8 | Out-Null
+      Doc-Event $cn "$($t.doc_id)" ([int]$t.sent_version) 'approved' $by "$($t.token_hash)" (Client-Ip $ctx) (@{ comment=$cmt }|ConvertTo-Json -Compress)
+      return @{ ok=$true; status='CUSTOMER_APPROVED' }
+    }
+    $clean=Doc-CleanFields "$($t.doc_type)" $j.fields
+    $sent=@(RunQ $cn "SELECT TOP 1 fields FROM dbo.doc_version WHERE doc_id=@d AND version_no=@v" @{ d="$($t.doc_id)"; v=[int]$t.sent_version } 8)
+    $changed=@(Doc-Changed $(if($sent.Count){"$($sent[0].fields)"}else{''}) $clean)
+    if(-not $changed.Count -and -not $cmt){ return @{ error='No changes were made. If the document is correct, use Approve instead.' } }
+    $newVer=[int]$t.current_version+1
+    RunQ $cn "INSERT INTO dbo.doc_version(doc_id,version_no,side,base_version,fields,comment,created_by,created_at) VALUES(@d,@v,'customer',@b,@f,@c,@u,SYSDATETIME())" @{ d="$($t.doc_id)"; v=$newVer; b=[int]$t.sent_version; f=($clean|ConvertTo-Json -Depth 6 -Compress); c=$cmt; u=$by } 8 | Out-Null
+    RunQ $cn "UPDATE dbo.doc_draft SET status='CUSTOMER_SUBMITTED',current_version=@v,updated_at=SYSDATETIME() WHERE doc_id=@d" @{ v=$newVer; d="$($t.doc_id)" } 8 | Out-Null
+    Doc-Event $cn "$($t.doc_id)" $newVer 'submitted' $by "$($t.token_hash)" (Client-Ip $ctx) (@{ changed=@($changed); comment=$cmt }|ConvertTo-Json -Depth 4 -Compress)
+    @{ ok=$true; status='CUSTOMER_SUBMITTED'; version=$newVer; changed=@($changed) }
+  } finally { $cn.Close() }
+}
+# customer attachment upload: only while SENT (the customer holds the pen); max 10 customer files per doc
+function Handle-PublicDocAttach($ctx){
+  if($ctx.Request.ContentLength64 -gt 7340032){ return @{ error='file too large (max 5 MB)' } }   # cap BEFORE reading body
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  $raw="$($j.t)".Trim()
+  if($raw -notmatch '^[A-Za-z0-9_-]{40,64}$'){ return $DocLinkErr }
+  $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
+  try{
+    $t=Get-DocByToken $cn $raw; if(-not $t){ return $DocLinkErr }
+    if("$($t.status)" -ne 'SENT'){ return $DocLinkErr }
+    $cnt=@(RunQ $cn "SELECT COUNT(*) n FROM dbo.doc_attachment WHERE doc_id=@d AND deleted=0 AND uploaded_side='customer'" @{ d="$($t.doc_id)" } 8)
+    if([int]$cnt[0].n -ge 10){ return @{ error='attachment limit reached (10)' } }
+    $v=Doc-AttachValidate $j.file_name $j.content_type $j.base64
+    if(-not $v.ok){ return @{error=$v.err} }
+    $by='customer'+$(if("$($t.customer_email)".Trim()){ ':'+"$($t.customer_email)".Trim() }else{ '' })
+    $attId=[guid]::NewGuid().ToString()
+    RunQ $cn "INSERT INTO dbo.doc_attachment(att_id,doc_id,file_name,content_type,bytes,size_bytes,uploaded_side,uploaded_by,uploaded_at,deleted) VALUES(@a,@d,@n,@c,@b,@s,'customer',@u,SYSDATETIME(),0)" @{ a=$attId; d="$($t.doc_id)"; n=$v.name; c=$v.ctype; b=$v.bytes; s=$v.bytes.Length; u=$by } 8 | Out-Null
+    Doc-Event $cn "$($t.doc_id)" $null 'attach_added' $by "$($t.token_hash)" (Client-Ip $ctx) (@{ name=$v.name; size=$v.bytes.Length }|ConvertTo-Json -Compress)
+    @{ ok=$true; id=$attId; attachments=@(Doc-AttachList $cn "$($t.doc_id)") }
+  } finally { $cn.Close() }
+}
+function Handle-PublicDocAttachList($ctx){
+  $raw="$($ctx.Request.QueryString['t'])".Trim()
+  if($raw -notmatch '^[A-Za-z0-9_-]{40,64}$'){ return $DocLinkErr }
+  $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
+  try{
+    $t=Get-DocByToken $cn $raw; if(-not $t){ return $DocLinkErr }
+    if("$($t.status)" -notin 'SENT','CUSTOMER_SUBMITTED','CUSTOMER_APPROVED'){ return $DocLinkErr }
+    @{ editable=("$($t.status)" -eq 'SENT'); attachments=@(Doc-AttachList $cn "$($t.doc_id)") }
+  } finally { $cn.Close() }
+}
+function Handle-PublicDocAttachFile($ctx){
+  $raw="$($ctx.Request.QueryString['t'])".Trim(); $att="$($ctx.Request.QueryString['id'])".Trim()
+  if($raw -notmatch '^[A-Za-z0-9_-]{40,64}$' -or -not $att){ return $false }
+  $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
+  try{
+    $t=Get-DocByToken $cn $raw; if(-not $t){ return $false }
+    if("$($t.status)" -notin 'SENT','CUSTOMER_SUBMITTED','CUSTOMER_APPROVED'){ return $false }
+    $r=@(RunQ $cn "SELECT TOP 1 file_name,content_type,bytes FROM dbo.doc_attachment WHERE att_id=@a AND doc_id=@d AND deleted=0" @{ a=$att; d="$($t.doc_id)" } 8)
+    if(-not $r.Count){ return $false }
+    Send-Blob $ctx ([byte[]]$r[0].bytes) "$($r[0].content_type)" "$($r[0].file_name)"
+    $true
+  } finally { $cn.Close() }
+}
+function Handle-PublicDocAttachDelete($ctx){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  $raw="$($j.t)".Trim()
+  if($raw -notmatch '^[A-Za-z0-9_-]{40,64}$'){ return $DocLinkErr }
+  $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
+  try{
+    $t=Get-DocByToken $cn $raw; if(-not $t){ return $DocLinkErr }
+    if("$($t.status)" -ne 'SENT'){ return $DocLinkErr }
+    # customers may remove ONLY their own uploads, never staff files
+    $old=@(RunQ $cn "UPDATE dbo.doc_attachment SET deleted=1 OUTPUT INSERTED.file_name WHERE att_id=@a AND doc_id=@d AND deleted=0 AND uploaded_side='customer'" @{ a="$($j.id)"; d="$($t.doc_id)" } 8)
+    if(-not $old.Count){ return @{ error='not found' } }
+    $by='customer'+$(if("$($t.customer_email)".Trim()){ ':'+"$($t.customer_email)".Trim() }else{ '' })
+    Doc-Event $cn "$($t.doc_id)" $null 'attach_removed' $by "$($t.token_hash)" (Client-Ip $ctx) (@{ name="$($old[0].file_name)" }|ConvertTo-Json -Compress)
+    @{ ok=$true; attachments=@(Doc-AttachList $cn "$($t.doc_id)") }
+  } finally { $cn.Close() }
 }
 
 $StationList=@(@($cfg.stations)|Where-Object{ $_ -and $_.code }|ForEach-Object{ [pscustomobject]@{ code="$($_.code)".Trim(); name="$($_.name)".Trim() } })
@@ -756,6 +1440,25 @@ while($listener.IsListening){
       Send-Json $ctx @{ ok=$true }
     }
     elseif($path -eq "/api-ops/config"){ Send-Json $ctx (Config-Payload) }
+    # PUBLIC customer review namespace (no session; token in the URL/body is the authority). Kept fully
+    # separate from /api-ops/* so a reverse proxy can expose ONLY /bl-review/* + /api-doc/* + the review
+    # static assets to the internet while the staff app stays LAN-only.
+    elseif($path -like "/bl-review/*"){ Send-File $ctx (Join-Path $Root "bl-review.html") }   # SQL-free; page JS reads the token from the URL
+    elseif($path -eq "/api-doc/view"){ Send-Json $ctx (Handle-PublicDocView $ctx) }
+    elseif($path -eq "/api-doc/submit"){
+      if($ctx.Request.HttpMethod -ne 'POST'){ Send-Json $ctx @{ error='POST required' } 405 } else { Send-Json $ctx (Handle-PublicDocSubmit $ctx $false) }
+    }
+    elseif($path -eq "/api-doc/approve"){
+      if($ctx.Request.HttpMethod -ne 'POST'){ Send-Json $ctx @{ error='POST required' } 405 } else { Send-Json $ctx (Handle-PublicDocSubmit $ctx $true) }
+    }
+    elseif($path -eq "/api-doc/attach"){
+      if($ctx.Request.HttpMethod -ne 'POST'){ Send-Json $ctx @{ error='POST required' } 405 } else { Send-Json $ctx (Handle-PublicDocAttach $ctx) }
+    }
+    elseif($path -eq "/api-doc/attach-list"){ Send-Json $ctx (Handle-PublicDocAttachList $ctx) }
+    elseif($path -eq "/api-doc/attach-file"){ if(-not (Handle-PublicDocAttachFile $ctx)){ Send-Json $ctx $DocLinkErr 404 } }
+    elseif($path -eq "/api-doc/attach-delete"){
+      if($ctx.Request.HttpMethod -ne 'POST'){ Send-Json $ctx @{ error='POST required' } 405 } else { Send-Json $ctx (Handle-PublicDocAttachDelete $ctx) }
+    }
     elseif($path -like "/api-ops/*"){
       # everything else requires a session in auth mode (open mode: pseudo-session from the header identity)
       $sess=Get-OpsSession $ctx
@@ -790,6 +1493,20 @@ while($listener.IsListening){
                 "/api-ops/worklist"        { Send-Json $ctx (Handle-Worklist $cn $qs $me) }
                 "/api-ops/shipment"        { Send-Json $ctx (Handle-Shipment $cn $qs) }
                 "/api-ops/milestone-close" { Send-Json $ctx (Save-MilestoneClose $cn $ctx $me) }
+                "/api-ops/docs"            { Send-Json $ctx (Handle-DocList $cn $qs) }
+                "/api-ops/doc"             { Send-Json $ctx (Handle-DocGet $cn $qs) }
+                "/api-ops/doc-events"      { Send-Json $ctx (Handle-DocEvents $cn $qs) }
+                "/api-ops/doc-create"      { Send-Json $ctx (Save-DocCreate $cn $ctx $me) }
+                "/api-ops/doc-save"        { Send-Json $ctx (Save-DocSave $cn $ctx $me) }
+                "/api-ops/doc-send"        { Send-Json $ctx (Save-DocSend $cn $ctx $me) }
+                "/api-ops/doc-token-revoke"{ Send-Json $ctx (Save-DocTokenRevoke $cn $ctx $me) }
+                "/api-ops/doc-agree"       { Send-Json $ctx (Save-DocAgree $cn $ctx $me) }
+                "/api-ops/doc-issue"       { Send-Json $ctx (Save-DocIssue $cn $ctx $me) }
+                "/api-ops/doc-amend"       { Send-Json $ctx (Save-DocAmend $cn $ctx $me) }
+                "/api-ops/doc-attach"      { Send-Json $ctx (Save-DocAttach $cn $ctx $me) }
+                "/api-ops/doc-attach-list" { Send-Json $ctx (Handle-DocAttachListQ $cn $qs) }
+                "/api-ops/doc-attach-file" { if(-not (Handle-DocAttachFile $cn $ctx $qs)){ Send-Json $ctx @{ error='not found' } 404 } }
+                "/api-ops/doc-attach-delete" { Send-Json $ctx (Save-DocAttachDelete $cn $ctx $me) }
                 default                    { Send-Json $ctx @{ error="unknown endpoint" } 404 }
               }
             } finally { $cn.Close() }

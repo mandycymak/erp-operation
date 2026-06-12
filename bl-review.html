@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Document Review</title>
+<link rel="stylesheet" href="/bl-review.css">
+</head>
+<body>
+<div class="page">
+  <div class="bar">
+    <h1 id="title">Draft Document Review</h1>
+    <span class="badge" id="status" style="display:none"></span>
+    <span class="spacer"></span>
+    <button class="noprint" id="sizeBtn" style="display:none" title="Toggle print paper size">Paper: A4</button>
+    <button class="noprint" id="printBtn" style="display:none">Print / Save PDF</button>
+  </div>
+  <div id="msg"></div>
+  <div class="note" id="howto" style="display:none">
+    Please check the draft below. You can <b>correct the text directly in the boxes</b>; edited boxes are
+    highlighted. When done, press <b>Send corrections</b> - or press <b>Approve</b> if everything is correct.
+  </div>
+  <div id="doc"></div>
+  <div class="card noprint" id="attCard" style="display:none">
+    <b>Attachment files</b> <span class="muted">(supporting documents for this bill - PDF, PNG or JPEG, max 5 MB)</span>
+    <div id="attList" style="margin-top:6px"></div>
+    <div id="attUpload" style="margin-top:8px;display:none">
+      <input type="file" id="attFile" accept="application/pdf,image/png,image/jpeg">
+    </div>
+  </div>
+  <div class="card noprint" id="actions" style="display:none">
+    <label for="comment" style="display:block;margin-bottom:4px"><b>Message to your forwarder</b> (optional)</label>
+    <textarea class="line" id="comment" rows="3" placeholder="e.g. please also update the notify party address"></textarea>
+    <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+      <button class="primary" id="submitBtn">Send corrections</button>
+      <button class="good" id="approveBtn">Approve - document is correct</button>
+      <span class="spacer"></span>
+      <button id="resetBtn">Undo my edits</button>
+    </div>
+  </div>
+</div>
+<script src="/bl-form.js"></script>
+<script src="/bl-review.js"></script>
+</body>
+</html>

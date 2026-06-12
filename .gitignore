@@ -18,6 +18,7 @@ user-lists/
 
 # Generated / local
 data.js
+erp-mock/
 
 # Local Claude Code workspace (skills, scheduled-task lock) - keep local
 .claude/

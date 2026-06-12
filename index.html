@@ -41,10 +41,10 @@
       <span class="muted" id="wlCount" style="font-size:12px"></span>
     </div>
     <div class="filters" id="filters">
-      <label class="fl">📅 <input type="text" class="datebox" id="fFrom" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window start — format yyyy-mm-dd (e.g. 2023-12-31)"></label>
+      <label class="fl">📅 <input type="text" class="datebox" id="fFrom" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window start — format yyyy-mm-dd. Shows shipments moving, with work due, or created in the window; work overdue up to 30 days also shows."></label>
       <span class="fl">→</span>
-      <label class="fl"><input type="text" class="datebox" id="fTo" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window end — format yyyy-mm-dd"></label>
-      <button class="ghost" id="thisWeek" title="Reset to the current week">This week</button>
+      <label class="fl"><input type="text" class="datebox" id="fTo" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window end — format yyyy-mm-dd. Shows shipments moving, with work due, or created in the window; work overdue up to 30 days also shows."></label>
+      <button class="ghost" id="thisWeek" title="This week's work: shipments moving, with a milestone due, or created this week (plus work overdue up to 30 days)">This week</button>
       <button class="ghost" id="allDates" title="Show all dates">All dates</button>
       <span class="combo" id="companyCombo">
         <input type="text" id="fCompany" autocomplete="off" placeholder="🔍 Company name…" title="Search a company by name — matches shipper, consignee, agent or controlling customer">

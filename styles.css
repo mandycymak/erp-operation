@@ -55,6 +55,7 @@ button:hover{filter:brightness(1.08)}
 .chip.transit{color:var(--a);border-color:var(--a)}
 .chip.plan{color:var(--mut)}
 .chip.nospace{color:#fff;background:var(--r);border-color:var(--r)}
+.chip.newbk{color:var(--accent);border-color:var(--accent);font-size:10px;padding:0 6px}
 /* vessel/voyage grouping */
 .vgroup{border:1px solid var(--line);border-radius:10px;margin-bottom:8px;overflow:hidden;background:var(--panel)}
 .vhead{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;border-left:4px solid var(--line);background:var(--panel2)}
@@ -211,3 +212,12 @@ button:hover{filter:brightness(1.08)}
 .arr-st.arranged{color:var(--a);border-color:var(--a)} .arr-st.confirmed{color:var(--g);border-color:var(--g)}
 .arr-form{display:flex;flex-direction:column;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px}
 .arr-form .ai{width:100%}
+
+/* ---- draft document review panel (drawer) ---- */
+.doccard{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px;font-size:12.5px}
+.docstatus{font-size:10.5px;padding:1px 8px;border-radius:8px;border:1px solid var(--line);color:var(--mut)}
+.docstatus.s-SENT{color:#1565c0;border-color:#1565c0}
+.docstatus.s-CUSTOMER_SUBMITTED{color:#b26a00;border-color:#b26a00}
+.docstatus.s-CUSTOMER_APPROVED,.docstatus.s-AGREED{color:var(--g);border-color:var(--g)}
+.docstatus.s-ISSUED{color:#fff;background:#1c2733;border-color:#1c2733}
+.docstatus.s-AMEND_DRAFT{color:#963049;border-color:#963049}

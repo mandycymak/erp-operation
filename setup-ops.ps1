@@ -393,7 +393,119 @@ CREATE TABLE dbo.feed_watermark (
 );
 "@
 
-Write-Host "Operational database [$opsDb] ready (10 tables + indexes):" -ForegroundColor Green
+# ============================================================================================================
+#  DRAFT DOCUMENT REVIEW (House BL / HAWB customer agreement loop; see plan file)
+#  Staff create a DRAFT document from shipment data, send the customer a tokenized review link (no login),
+#  the customer edits the on-screen bill and submits; staff diff/correct/resend until both agree, then the
+#  backend ERP API issues the official document. Versions are immutable JSON field snapshots; every action
+#  is appended to doc_event_log. Raw tokens are NEVER stored - only their SHA-256 hash.
+# ============================================================================================================
+
+# --- D.1 doc_draft — one live document per (job x type); the workflow head row ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.doc_draft') IS NULL
+CREATE TABLE dbo.doc_draft (
+  doc_id          nvarchar(36)  NOT NULL,     -- guid
+  job_no          nvarchar(24)  NOT NULL,
+  doc_type        nvarchar(4)   NOT NULL,     -- 'HBL'|'HAWB'
+  station         nvarchar(8)   NULL,         -- denormalized from shipment_alerts for row-level scope
+  mode            char(3)       NULL,
+  bound           nvarchar(8)   NULL,
+  status          nvarchar(20)  NOT NULL,     -- DRAFT|SENT|CUSTOMER_SUBMITTED|CUSTOMER_APPROVED|AGREED|ISSUED|AMEND_DRAFT
+  current_version int           NOT NULL DEFAULT 1,
+  customer_email  nvarchar(120) NULL,
+  customer_name   nvarchar(80)  NULL,
+  erp_doc_no      nvarchar(40)  NULL,         -- official document number returned by the ERP at issue
+  issued_at       datetime2     NULL,
+  amend_count     int           NOT NULL DEFAULT 0,   -- >0 = amendment fee applies
+  created_by      nvarchar(20)  NULL,
+  created_at      datetime2     NOT NULL,
+  updated_at      datetime2     NOT NULL,
+  CONSTRAINT PK_doc_draft PRIMARY KEY (doc_id)
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='UX_doc_job_type' AND object_id=OBJECT_ID('dbo.doc_draft'))
+  CREATE UNIQUE INDEX UX_doc_job_type ON dbo.doc_draft(job_no, doc_type);
+"@
+
+# --- D.2 doc_version — immutable field snapshots; fields = flat JSON {field_code: text} ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.doc_version') IS NULL
+CREATE TABLE dbo.doc_version (
+  doc_id       nvarchar(36)  NOT NULL,
+  version_no   int           NOT NULL,
+  side         nvarchar(8)   NOT NULL,        -- 'staff'|'customer'
+  base_version int           NULL,            -- version this one was edited from (diff anchor)
+  fields       nvarchar(max) NOT NULL,        -- flat JSON map of field_code -> value
+  comment      nvarchar(1000) NULL,
+  created_by   nvarchar(80)  NULL,            -- username | 'customer:<email>'
+  created_at   datetime2     NOT NULL,
+  CONSTRAINT PK_doc_version PRIMARY KEY (doc_id, version_no)
+);
+"@
+
+# --- D.3 doc_review_token — customer access tokens (hash-at-rest; expiry + revocation; view counters) ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.doc_review_token') IS NULL
+CREATE TABLE dbo.doc_review_token (
+  token_hash     char(64)      NOT NULL,      -- SHA-256 hex of the raw URL token (raw never stored)
+  doc_id         nvarchar(36)  NOT NULL,
+  sent_version   int           NOT NULL,      -- the version the customer was sent
+  customer_email nvarchar(120) NULL,
+  customer_name  nvarchar(80)  NULL,
+  expires_at     datetime2     NOT NULL,
+  revoked        bit           NOT NULL DEFAULT 0,
+  created_by     nvarchar(20)  NULL,
+  created_at     datetime2     NOT NULL,
+  view_count     int           NOT NULL DEFAULT 0,
+  last_view_at   datetime2     NULL,
+  CONSTRAINT PK_doc_token PRIMARY KEY (token_hash)
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_doc_token_doc' AND object_id=OBJECT_ID('dbo.doc_review_token'))
+  CREATE INDEX IX_doc_token_doc ON dbo.doc_review_token(doc_id) INCLUDE(revoked, expires_at);
+"@
+
+# --- D.5 doc_attachment — uploaded rider files for a draft document (pdf/images, max 5MB each).
+#     Staff upload from the editor; the CUSTOMER may upload from the tokenized review link while the doc
+#     is SENT. Soft-deleted rows stay for audit. At ISSUE every live row is pushed to the ERP /file/upload. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.doc_attachment') IS NULL
+CREATE TABLE dbo.doc_attachment (
+  att_id        nvarchar(36)   NOT NULL,     -- guid
+  doc_id        nvarchar(36)   NOT NULL,
+  file_name     nvarchar(200)  NOT NULL,
+  content_type  nvarchar(100)  NOT NULL,     -- application/pdf | image/png | image/jpeg
+  bytes         varbinary(max) NOT NULL,
+  size_bytes    int            NOT NULL,
+  uploaded_side nvarchar(8)    NOT NULL,     -- 'staff' | 'customer'
+  uploaded_by   nvarchar(80)   NULL,         -- username | 'customer:<email>'
+  uploaded_at   datetime2      NOT NULL,
+  deleted       bit            NOT NULL DEFAULT 0,
+  CONSTRAINT PK_doc_attachment PRIMARY KEY (att_id)
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_doc_att_doc' AND object_id=OBJECT_ID('dbo.doc_attachment'))
+  CREATE INDEX IX_doc_att_doc ON dbo.doc_attachment(doc_id) INCLUDE(deleted);
+"@
+
+# --- D.4 doc_event_log — append-only lifecycle audit (mirror of milestone_event_log) ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.doc_event_log') IS NULL
+CREATE TABLE dbo.doc_event_log (
+  id          bigint IDENTITY(1,1) PRIMARY KEY,
+  doc_id      nvarchar(36) NOT NULL,
+  version_no  int          NULL,
+  event       nvarchar(20) NOT NULL,   -- created|edited|sent|viewed|submitted|approved|agreed|issued|amend_opened|token_revoked|erp_error
+  actor       nvarchar(80) NULL,       -- staff username | 'customer'
+  token_hash  char(64)     NULL,
+  ip          nvarchar(45) NULL,
+  detail      nvarchar(max) NULL,      -- JSON: {changed:[codes], comment, erp:{...}}
+  occurred_at datetime2    NOT NULL
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_docevt_doc' AND object_id=OBJECT_ID('dbo.doc_event_log'))
+  CREATE INDEX IX_docevt_doc ON dbo.doc_event_log(doc_id, occurred_at);
+"@
+
+Write-Host "Operational database [$opsDb] ready (15 tables + indexes):" -ForegroundColor Green
 Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
 Write-Host "  milestone_event_log, company_dim, port_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
+Write-Host "  doc_draft, doc_version, doc_review_token, doc_event_log, doc_attachment (draft document review)" -ForegroundColor Green
 Write-Host "Next: map the alias/evidence fields to real ERP columns, then run listener-engine.ps1 -Mode Sea on the pilot station." -ForegroundColor Cyan

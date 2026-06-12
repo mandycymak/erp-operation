@@ -74,12 +74,14 @@ if($Mode -eq 'Air'){
   $cols="jobn,hawb,mawb,po_no,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,t_book_qty,t_book_wgt,t_book_cwt,t_rece_qty,ttl_cwt,t_book_cbm,t_rece_cbm,to1,to3,dest,deli,flight2,flight3,f_date2,f_date3,f_time1,f_time2,f_time3,fa_date1,fa_date2,fa_date3,rout_by_1,pol_name,pod_name,to1_name,to3_name,dest_name,deli_name,goods_delivery,remark,special_remark"
   $cols=Filter-Cols $Station 'awbhead' $cols
   $cols=Wrap-Ntext $cols @('remark','special_remark')
-  $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type IN('H','S') AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
+  # crtdate carries a TIME component; @a is a date string (midnight) - use < @a+1day so rows created ON the AsOf day are included
+  $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type IN('H','S') AND bound IN('O','I') AND crtdate<DATEADD(day,1,@a) AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 } else {
   $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,vessel_2,voyage_2,onboard1,onboard2,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure1,departure2,arrival1,arrival1d,arrival2,arrival2d,arrival3,deli,dest,pol_name,pod_name,deli_name,dest_name,available_date,spotid,sono,t_book_qty,t_book_wgt,t_book_cbm,t_rece_qty,t_rece_wgt,t_rece_cbm,remark,crtdate"
   $cols=Filter-Cols $Station 'blhead' $cols
   $cols=Wrap-Ntext $cols @('remark')
-  $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='H' AND bound IN('O','I') AND crtdate<=@a AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
+  # crtdate carries a TIME component; @a is a date string (midnight) - use < @a+1day so rows created ON the AsOf day are included
+  $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='H' AND bound IN('O','I') AND crtdate<DATEADD(day,1,@a) AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
 }
 if(-not $ships.Count){ Write-Host "No candidate $Mode shipments in $Station as of $($AsOf.ToString('yyyy-MM-dd'))." -ForegroundColor Red; exit }
 

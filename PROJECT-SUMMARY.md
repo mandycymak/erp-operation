@@ -10,7 +10,111 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-11b — demoerp connected + Sea worklist fixed — RESUME HERE).** Brought up the **demoerp**
+**Latest session (2026-06-12c — worklist "this week's work" window + HBL seed completion + Qty column — RESUME HERE).**
+Driven by the user's first head-to-toe run on a fresh demoerp booking (12073 -> job `SEHKG260600006`).
+(1) **Worklist date window redefined**: a row now matches when ANY of `sort_key` (moving), `next_due`
+(work due in the window), or `anchor_date` (created in the window) hits it, plus work **overdue up to 30
+days** always shows. The 30-day bound matters: the live DB held 418/622 active rows with overdue
+`next_due` (zombie jobs never closed in the ERP, some since 2018) that would have drowned the week view -
+older overdue appears only under "All dates". New **🆕 NEW chip** on rows created in the last 7 days;
+date-box/This-week tooltips + empty-state text explain the semantics. (2) **Two real bugs**:
+`seed-alerts.ps1` compared `crtdate<=@a` against a midnight date string, so bookings created TODAY never
+seeded (now `crtdate<DATEADD(day,1,@a)`); `ops-eval.ps1` derived milestone dues from the ERP's 1900-01-01
+"empty date" producing permanently-overdue junk (dates <1990 now treated as no-date; stored junk cleared).
+(3) **HBL seed completion** (every box reconciled against `fm3khkg` SQL on job `SEHKG260600006`): party
+boxes now carry name + FULL address blocks (`shpr_/cgne_/not1_` name+add1..5); **delivery agent** from the
+`agnt_*` block with `custsub` lookup by `agn2_code` as fallback; **forwarding agent = own office** via
+`fm3kco.site` dbname->owncode (HK01 -> fm3khkg -> S0001) then custsub, falling back to the latest blhead
+whose agn2 IS the own office (the S-codes have no reachable custsub master); plus `carr_name`
+(pre-carriage), `rece_name`, `issu_at`, `payable_at`; **marks finally seed** from `blitem.mark2(+mark3)`
+ntext and description falls back `good_desc1 -> desc2(+desc3)` (good_desc1 is often blank). HAWB gets the
+same party/address + `issu_at` treatment. Bug fixed en route: `Doc-FieldDefs` called without its type arg
+nulled the whole enrichment. (4) **Marks overflow / move-to-attachment**: when the ERP text overflows its
+box, marks+description move TOGETHER to rider page 1 with the FULL text - the Description box prints
+`AS PER ATTACHED SHEET`, the Marks box goes BLANK (pointer must not print twice). The editor's "+ Add
+attachment / rider page" button MOVES the current box text onto page 1 the same way (dictionary `moveFrom`
+map), and **removing that page restores the text** into still-blank/pointer boxes. (5) **Qty column
+(packing-list style)**: new `qty_detail` box between Marks and Description on the bill and a matching
+`qty` column on every rider page; all three columns render in the same monospace font/line-height so line
+N aligns on screen and print. The ERP push (`Build-MarksGoods` + `Merge-QtyDesc` in erp-doc-api.ps1)
+assembles `shipMarks`/`goodsDescription` from the real boxes (pointer text skipped) + all rider pages,
+folding the qty column into each description line with padded alignment
+("12 ROLLS KNITTED MATERIAL" / "         100% COTTON").
+
+**Previous session (2026-06-12b — HBL refinements: containers table, rider pages, file attachments, save-on-Agree).**
+Operator-feedback round on the doc-review feature, all mock-verified on fibsbkk (live demoerp retest pending
+the Swivel /booking/update fix). (1) **Seeding**: `num_originals` from `blhead.no_orig` with the **telex
+guardrail** (telex_rel set -> '0'); `freight_terms` box renders `blhead.frt_terms` as "FREIGHT PREPAID" /
+"FREIGHT COLLECT (FOB)" and is **presentation-only** - `incoTermsCode`/`freightTermsCode` are never derived
+from it, only echoed from the live booking at push time (erasing the incoterm on the printout cannot touch
+the ERP). (2) **Structured fields** in `doc_version.fields`: dictionary kinds `table` (HBL `containers`:
+container/seal/type/qty/unit/kgs/cbm, <=50 rows, seeded from `blcont`, replaces the old `container_info`
+text box) and `riders` (`rider_pages`: marks|description attachment pages, printed page-per-page, A4/F4
+toggle via `BLForm.setPrintSize`). Both editable by staff AND customer, cell-level diff highlights,
+canonical serialization keeps "no changes to save" exact. Pushed as API `bookingContainers`
+(containerNo/sealNo/containerTypeCode/quantity - the API item has NO weight/cbm). (3) **Attachment files**
+(`doc_attachment` table, varbinary): staff + customer upload (customer only while SENT, max 5MB,
+pdf/png/jpeg with magic-byte check, 7MB body cap, customer can delete only own files), served via
+`Send-Blob`; ALL live files go to ERP `/file/upload` at issue. (4) **ERP call split**: staff **Agree** now
+runs `/booking/get` read-merge + `/booking/update` (never blocks the agree; result logged as
+`erp_booking_saved`/`erp_error`); **Issue** = per-file `/file/upload` + `/event/update` transportBill
+(+ optional generate). `commodity` truncated to **21** (spec maxLength). Two PS 5.1 traps fixed:
+`RunQ` param binding used a `$(if...)` subexpression that ENUMERATED `byte[]` into Object[] ("No mapping
+exists..."); `Get-ErpCols` cache key now includes the want-list (erp-detail vs doc-seed asked different
+columns of the same table and poisoned each other's cache).
+
+**Previous session (2026-06-12 — draft HBL/HAWB customer review loop).** Built the full
+draft-document agreement workflow (plan: `.claude/plans/` "draft HBL/HAWB customer review"): staff create a
+draft House BL / HAWB seeded from the shipment snapshot + a bounded ERP read (`Doc-ErpSeed`, same pattern as
+erp-detail), send the customer a **tokenized link** (`/bl-review/<token>`, no login, SHA-256 at rest, 14d
+expiry, revoke-on-resend/issue), the customer **edits the bill on screen** (`bl-review.html` + shared
+`bl-form.js` renderer, layout from `doc-fields.json`), staff review a **field-by-field diff**
+(`doc-editor.html`), iterate versions until **approve → agree → issue** via `erp-doc-api.ps1`
+(mapped to the **Swivel 3rd-party ERP API**, see below; mock mode writes `erp-mock/issue-<id>.json`); after issue,
+edits require an **amendment** (`amend_count`, fee flagged). 4 new pgsops tables (`doc_draft`, `doc_version`,
+`doc_review_token`, `doc_event_log` — append-only audit with IP), staff endpoints `/api-ops/doc*`, public
+endpoints `/api-doc/*` (token-shape regex before any SQL, 256KB body cap, single generic failure message),
+drawer **📄 Draft review** panel in ops.js. **Proven end-to-end** on local fibsbkk data: Sea
+`SIBKK211000012` (full lifecycle incl. the MADE IN TAIWAN → "MADE IN TAIWAN, CHINA" correction cycle, mock
+issue, amendment; event log + demo doc left in local pgsops) and Air `AIBKK210200001`; every seeded field
+reconciled against direct `blhead`/`blcont`/`blitem` / `awbhead`/`awbdetl` SQL.
+
+**ERP integration = the Swivel 3rd-party ERP API** (docs: documents.swivelsoftware.com/3rd-erpapi.html, spec
+`3rd-erpapi.json`, base `https://demoerp-api.swivelsoftware.com`, **bearer token** from Swivel). Issue runs
+4 calls in `erp-doc-api.ps1`: **`/booking/update`** (agreed data: `bookingParty` flat keys
+`shipperPartyName/Address`, `consigneePartyName/Address`, `notifyPartyParty*` = the address blocks;
+`shipMarks`, `goodsDescription`, vessel/voyage, `incoTermsCode`, POL/POD code+name - both REQUIRED, plus
+`partyGroupCode`/`serviceCode`/`commodity`), optional **`/file/upload`** (operator-attached agreed PDF,
+base64, `documentTypeCode`), **`/event/update`** (`status: transportBill` = "Transport Bill Confirm",
+`3rdBookingID`=doc guid), optional **`/document/generate`**. Required fields are validated before any real
+call; party boxes split first-line=name / rest=address; official `erp_doc_no` = the agreed house number.
+Deployment codes live in **`erp-api-map.json`** (tracked: `partyGroupCode`, `forwarderCode`,
+`serviceCodeDefault`, event + document type codes, `bookingOverrides` field:/sa:/const: syntax); the secret
+token in `ops.config.json erpApi.token` (gitignored). Mock payloads verified shape-exact against the spec.
+
+**LIVE full round PROVEN on demoerp (2026-06-12).** Token in `ops.config.network.json` (works; code strips a
+pasted `Bearer ` prefix). Test booking **HK012606010** (job `SEHKG260600005`, HBL `HKGSE6060001`,
+SEMARANG->TACOMA): draft seeded live from `fm3khkg`, full customer round (incl. the MADE IN TAIWAN ->
+"MADE IN TAIWAN, CHINA" correction), **ISSUED for real**: `/file/upload` ok (agreed PDF in ERP files),
+`/event/update` ok (`transportBill` stamped). Live-call findings baked into `erp-doc-api.ps1`:
+(1) `Invoke-RestMethod` returns a JSON array as ONE object - assign-then-`@()` (same family as the
+ConvertFrom-Json trap); (2) do NOT send `carrierCode`/`vesselName` on update (carrier master rejects raw
+codes; vessel triggers schedule rebuild); (3) **`3rdBookingID` is a LOOKUP key** (Shipment Reference ID) -
+sending our doc guid made upload/event 422 ("No corresponding data"-style), key by `houseNo`+`bookingNo`
+instead; (4) `ErpErr` rewinds the consumed response stream so the ERP's real validation text reaches the
+event log; (5) read-merge-write: `/booking/get` (POST works) before update - abort if booking absent (update
+would CREATE one), reuse live `serviceCode`.
+**Raise with Swivel:** (a) `/booking/update` on demoerp rejects EVERY payload with
+"Departure date not active yet, Invalid carrier code" - payload-invariant (fails even with required-only
+fields, master-listed carrier APLU, future ETD+ETA) -> `bookingUpdateMode: best-effort` in
+`erp-api-map.json` logs the rejection and continues with upload+event; flip to `strict` once fixed.
+(b) `/event/get` returns a server SQL error ("Ambiguous column name 'seq'"). (c) Which filter
+`/file/enquiry` needs ("No corresponding data" for houseNo+bookingNo that file/upload just accepted).
+
+**Open items:** Swivel answers above, public exposure (reverse proxy for `/bl-review/*` + `/api-doc/*` only)
++ `publicBaseUrl` (configurable, never hard-coded), optional SMTP (today: copy link / mailto prefill).
+
+**Previous session (2026-06-11b — demoerp connected + Sea worklist fixed).** Brought up the **demoerp**
 environment end-to-end and fixed the all-Red Sea worklist. Commits on `main`: **`90bc63b`** (Sea fix) + **`734b7f1`**
 (gitignore `.claude/`).
 

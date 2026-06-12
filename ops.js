@@ -456,7 +456,7 @@ async function loadWorklist() {
   wl.innerHTML = '';
   if (!rows.length) {
     $('#wlCount').textContent = '0 ' + word + ' shipments';
-    const win = (state.from || state.to) ? ' in ' + esc(state.from || '…') + ' → ' + esc(state.to || '…') + ' (try “All dates”)' : '';
+    const win = (state.from || state.to) ? ' moving, due or created in ' + esc(state.from || '…') + ' → ' + esc(state.to || '…') + ' (try “All dates”)' : '';
     const filt = (state.company || state.pols.length || state.pods.length) ? ' matching the active filters' : '';
     wl.innerHTML = '<div class="empty">No ' + esc(word) + ' shipments' + filt + win + '.</div>'; return;
   }
@@ -566,6 +566,10 @@ function miniCard(r) {
     + (r.hasUpdate ? '<span class="upd-ind" title="' + esc(updTip) + '">🔄' + (updLbl ? ' ' + esc(updLbl) : '') + '</span>' : '');
   const docLbl = isAir ? 'HAWB' : 'HBL';
   const mLbl = isAir ? 'MAWB' : 'MBL';
+  // 🆕 = job created within the last 7 days — a fresh booking the operator may not have seen yet
+  const today = (ME && ME.today) ? new Date(ME.today + 'T00:00:00') : new Date();
+  const isNew = r.anchor && (today - new Date(r.anchor + 'T00:00:00')) / 86400000 < 7;
+  const newTag = isNew ? '<span class="chip newbk" title="new booking - created ' + esc(r.anchor) + '">🆕 NEW</span>' : '';
   // primary id: import customers know the origin house bill, not our internal job number
   const primary = (isImport && r.houseBill) ? esc(r.houseBill) : esc(r.jobNo);
   const inco = r.incoterm ? '<span class="minco" title="Incoterm — your delivery responsibility">' + esc(r.incoterm) + '</span>' : '';
@@ -592,7 +596,7 @@ function miniCard(r) {
   const pty = [mkPty('shpr', r.shipperCode, 'shipper'), mkPty('cgne', r.consigneeCode, 'consignee'), mkPty('agnt', r.agentCode, 'agent (agn2)')].filter(Boolean).join('  ·  ');
   c.innerHTML =
     '<div class="r1">' +
-      '<span class="mref">' + (primary || '—') + '</span>' + inco +
+      '<span class="mref">' + (primary || '—') + '</span>' + newTag + inco +
       '<span class="mwho" title="controlling customer (rcustomer)">' + esc(who || '—') + '</span>' +
       '<span class="mspacer"></span>' + sev + note +
     '</div>' +
@@ -649,6 +653,9 @@ function renderShipment(job, data) {
 
   // arrangements (who to contact + trucker/broker/warehouse tasks)
   body.appendChild(arrangementsPanel(job, sh, arr(data.notes)));
+
+  // draft document review (HBL/HAWB customer agreement loop; editor opens in its own tab)
+  body.appendChild(documentsPanel(job, sh));
 
   // notes (plain notes only — arrangement-kind notes live in the panel above)
   const plain = arr(data.notes).filter(n => n.kind !== 'arrangement');
@@ -865,6 +872,53 @@ function askReminder() {
     document.addEventListener('keydown', onKey);
   });
 }
+// ---------- draft document review panel (HBL/HAWB customer agreement loop) ----------
+const DOC_STATUS_LABEL = {
+  DRAFT: 'Draft', SENT: 'Sent to customer', CUSTOMER_SUBMITTED: 'Customer sent corrections',
+  CUSTOMER_APPROVED: 'Customer approved', AGREED: 'Agreed - ready to issue', ISSUED: 'Issued',
+  AMEND_DRAFT: 'Amendment draft (fee applies)'
+};
+function documentsPanel(job, sh) {
+  const dtype = sh.mode === 'Air' ? 'HAWB' : 'HBL';
+  const wrap = el('div', 'arrange');
+  wrap.appendChild(el('h3', null, '📄 Draft ' + dtype + ' review'));
+  const bodyEl = el('div', null, '<div class="empty">Loading…</div>');
+  wrap.appendChild(bodyEl);
+  api('/api-ops/docs?job=' + encodeURIComponent(job)).then(d => {
+    bodyEl.innerHTML = '';
+    const docs = arr(d.docs);
+    if (!docs.length) {
+      const b = el('button', 'ghost', '+ Create draft ' + dtype + ' from this shipment');
+      b.style.fontSize = '12px';
+      b.onclick = async () => {
+        b.disabled = true;
+        const r = await api('/api-ops/doc-create', { method: 'POST', body: { job_no: job } });
+        if (r.error && !r.docId) { alert(r.error); b.disabled = false; return; }
+        window.open('doc-editor.html?id=' + encodeURIComponent(r.docId), '_blank');
+        openShipment(job);   // refresh the drawer so the panel shows the new doc
+      };
+      bodyEl.appendChild(b);
+      return;
+    }
+    docs.forEach(dc => {
+      const card = el('div', 'doccard');
+      const bits = ['<span class="docstatus s-' + esc(dc.status) + '">' + esc(DOC_STATUS_LABEL[dc.status] || dc.status) + '</span>',
+        'v' + dc.currentVersion];
+      if (dc.erpDocNo) bits.push('official no. <b>' + esc(dc.erpDocNo) + '</b>');
+      if (dc.amendCount) bits.push('amend #' + dc.amendCount);
+      if (dc.activeToken) bits.push('link live (' + esc(dc.activeToken.customerEmail || 'customer') + ', viewed ' + dc.activeToken.viewCount + 'x)');
+      else if (dc.customerEmail) bits.push(esc(dc.customerEmail));
+      card.innerHTML = '<b>' + esc(dc.docType) + '</b> · ' + bits.join(' · ') + ' ';
+      const open = el('button', 'ghost', '✎ Open editor');
+      open.style.fontSize = '12px';
+      open.onclick = () => window.open('doc-editor.html?id=' + encodeURIComponent(dc.docId), '_blank');
+      card.appendChild(open);
+      bodyEl.appendChild(card);
+    });
+  }).catch(() => { bodyEl.innerHTML = '<div class="empty">Could not load documents.</div>'; });
+  return wrap;
+}
+
 async function remindMe(job) {
   const r = await askReminder();
   if (!r) return;

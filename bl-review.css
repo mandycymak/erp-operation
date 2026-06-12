@@ -1,0 +1,108 @@
+/* bl-review.css - shared styles for the draft document pages (customer review + staff editor).
+   The .blform block is the on-screen bill: boxed fields laid out like the printed document.
+   @media print turns the page into the draft PDF (browser print-to-PDF). */
+* { box-sizing: border-box; }
+body { font: 13px/1.45 "Segoe UI", Arial, sans-serif; margin: 0; background: #f0f2f5; color: #1c2733; }
+.page { max-width: 1000px; margin: 0 auto; padding: 14px; }
+.bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.bar h1 { font-size: 17px; margin: 0; }
+.spacer { flex: 1; }
+.muted, .mut { color: #6b7886; }
+.empty { color: #6b7886; padding: 14px; text-align: center; }
+button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #c6ced6; background: #fff; cursor: pointer; }
+button:hover { background: #f3f6f9; }
+button.primary { background: #1565c0; border-color: #1565c0; color: #fff; }
+button.primary:hover { background: #0d4f9e; }
+button.good { background: #2e7d32; border-color: #2e7d32; color: #fff; }
+button.good:hover { background: #1f6b24; }
+button.warn { background: #fff3e0; border-color: #ef9a3c; color: #8a4b00; }
+input.line, textarea.line { font: inherit; padding: 6px 8px; border: 1px solid #c6ced6; border-radius: 6px; width: 100%; }
+.badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; background: #e3e8ee; color: #38465a; }
+.badge.SENT { background: #e3f2fd; color: #0d4f9e; }
+.badge.CUSTOMER_SUBMITTED { background: #fff3e0; color: #8a4b00; }
+.badge.CUSTOMER_APPROVED, .badge.AGREED { background: #e8f5e9; color: #1f6b24; }
+.badge.ISSUED { background: #1c2733; color: #fff; }
+.badge.AMEND_DRAFT { background: #fce4ec; color: #963049; }
+.card { background: #fff; border: 1px solid #dde3ea; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.note { background: #fffde7; border: 1px solid #efe6a0; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+.err { background: #fdecea; border: 1px solid #f0b6b0; border-radius: 8px; padding: 14px; color: #8e2a20; }
+
+/* ---- the bill itself ---- */
+.blform { background: #fff; border: 1.5px solid #1c2733; padding: 14px; }
+.blf-title { text-align: center; font-weight: 700; letter-spacing: 2px; font-size: 15px; padding-bottom: 8px; }
+.blf-grid { display: grid; grid-template-columns: repeat(12, 1fr); border-top: 1px solid #1c2733; border-left: 1px solid #1c2733; }
+.blf-box { border-right: 1px solid #1c2733; border-bottom: 1px solid #1c2733; padding: 4px 6px 6px; min-height: 52px; }
+.blf-box.ml { min-height: 84px; }
+.blf-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: .4px; color: #4a5a6c; margin-bottom: 2px; }
+.blf-val { white-space: pre-wrap; font-size: 12.5px; min-height: 16px; word-break: break-word; }
+.blf-input { width: 100%; border: none; outline: none; font: 12.5px/1.4 "Segoe UI", Arial, sans-serif; background: #fbfdff; resize: vertical; padding: 2px; }
+.blf-input:focus { background: #eef6ff; }
+.blf-changed { background: #fff8d6; }
+.blf-changed .blf-input { background: #fff8d6; }
+.blf-changed .blf-label::after { content: " (changed)"; color: #b26a00; text-transform: none; }
+
+/* container particulars table (kind 'table') */
+.blf-box.tbl { min-height: 0; }
+table.blf-table { width: 100%; border-collapse: collapse; margin-top: 2px; }
+.blf-table th, .blf-table td { border: 1px solid #9aa6b2; padding: 2px 5px; font-size: 11.5px; text-align: left; }
+.blf-table th { background: #f3f6f9; font-size: 10px; text-transform: uppercase; letter-spacing: .3px; color: #4a5a6c; }
+.blf-table td input { width: 100%; border: none; outline: none; font: 11.5px "Segoe UI", Arial, sans-serif; background: #fbfdff; padding: 1px; }
+.blf-table td input:focus { background: #eef6ff; }
+.blf-table td.blf-rowbtn { border: none; width: 26px; }
+.blf-table td.blf-rowbtn button { padding: 0 6px; font-size: 11px; }
+.blf-add { margin-top: 4px; font-size: 12px; padding: 3px 10px; }
+.blf-cell-chg, .blf-cell-chg input, .blf-cell-chg textarea { background: #fff8d6 !important; }
+/* line-aligned columns (marks | qty | description): same monospace font + line height in all three
+   boxes so line N of each column sits on the same row on screen AND on the printout */
+.blform .mono, .rider-col textarea.mono { font-family: Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.5; }
+
+/* attachment / rider pages (kind 'riders') - print as their own pages after the bill */
+.riders { margin-top: 14px; }
+.rider-page { background: #fff; border: 1.5px solid #1c2733; padding: 14px; margin-bottom: 14px; position: relative; }
+.rider-head { text-align: center; font-weight: 700; letter-spacing: 1.5px; font-size: 13px; margin-bottom: 8px; }
+.rider-rm { position: absolute; top: 8px; right: 8px; font-size: 11px; }
+.rider-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 0; border: 1px solid #1c2733; }
+.rider-col { padding: 6px; border-right: 1px solid #1c2733; min-height: 200px; }
+.rider-col:last-child { border-right: none; }
+.rider-col textarea { width: 100%; min-height: 320px; border: none; outline: none; resize: vertical; font: 12.5px/1.45 "Segoe UI", Arial, sans-serif; background: #fbfdff; }
+.rider-col textarea:focus { background: #eef6ff; }
+
+/* mini tables inside the was/now diff */
+table.blf-mini { border-collapse: collapse; }
+.blf-mini th, .blf-mini td { border: 1px solid #c6ced6; padding: 2px 5px; font-size: 11px; background: #fff; }
+.blf-mini th { background: #f3f6f9; }
+
+/* attachments (uploaded files) card */
+.attrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px dashed #e3e8ee; font-size: 12.5px; }
+.attrow .mut { font-size: 11px; }
+
+/* changed-fields was/now table (staff diff) */
+table.blf-diff { width: 100%; border-collapse: collapse; }
+.blf-diff th, .blf-diff td { border: 1px solid #dde3ea; padding: 6px 8px; text-align: left; vertical-align: top; font-size: 12.5px; }
+.blf-diff th { background: #f3f6f9; }
+.blf-diff td.fld { font-weight: 600; width: 18%; }
+.blf-diff td.was { background: #fdecea; white-space: pre-wrap; width: 41%; }
+.blf-diff td.now { background: #e8f5e9; white-space: pre-wrap; width: 41%; }
+
+/* version pills + event timeline (staff editor) */
+.verlist { display: flex; gap: 6px; flex-wrap: wrap; }
+.verpill { padding: 3px 10px; border-radius: 12px; border: 1px solid #c6ced6; background: #fff; cursor: pointer; font-size: 12px; }
+.verpill.on { background: #1565c0; border-color: #1565c0; color: #fff; }
+.verpill.customer { border-style: dashed; }
+.evt { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px dashed #e3e8ee; font-size: 12px; }
+.evt .when { color: #6b7886; white-space: nowrap; }
+.evt .what { font-weight: 600; }
+
+@media print {
+  body { background: #fff; }
+  .page { max-width: none; padding: 0; }
+  .bar, .card, .note, .noprint { display: none !important; }
+  .blform { border-width: 2px; }
+  .blf-input { background: #fff !important; }
+  .blf-changed, .blf-changed .blf-input { background: #fff !important; }
+  .blf-changed .blf-label::after { content: ""; }
+  .blf-table th, .blf-table td { border-color: #111; }
+  .blf-cell-chg, .blf-cell-chg input, .blf-cell-chg textarea { background: #fff !important; }
+  .rider-page { page-break-before: always; border-width: 2px; margin-bottom: 0; }
+  .rider-col textarea { background: #fff !important; }
+}

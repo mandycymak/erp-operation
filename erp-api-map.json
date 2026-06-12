@@ -1,0 +1,30 @@
+{
+  "_comment": "Deployment mapping for the Swivel 3rd-party ERP API (https://documents.swivelsoftware.com/3rd-erpapi.html). Used by erp-doc-api.ps1 when a draft HBL/HAWB is ISSUED. This file holds the NON-SECRET deployment codes (the bearer token lives in ops.config.json erpApi.token, gitignored). Every code here must match the corresponding ERP master (service type, status code, document type).",
+
+  "_partyGroupCode": "Your Company Code - sent as partyGroupCode on every call (REQUIRED for real mode).",
+  "partyGroupCode": "DEV",
+
+  "_forwarderCode": "Forwarder Code - required by /file/upload and /document/generate.",
+  "forwarderCode": "S0001",
+
+  "_serviceCodeDefault": "serviceCode is REQUIRED by /booking/update and must match the Service Type Master in the ERP (e.g. CY/CY). Empty = issue is blocked with a clear error until configured.",
+  "serviceCodeDefault": "FCL/FCL",
+
+  "_commodityFallback": "commodity is REQUIRED by /booking/update; used when the shipment snapshot and the agreed description are both empty.",
+  "commodityFallback": "GENERAL CARGO",
+
+  "_event": "The event stamped via /event/update when the document is issued. status must match the Status Code master in the ERP - per ops, the Transport Bill Confirm event maps to 'transportBill'.",
+  "event": { "status": "transportBill", "description": "Transport Bill Confirm" },
+
+  "_documentTypeCode": "ERP Document Type Code per doc type - used by /file/upload (attachment documentTypeCode) and /document/generate.",
+  "documentTypeCode": { "HBL": "HBL", "HAWB": "HAWB" },
+
+  "_generateDocument": "true = after saving data + event, also call /document/generate so the ERP produces the official house bill document.",
+  "generateDocument": false,
+
+  "_bookingUpdateMode": "strict = an ERP rejection of /booking/update aborts the issue. best-effort = the rejection is logged in the document history and the issue continues with /file/upload + /event/update. Set to best-effort 2026-06-12 because the demoerp /booking/update rejects EVERY payload with 'Departure date not active yet, Invalid carrier code' (verified payload-invariant, even with master-listed carrier APLU + future ETD/ETA) - raised with Swivel; flip back to strict once fixed.",
+  "bookingUpdateMode": "best-effort",
+
+  "_bookingOverrides": "Optional last-step overrides applied to the /booking/update payload. Key = API property name; value = 'field:<doc field code>' (agreed document box), 'sa:<shipment_alerts column>' (snapshot), or 'const:<literal>'. Example: { \"freightTermsCode\": \"const:PP\" }.",
+  "bookingOverrides": {}
+}
