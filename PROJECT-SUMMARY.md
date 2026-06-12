@@ -4,13 +4,55 @@ Status snapshot of the Control Tower build. The authoritative design is **`BLUEP
 **what is actually built and proven** against real ERP data, plus the findings that shaped it. Read this first
 when resuming. Operator-memory notes also live under `.claude/projects/.../memory/` (local + network DB setup).
 
+**End-user / developer documentation lives in [`docs/`](docs/):**
+[BUSINESS-GUIDE.md](docs/BUSINESS-GUIDE.md) (operators/managers) ·
+[TECHNICAL-GUIDE.md](docs/TECHNICAL-GUIDE.md) (install/run/admin) ·
+[DEVELOPER-GUIDE.md](docs/DEVELOPER-GUIDE.md) (coding standards) ·
+[SQL-README.md](docs/SQL-README.md) (`pgsops` schema + the verified ERP field map). This file remains the
+session log / status snapshot.
+
 ## Status: working app — arrival-driven worklist, filters, multi-station, cross-station feed; Sea **and** Air
 
 A clickable, end-to-end worklist app runs against real data on two test environments. The scheduled
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-12c — worklist "this week's work" window + HBL seed completion + Qty column — RESUME HERE).**
+**Latest session (2026-06-12d — Neutral Air Waybill + verified Air field map + LIVE ERP issue + auto-PDF + docs — RESUME HERE).**
+Driven by the user's head-to-toe test of the **Draft HAWB** review on demoerp booking `HKGAE6060004`
+(job `AEHKG260600006`, ref 62885, HKG->SEL->CHI->LAX). All Air mappings reconciled against live `fm3khkg`
+`awbhead`/`awbdetl`.
+- **HAWB renders as the IATA Neutral Air Waybill** (dedicated layout in `bl-form.js`; the ocean HBL keeps the
+  generic grid). Dynamic **Marks <-> Nature divider** (`goods_split`, draggable, persisted + printed),
+  prepaid/collect **charges summary**, the routing strip, and a **Dimensions** box. Rate line single.
+- **Verified Air field map** (see [docs/SQL-README.md](docs/SQL-README.md) §4): Airport of Destination =
+  `dest_name` (final, not `pod_name`); routing legs **`to1` / `deli` / `to3`** (`deli` = the MIDDLE leg, e.g.
+  CHI); carriers from `carr`|flight-prefix; pieces `t_book_qty`->`t_rece_qty`; kg/lb from `wgt_unit`; Marks =
+  `awbdetl.mark2`; goods = `awbdetl.desc2` (full text, NOT `good_desc2`/`commodity`); Dimensions =
+  `awbdetl.dimension` (gated by `not_show_dim`); Handling = `awbhead.handling`; Accounting = freight term +
+  Destination Agent (`agnt_*`); Notify own box; Issuing Carrier's Agent = own office; WT/VAL & Other PPD/COLL
+  `X` from `frt_terms`/`oth_terms`; declared values + insurance.
+- **Detail-drawer route leg order fixed** (`Get-AirRoutePoints` in `ops-eval.ps1`): pol -> to1 -> **deli** ->
+  to3/dest, so the middle leg (CHI) shows in sequence.
+- **Performance fix** (`Get-ErpCols`): dropped the column-metadata probe. `INFORMATION_SCHEMA`/`sys.columns`
+  for the read-only login on the 465-col `awbhead` runs 40-70s and drops the connection, which aborted the
+  whole ERP seed (drafts came back snapshot-only AND slow). Now trusts the curated want-list. Draft seed
+  ~11-14s+fail -> **~4s**.
+- **LIVE ERP issue proven.** `documentTypeCode` -> **`BL_REVIEW`** (HBL+HAWB) in `erp-api-map.json`; event
+  already `transportBill`/"Transport Bill Confirm". The agreed PDF is now **auto-generated** on Issue
+  (`Doc-RenderPdf`/`Resolve-PdfEngine` -> headless Edge/Chrome print-to-PDF of the offline bill via
+  `BLForm.setDict`; verified 73 KB valid PDF in ~3s). Root cause of "nothing in ERP": **mock mode** - the
+  demoerp config had no `erpApi` block. Added `erpApi` (baseUrl + bearer token) to `ops.config.demoerp.json`;
+  token **verified live** via read-only `/booking/get` (booking HKG2606004 found). **The two buttons:**
+  *Agree - save data to ERP* = `/booking/update` (data); *Issue official document* = `/file/upload`
+  (BL_REVIEW PDF) + `/event/update` (Transport Bill Confirm). To re-issue the mock-issued `AEHKG260600006`,
+  Amend it first.
+- **My-Tasks draft-review alerts** (`Get-DraftAlerts`): drafts in `CUSTOMER_SUBMITTED`/`CUSTOMER_APPROVED`
+  surface in the inbox (with the customer's message), count toward the badge, self-clearing, scoped.
+- **Docs** created under `docs/` (BUSINESS/TECHNICAL/DEVELOPER/SQL-README), mirroring pgs-dashboard's structure.
+- Committed: `7c86958` (HAWB layout + field map + perf + alerts). Uncommitted: the deli/desc2/handling
+  follow-ups, auto-PDF, `BL_REVIEW`, docs, and the gitignored `ops.config.demoerp.json erpApi` token.
+
+**Previous session (2026-06-12c — worklist "this week's work" window + HBL seed completion + Qty column).**
 Driven by the user's first head-to-toe run on a fresh demoerp booking (12073 -> job `SEHKG260600006`).
 (1) **Worklist date window redefined**: a row now matches when ANY of `sort_key` (moving), `next_due`
 (work due in the window), or `anchor_date` (created in the window) hits it, plus work **overdue up to 30

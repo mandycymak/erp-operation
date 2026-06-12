@@ -1,0 +1,176 @@
+# Control Tower — Developer & Coding-Standards Guide
+
+**Audience:** any developer who clones this repo and changes the code — **especially if you use Claude (Claude
+Code) on your own PC.** Read this first so your changes match the house style and the next person (or the next
+Claude session) stays consistent.
+
+The single most important rule: **match the existing code; do not re-architect it.** This is a deliberately
+small, no-build, vanilla stack — PowerShell 5.1 + .NET on the server, vanilla ES5-ish JavaScript on the
+client, SQL Server for storage. Keep it that way.
+
+---
+
+## 0. If you're driving with Claude Code — read this
+
+The repo root carries **`CLAUDE.md`** (hard constraints + the critical gotchas) and **`BLUEPRINT.md`** (the
+authoritative, approved design, section by section). Claude Code loads `CLAUDE.md` automatically. **Keep both
+accurate** — when you change a convention, update them in the same commit. `PROJECT-SUMMARY.md` records what is
+actually built and proven; update it when you ship something.
+
+> When adding a feature, point Claude at the relevant `Handle-*` function (server) and the sibling
+> **pgs-dashboard** implementation — most of this app's plumbing was lifted from there and the patterns
+> transfer almost verbatim.
+
+---
+
+## 1. The non-negotiables (inherited — respect them)
+
+| Rule | Why |
+|---|---|
+| **`Packet Size=512` on every connection string** | The VPN MTU black-holes default 8 KB TDS packets on large responses → "semaphore timeout". |
+| **VPN must be up** to hit SQL | The DB hosts are only reachable through the Swivel OpenVPN. |
+| **Source ERP DBs are READ-ONLY** | All writes go to `pgsops` or the gitignored JSON note store. Never `INSERT`/`UPDATE`/`ALTER` an ERP table. |
+| **Single-threaded server** | One `HttpListener` request at a time. Bound every query with `CommandTimeout`; the UI reads only small `pgsops` tables, never the ERP on a request path. |
+| **Secrets are gitignored** (`ops.config*.json`, `users.json`, `roles.json`, `ops-lists/`, `*.log`, `erp-mock/`) | Credentials / the ERP token / access policy. Commit only `*.example.json`. **Check `git status` before every commit.** |
+| **All SQL is parameterised** | `SqlParameter` / `@name` — never string-build values from user input. |
+| **Row-level scope is the security boundary** | Per-user scope must be AND-ed into *every* data query, not just the visible table. Out-of-scope rows return "not found" — no existence oracle. |
+| **Dates are ISO `yyyy-mm-dd` everywhere** | Display, input, storage. **No native `<input type="date">`** — use a text input + `^\d{4}-\d{2}-\d{2}$` guard. SQL `CONVERT(...,23)`; PowerShell `.ToString('yyyy-MM-dd')`. |
+| **`.ps1` files stay ASCII-only** | PS 5.1 runs a BOM-less script as ANSI; a non-ASCII byte (em-dash) can terminate a string and cause a runtime parse error. Read text/JSON with `[IO.File]::ReadAllText`, never bare `Get-Content`. |
+
+---
+
+## 2. Repository map
+
+| File | Role |
+|---|---|
+| `setup-ops.ps1` | creates the `pgsops` schema (operational + feed + draft-document tables), idempotent, two-server aware |
+| `seed-milestone-config.ps1` | the milestone matrix as data (`milestone_def` + starter evidence map) |
+| `ops-eval.ps1` | pure evaluator — `New-ShipContext` / `New-AirContext`, `Eval-Milestones`, the route-point builders (`Get-AirRoutePoints` / `Get-SeaRoutePoints`) |
+| `seed-alerts.ps1` | the listener stand-in (`-Mode Sea\|Air`): reads `blhead`/`awbhead`, batches contacts, computes arrival/cargo/conveyance, upserts `shipment_alerts` |
+| `eval-shipment.ps1` | read-only one-shot card for one shipment (diagnostic) |
+| `seed-station-map.ps1` / `publish-bookings.ps1` | the cross-station inbound feed (identity directory + publisher) |
+| `register-ops-tasks.ps1` | Task Scheduler registration |
+| `serve-ops.ps1` | the web service — auth, JSON API, the draft-document subsystem, static files |
+| `erp-doc-api.ps1` | the Swivel 3rd-party ERP API client (agree / issue: booking/update, file/upload, event/update) |
+| `index.html` / `ops.js` / `styles.css` | the operator UI |
+| `admin-ops.html` / `login.html` | admin (users + milestones) and login |
+| `doc-editor.html` / `doc-editor.js` | staff draft editor (diff, send, agree, issue, amend) |
+| `bl-review.html` / `bl-review.js` / `bl-review.css` | the public customer review page |
+| `bl-form.js` | the **shared** bill renderer (used by both the staff editor and the customer page) |
+| `doc-fields.json` | the field dictionary — the single source of truth for both server whitelist and client render |
+| `erp-api-map.json` | non-secret ERP deployment codes |
+
+---
+
+## 3. Back-end conventions (`serve-ops.ps1`)
+
+### Structure & SQL
+
+- **Routing loop.** SQL-free endpoints are placed **before** the `$cn` DB-connection block; DB handlers
+  after. Each handler is `Handle-*` / `Save-*` and returns a hashtable that `Send-Json` serializes with
+  `no-store` headers.
+- **`RunQ $cn $sql $params $timeoutSec`** is the query helper: parameterised, retries one genuine transient
+  drop, **throws immediately on a timeout** (does not retry — a slow query just holds the single-threaded
+  server). `Reset-Conn` reopens a dropped connection.
+- **Idempotent schema** uses `IF OBJECT_ID(...) IS NULL CREATE` / `IF COL_LENGTH(...) IS NULL ALTER`.
+
+> **Gotcha — `ConvertTo-Json` and arrays (PS 5.1).** A 0-row array serializes to nothing, a 1-row array to a
+> bare object. Pass `-InputObject` (not the pipeline), serialize JSON-store records individually, and coerce
+> `$null`→`[DBNull]::Value` for SQL params. The client re-coerces every list with `arr()`.
+
+### Reading the ERP (off the request path only)
+
+The draft seed and the detail drawer are the only paths that touch the ERP, and only at staff-click time —
+bounded (`Connect Timeout=5`, `CommandTimeout=8`, `Packet Size=512`), keyed seeks.
+
+> ⚠️ **Never probe column metadata on a request path.** `INFORMATION_SCHEMA.COLUMNS` / `sys.columns` for the
+> read-only login on the **465-column** `awbhead` runs **40–70 s** (per-column permission checks) and can drop
+> the connection, while the keyed data SELECT is ~0.3 s. **`Get-ErpCols` does not probe metadata** — it trusts
+> a curated want-list; a genuinely-missing column makes one SELECT throw and the caller's try/catch degrades
+> to the snapshot seed. Add new ERP columns to the want-list, never a metadata round-trip.
+
+### Auth, roles & scope
+
+`Cur-Stations` / `Cur-Pairs` / `Cur-Teams` / `Cur-Tier` emit the current user's scope; `Scope-StationClause`
+/ `Scope-PairClause` AND it into queries; `Test-JobScope` gates by-job endpoints. Admin/manager bypass scope.
+Builders **emit items** (no leading-comma wrap) — collect with `@(Cur-...)`.
+
+### The draft-document subsystem
+
+This is the largest feature; it is keyed by `job_no`/`doc_id`:
+
+- **Whitelist + clamp.** `Doc-CleanFields $type $src` rebuilds incoming fields against `doc-fields.json` —
+  only known codes survive, each clamped to `maxlen`; structured kinds (`table`, `riders`) rebuilt in column
+  order. The server **never** trusts a raw client field.
+- **Seed.** `Doc-SaSeed` (snapshot) then `Doc-ErpSeed` (bounded ERP read). The Air mappings live here — see
+  [SQL-README.md §4](SQL-README.md). `Doc-CustLookup` resolves the own office via `fm3kco.site` owncode.
+- **Versioning.** Every save/submit inserts an immutable `doc_version`; `Doc-Changed` (canonical JSON compare)
+  drives the "no changes" guard and the staff diff.
+- **Public path.** `/api-doc/*` validates the token **shape** (regex) before any SQL, caps the body, and
+  returns a single generic failure message (no existence oracle).
+- **My-Tasks.** `Get-DraftAlerts` surfaces `CUSTOMER_SUBMITTED`/`CUSTOMER_APPROVED` drafts; self-clearing.
+
+### ERP document API (`erp-doc-api.ps1`)
+
+`Invoke-ErpDocAgree` = `/booking/get` (read-merge) → `/booking/update`. `Invoke-ErpDocIssue` = per-file
+`/file/upload` (documentTypeCode from `erp-api-map.json`) → `/event/update` (transportBill). Mode-aware
+(`moduleTypeCode` AIR/SEA). `ErpMockMode` returns true when no `baseUrl`+token → writes `erp-mock/` instead.
+
+> **Gotcha — live-call findings (baked in):** `Invoke-RestMethod` returns a JSON array as ONE object
+> (assign-then-`@()`); do **not** send `carrierCode`/`vesselName` on update; key `/file/upload` + `/event/update`
+> by `houseNo`+`bookingNo` (the doc guid 422s); `ErpErr` rewinds the consumed response stream to surface the
+> ERP's real validation text.
+
+### Headless PDF (`Doc-RenderPdf`)
+
+On Issue, the agreed bill is rendered to PDF by injecting `doc-fields.json` + the saved fields into an offline
+HTML page (no auth/fetch — uses `BLForm.setDict`), printed by headless Edge/Chrome (`Resolve-PdfEngine`),
+reusing `bl-review.css`'s `@media print`. Returns `$null` (issue proceeds) on any failure.
+
+---
+
+## 4. Front-end conventions (`ops.js`, `bl-form.js`)
+
+- **Vanilla JS, no framework, no build, no package manager.** Keep it that way. `node --check` is the only
+  gate.
+- **`arr()` / `arrFields()`** coerce PS 5.1's 0-/1-row `ConvertTo-Json` quirk back to arrays — a `|| []` guard
+  is **not** enough.
+- **`cache:"no-store"`** on every fetch; responses are `no-store` (the app may run in a cross-site iframe).
+- **`bl-form.js` is shared** by the staff editor and the customer page, so both always see the identical
+  layout. The layout comes from `doc-fields.json` (order = layout order, `w` = grid span of 12, `multiline`,
+  `mono`, structured `kind` = `table`/`riders`). HAWB has a dedicated Neutral Air Waybill layout; HBL uses the
+  generic grid. `collect()`/`diff()` are layout-agnostic (they scan by `data-code`), so a custom layout never
+  breaks save/diff.
+- **No native dialogs** for data entry — custom in-page dialogs (no "localhost says").
+
+---
+
+## 5. CSS conventions
+
+`styles.css` (operator UI) and `bl-review.css` (the bill). Match the existing selectors; the bill uses
+`.blf-*` / `.awb-*` classes with an outer top+left border and per-box right+bottom borders (so stacked rows
+never double a line). Every print rule lives in the `@media print` block — the same CSS produces the
+auto-generated PDF.
+
+---
+
+## 6. Data-model cheat-sheet
+
+So your SQL is correct, read [SQL-README.md](SQL-README.md): the `pgsops` tables, the **bound-aware** sea
+fields (`onboard2`/`departure2`/`vessel_2`), and the verified Air field map (`to1`/`deli`/`to3` routing,
+`dest_name`, `desc2` goods, `mark2` marks, `dimension`, `handling`, `t_rece_qty`, `wgt_unit`, the PPD/COLL
+terms). New HTML pages need `<meta charset="utf-8">`.
+
+---
+
+## 7. Definition of done
+
+- [ ] **Reconcile every computed light / KPI / seeded field against a direct read-only SQL query of the source
+      ERP** before declaring it done. This is the house rule — the field map is the project's main unknown.
+- [ ] Syntax-check: `[PSParser]::Tokenize` for `.ps1`, `node --check` for `.js`, `ConvertFrom-Json` for JSON.
+- [ ] All new SQL parameterised; scope AND-ed in; bounded by `CommandTimeout`.
+- [ ] No ERP write; no metadata probe on a request path; `Packet Size=512` present.
+- [ ] Secrets still gitignored — `git status` clean of `ops.config*`, `users.json`, `erp-mock/`, `*.log`.
+- [ ] `.ps1` ASCII-only; dates ISO; client list fields coerced with `arr()`.
+- [ ] Test server-side changes on a **temp port** so a running instance is undisturbed.
+- [ ] Update `CLAUDE.md` / `BLUEPRINT.md` / `PROJECT-SUMMARY.md` if a convention or capability changed.

@@ -116,7 +116,7 @@
     }
     if (h.status === 'AGREED') {
       // optional: attach the agreed PDF (browser print-to-PDF of this page) - forwarded to ERP /file/upload
-      const pdf = el('input'); pdf.type = 'file'; pdf.accept = 'application/pdf'; pdf.title = 'Optional: attach the agreed PDF (it is uploaded to the ERP shipment files)';
+      const pdf = el('input'); pdf.type = 'file'; pdf.accept = 'application/pdf'; pdf.title = 'Optional override: by default the agreed bill is auto-generated to PDF and uploaded to the ERP. Pick a file here only to upload your own PDF instead.';
       row.appendChild(pdf);
       const is = el('button', 'good', 'Issue official document (ERP)');
       is.onclick = async () => {

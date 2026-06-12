@@ -417,5 +417,6 @@
   }
   function getPrintSize() { try { return localStorage.getItem('blfPrintSize') || 'A4'; } catch (e) { return 'A4'; } }
 
-  window.BLForm = { load, defs, render, collect, diff, renderDiff, norm, setPrintSize, getPrintSize };
+  function setDict(d) { DICT = d; }   // inject the field dictionary directly (offline print page - no fetch)
+  window.BLForm = { load, defs, render, collect, diff, renderDiff, norm, setPrintSize, getPrintSize, setDict };
 })();

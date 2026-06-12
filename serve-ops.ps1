@@ -676,6 +676,49 @@ function Doc-FieldDefs($type){
   }
   @($script:DocDict[$type])
 }
+# Resolve a headless browser for print-to-PDF (config 'pdfEngine' override, else Edge/Chrome at the
+# standard install paths). Cached; $null when none is installed (auto-PDF then silently skips).
+function Resolve-PdfEngine {
+  if($script:PdfEngineResolved){ return $script:PdfEngine }
+  $script:PdfEngineResolved=$true
+  $cands=@()
+  $ovr="$($cfg.pdfEngine)".Trim(); if($ovr){ $cands+=$ovr }
+  $cands+= (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe'),
+           (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
+           (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+           (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe')
+  $script:PdfEngine=@($cands | Where-Object { $_ -and (Test-Path $_) })[0]
+  $script:PdfEngine
+}
+# Render the agreed bill to a PDF (base64) with headless Edge/Chrome, reusing the on-screen print layout
+# (bl-review.css @media print + bl-form.js). Offline file: page - the dictionary + fields are injected, so
+# no auth/fetch is needed. Returns $null on any failure (the issue then proceeds without an attachment).
+function Doc-RenderPdf($head,$fields){
+  $eng=Resolve-PdfEngine; if(-not $eng){ return $null }
+  $htmlPath=$null; $pdfPath=$null
+  try{
+    $css=[IO.File]::ReadAllText((Join-Path $Root 'bl-review.css'))
+    $js =[IO.File]::ReadAllText((Join-Path $Root 'bl-form.js'))
+    $dictJson=[IO.File]::ReadAllText($DocFieldsPath)
+    $fieldsJson=$fields|ConvertTo-Json -Depth 8 -Compress
+    # neutralize any '</script>' breakout inside the injected JSON (valid JSON/JS unicode escapes)
+    $bs=[char]92
+    $dictJson=$dictJson.Replace('<',"${bs}u003c").Replace('>',"${bs}u003e")
+    $fieldsJson=$fieldsJson.Replace('<',"${bs}u003c").Replace('>',"${bs}u003e")
+    $type="$($head.doc_type)"
+    # concatenation (not an interpolating here-string): css/js may contain '$' that must stay literal
+    $html='<!DOCTYPE html><html><head><meta charset="utf-8"><style>'+$css+'</style></head><body><div class="page"><div id="doc"></div></div><script>'+$js+'</script><script>BLForm.setDict('+$dictJson+');BLForm.render(document.getElementById("doc"),"'+$type+'",'+$fieldsJson+',{editable:false});BLForm.setPrintSize("A4");</script></body></html>'
+    $base=Join-Path ([IO.Path]::GetTempPath()) ('docpdf-'+[guid]::NewGuid().ToString('N'))
+    $htmlPath="$base.html"; $pdfPath="$base.pdf"
+    [IO.File]::WriteAllText($htmlPath,$html,(New-Object System.Text.UTF8Encoding($false)))
+    $uri=([Uri]$htmlPath).AbsoluteUri
+    $a=@('--headless=new','--disable-gpu','--no-sandbox','--no-pdf-header-footer','--virtual-time-budget=3000',"--print-to-pdf=$pdfPath",$uri)
+    Start-Process -FilePath $eng -ArgumentList $a -NoNewWindow -PassThru -Wait | Out-Null
+    if(Test-Path $pdfPath){ $bytes=[IO.File]::ReadAllBytes($pdfPath); if($bytes.Length -gt 100){ return [Convert]::ToBase64String($bytes) } }
+    $null
+  }catch{ $null }
+  finally{ foreach($f in @($htmlPath,$pdfPath)){ if($f){ Remove-Item $f -ErrorAction SilentlyContinue } } }
+}
 function New-RawToken {
   $b=New-Object byte[] 32
   $rng=[System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -1178,6 +1221,10 @@ function Save-DocIssue($cn,$ctx,$me){
     $nm="$($j.pdf_name)".Trim() -replace '[^\w.\- ]',''
     if(-not $nm){ $nm="agreed-$($h.doc_type)-$($h.job_no).pdf" }
     $att=@{ name=$nm; base64="$($j.pdf_base64)".Trim() }
+  }
+  if(-not $att){   # no operator-attached PDF -> auto-generate the agreed bill (headless print-to-PDF)
+    $gen=Doc-RenderPdf $h $flds
+    if($gen){ $att=@{ name="agreed-$($h.doc_type)-$($h.job_no).pdf"; base64=$gen } }
   }
   # every live rider attachment file goes to the ERP /file/upload as well
   $riders=@()
