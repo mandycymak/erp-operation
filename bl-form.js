@@ -144,6 +144,157 @@
     if (pages.length || editable) root.appendChild(wrap);
   }
 
+  // One plain (non-structured) field as a bordered box: label + value/input, with diff highlight.
+  // Layout-agnostic - the caller sets the column span (generic grid) or drops it into an AWB region.
+  function fieldBox(d, fields, opts) {
+    const box = document.createElement('div');
+    box.className = 'blf-box' + (d.multiline ? ' ml' : '');
+    box.dataset.code = d.code;
+    const lab = document.createElement('div');
+    lab.className = 'blf-label';
+    lab.textContent = d.label;
+    box.appendChild(lab);
+    const v = fields[d.code] == null ? '' : '' + fields[d.code];
+    if (opts.diffFrom) {
+      const oldV = opts.diffFrom[d.code] == null ? '' : '' + opts.diffFrom[d.code];
+      if (oldV !== v) { box.classList.add('blf-changed'); box.title = 'Changed. Was:\n' + (oldV || '(empty)'); }
+    }
+    if (opts.editable) {
+      const inp = document.createElement(d.multiline ? 'textarea' : 'input');
+      if (!d.multiline) inp.type = 'text';
+      inp.className = 'blf-input' + (d.mono ? ' mono' : '');
+      inp.dataset.code = d.code;
+      if (d.maxlen) inp.maxLength = d.maxlen;
+      inp.value = v;
+      if (d.multiline) inp.rows = Math.min(8, Math.max(3, (v.split('\n').length + 1)));
+      box.appendChild(inp);
+    } else {
+      const val = document.createElement('div');
+      val.className = 'blf-val' + (d.mono ? ' mono' : '');
+      val.textContent = v;
+      box.appendChild(val);
+    }
+    return box;
+  }
+
+  // Neutral (IATA) House Air Waybill layout. HAWB gets a fixed standard-form layout (the ocean HBL keeps
+  // the generic grid). The lower goods block is two boxes - Marks and Numbers | Nature and Quantity of
+  // Goods - separated by a DRAGGABLE divider: drag right to let Marks span almost the whole width when
+  // marks are heavy, drag left to give the goods description the middle space when marks are light. The
+  // split ratio persists in the `goods_split` field (a hidden input, so collect()/diff() carry it).
+  function renderAwb(root, fields, opts) {
+    const byCode = {}; defs('HAWB').forEach(d => byCode[d.code] = d);
+    const awb = document.createElement('div'); awb.className = 'awb';
+    const place = (parent, code, span) => {
+      const d = byCode[code]; if (!d) return null;
+      const box = fieldBox(d, fields, opts);
+      if (span) box.style.gridColumn = 'span ' + span;
+      parent.appendChild(box); return box;
+    };
+    const row = () => { const r = document.createElement('div'); r.className = 'awb-row'; awb.appendChild(r); return r; };
+
+    let r = row(); place(r, 'shipper', 6); place(r, 'hawb_no', 3); place(r, 'mawb_no', 3);
+    r = row(); place(r, 'consignee', 6); place(r, 'issuing_carrier_agent', 6);
+    r = row(); place(r, 'notify', 6); place(r, 'accounting_info', 6);
+    r = row(); place(r, 'airport_departure', 6); place(r, 'agent_iata_code', 3); place(r, 'agent_account_no', 3);
+    // routing + charges strip: To/By carriers, freight currency, CHGS (freight term), WT/VAL & Other
+    // each with a PPD|COLL pair (an X marks the active column), then the two declared-value boxes.
+    const miniCol = (sub, code) => {
+      const d = byCode[code]; const v = fields[code] == null ? '' : '' + fields[code];
+      const col = document.createElement('div'); col.className = 'awb-pc-col';
+      const s = document.createElement('div'); s.className = 'awb-pc-sub'; s.textContent = sub; col.appendChild(s);
+      if (opts.diffFrom) { const o = opts.diffFrom[code] == null ? '' : '' + opts.diffFrom[code]; if (o !== v) { col.classList.add('blf-cell-chg'); col.title = 'Was: ' + (o || '(empty)'); } }
+      if (opts.editable) { const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'blf-input'; inp.dataset.code = code; if (d && d.maxlen) inp.maxLength = d.maxlen; inp.value = v; col.appendChild(inp); }
+      else { const dv = document.createElement('div'); dv.className = 'blf-val'; dv.textContent = v; col.appendChild(dv); }
+      return col;
+    };
+    const ppdCollBox = (title, ppdCode, collCode) => {
+      const box = document.createElement('div'); box.className = 'blf-box awb-pc-box';
+      const lab = document.createElement('div'); lab.className = 'blf-label'; lab.textContent = title; box.appendChild(lab);
+      const mini = document.createElement('div'); mini.className = 'awb-pc'; mini.appendChild(miniCol('PPD', ppdCode)); mini.appendChild(miniCol('COLL', collCode));
+      box.appendChild(mini); return box;
+    };
+    const strip = document.createElement('div'); strip.className = 'awb-routing';
+    ['routing_to1', 'routing_by1', 'routing_to2', 'routing_by2', 'routing_to3', 'routing_by3', 'currency', 'chgs_code']
+      .forEach(c => { if (byCode[c]) strip.appendChild(fieldBox(byCode[c], fields, opts)); });
+    strip.appendChild(ppdCollBox('WT/VAL', 'wtval_ppd', 'wtval_coll'));
+    strip.appendChild(ppdCollBox('Other', 'other_ppd', 'other_coll'));
+    ['declared_value_carriage', 'declared_value_customs'].forEach(c => { if (byCode[c]) strip.appendChild(fieldBox(byCode[c], fields, opts)); });
+    awb.appendChild(strip);
+    r = row(); place(r, 'airport_destination', 5); place(r, 'flight_date', 4); place(r, 'amount_of_insurance', 3);
+    r = row(); place(r, 'handling_info', 12);
+
+    // ---- lower goods block: rate columns + Marks | Nature, draggable divider ----
+    const goods = document.createElement('div'); goods.className = 'awb-goods';
+    const left = document.createElement('div'); left.className = 'awb-goods-left';
+    const right = document.createElement('div'); right.className = 'awb-goods-right';
+    const rate = document.createElement('div'); rate.className = 'awb-rate';
+    ['pieces', 'gross_weight', 'kg_lb', 'rate_class', 'chargeable_weight', 'rate_charge', 'total']
+      .forEach(c => { if (byCode[c]) rate.appendChild(fieldBox(byCode[c], fields, opts)); });
+    left.appendChild(rate);
+    const marksBox = fieldBox(byCode['marks_numbers'], fields, opts); marksBox.classList.add('awb-marks'); left.appendChild(marksBox);
+    const natBox = fieldBox(byCode['nature_quantity_goods'], fields, opts); natBox.classList.add('awb-nature'); right.appendChild(natBox);
+    if (byCode['dimensions']) { const dimBox = fieldBox(byCode['dimensions'], fields, opts); dimBox.classList.add('awb-dim'); right.appendChild(dimBox); }
+    let pct = parseInt(fields['goods_split'], 10); if (!(pct >= 25 && pct <= 75)) pct = 60;
+    left.style.flexBasis = pct + '%';
+    goods.appendChild(left); goods.appendChild(right);
+    if (opts.editable) {
+      // Preserve the stored value verbatim (empty when never set) so an untouched bill reports NO change;
+      // it only becomes an explicit percent once the operator drags the divider.
+      const hid = document.createElement('input'); hid.type = 'hidden'; hid.className = 'blf-input'; hid.dataset.code = 'goods_split';
+      hid.value = fields['goods_split'] == null ? '' : '' + fields['goods_split']; goods.appendChild(hid);
+      const handle = document.createElement('div'); handle.className = 'awb-split noprint'; handle.style.left = pct + '%';
+      handle.title = 'Drag to divide Marks / Nature & Quantity of Goods'; goods.appendChild(handle);
+      const onMove = e => {
+        const rect = goods.getBoundingClientRect(); if (!rect.width) return;
+        let p = Math.round(((e.clientX - rect.left) / rect.width) * 100); p = Math.max(25, Math.min(75, p));
+        left.style.flexBasis = p + '%'; handle.style.left = p + '%'; hid.value = String(p);
+      };
+      handle.addEventListener('mousedown', e => {
+        e.preventDefault();
+        const up = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', up); };
+        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', up);
+      });
+    }
+    awb.appendChild(goods);
+
+    // ---- charges: prepaid/collect summary | Other Charges (summary on the left, the normal order) ----
+    r = row();
+    const sum = document.createElement('div'); sum.className = 'blf-box awb-sum'; sum.style.gridColumn = 'span 6';
+    const sl = document.createElement('div'); sl.className = 'blf-label'; sl.textContent = 'Charges Summary'; sum.appendChild(sl);
+    const tbl = document.createElement('table'); tbl.className = 'awb-sumtbl';
+    const hr = document.createElement('tr');
+    ['', 'Prepaid', 'Collect'].forEach(t => { const th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
+    tbl.appendChild(hr);
+    const chargeCell = code => {
+      const d = byCode[code]; const v = fields[code] == null ? '' : '' + fields[code];
+      const td = document.createElement('td');
+      if (opts.diffFrom) { const o = opts.diffFrom[code] == null ? '' : '' + opts.diffFrom[code]; if (o !== v) { td.classList.add('blf-cell-chg'); td.title = 'Was: ' + (o || '(empty)'); } }
+      if (opts.editable) { const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'blf-input'; inp.dataset.code = code; if (d && d.maxlen) inp.maxLength = d.maxlen; inp.value = v; td.appendChild(inp); }
+      else td.textContent = v;
+      return td;
+    };
+    [['Weight Charge', 'prepaid_weight_charge', 'collect_weight_charge'],
+     ['Valuation Charge', 'valuation_charge_prepaid', 'valuation_charge_collect'],
+     ['Tax', 'tax_prepaid', 'tax_collect'],
+     ['Total Other Charges Due Agent', 'due_agent_prepaid', 'due_agent_collect'],
+     ['Total Other Charges Due Carrier', 'due_carrier_prepaid', 'due_carrier_collect'],
+     ['Total', 'total_prepaid', 'total_collect']].forEach(rowDef => {
+      const tr = document.createElement('tr');
+      const th = document.createElement('th'); th.textContent = rowDef[0]; tr.appendChild(th);
+      tr.appendChild(chargeCell(rowDef[1])); tr.appendChild(chargeCell(rowDef[2]));
+      tbl.appendChild(tr);
+    });
+    sum.appendChild(tbl); r.appendChild(sum);
+    place(r, 'other_charges', 6);
+
+    // ---- signatures ----
+    r = row(); place(r, 'shipper_signature', 4); place(r, 'executed_date', 4); place(r, 'executed_place', 4);
+    r = row(); place(r, 'signature', 12);
+
+    root.appendChild(awb);
+  }
+
   // Render the bill into `root`. opts: { editable: bool, diffFrom: {code:value}|null }.
   // diffFrom marks boxes/cells whose value differs from the given base snapshot.
   function render(root, type, fields, opts) {
@@ -155,47 +306,25 @@
     title.className = 'blf-title';
     title.textContent = type === 'HAWB' ? 'HOUSE AIR WAYBILL' : 'HOUSE BILL OF LADING';
     root.appendChild(title);
+    if (type === 'HAWB') { renderAwb(root, fields, opts); return; }
     const grid = document.createElement('div');
     grid.className = 'blf-grid';
     const riderDefs = [];
     defs(type).forEach(d => {
       if (d.kind === 'riders') { riderDefs.push(d); return; }   // riders print AFTER the bill, not inside it
-      const box = document.createElement('div');
-      box.className = 'blf-box' + (d.multiline ? ' ml' : '') + (d.kind === 'table' ? ' tbl' : '');
-      box.style.gridColumn = 'span ' + (d.w || 3);
-      const lab = document.createElement('div');
-      lab.className = 'blf-label';
-      lab.textContent = d.label;
-      box.appendChild(lab);
       if (d.kind === 'table') {
+        const box = document.createElement('div');
+        box.className = 'blf-box tbl';
+        box.style.gridColumn = 'span ' + (d.w || 3);
+        const lab = document.createElement('div'); lab.className = 'blf-label'; lab.textContent = d.label; box.appendChild(lab);
         const rows = rowsOf(fields[d.code]);
         const oldRows = opts.diffFrom ? rowsOf(opts.diffFrom[d.code]) : null;
         if (oldRows && norm(rows) !== norm(oldRows)) box.classList.add('blf-changed');
         renderTable(box, d, rows, oldRows, !!opts.editable);
-      } else {
-        const v = fields[d.code] == null ? '' : '' + fields[d.code];
-        let changed = false, oldV = '';
-        if (opts.diffFrom) {
-          oldV = opts.diffFrom[d.code] == null ? '' : '' + opts.diffFrom[d.code];
-          changed = oldV !== v;
-        }
-        if (changed) { box.classList.add('blf-changed'); box.title = 'Changed. Was:\n' + (oldV || '(empty)'); }
-        if (opts.editable) {
-          const inp = document.createElement(d.multiline ? 'textarea' : 'input');
-          if (!d.multiline) inp.type = 'text';
-          inp.className = 'blf-input' + (d.mono ? ' mono' : '');
-          inp.dataset.code = d.code;
-          if (d.maxlen) inp.maxLength = d.maxlen;
-          inp.value = v;
-          if (d.multiline) inp.rows = Math.min(8, Math.max(3, (v.split('\n').length + 1)));
-          box.appendChild(inp);
-        } else {
-          const val = document.createElement('div');
-          val.className = 'blf-val' + (d.mono ? ' mono' : '');
-          val.textContent = v;
-          box.appendChild(val);
-        }
+        grid.appendChild(box); return;
       }
+      const box = fieldBox(d, fields, opts);
+      box.style.gridColumn = 'span ' + (d.w || 3);
       grid.appendChild(box);
     });
     root.appendChild(grid);

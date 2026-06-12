@@ -67,6 +67,49 @@ table.blf-table { width: 100%; border-collapse: collapse; margin-top: 2px; }
 .rider-col textarea { width: 100%; min-height: 320px; border: none; outline: none; resize: vertical; font: 12.5px/1.45 "Segoe UI", Arial, sans-serif; background: #fbfdff; }
 .rider-col textarea:focus { background: #eef6ff; }
 
+/* ---- Neutral (IATA) Air Waybill layout (HAWB only) ---- */
+/* .awb supplies the outer top+left frame; each .blf-box draws its own right+bottom border (same idiom
+   as .blf-grid), so stacked rows never double a line. */
+.awb { border-top: 1px solid #1c2733; border-left: 1px solid #1c2733; }
+.awb-row { display: grid; grid-template-columns: repeat(12, 1fr); }
+/* per-box height tuning: Accounting Information needs room (freight term + destination agent);
+   Agent IATA Code / Account No are short; Airport of Departure is a small single-line box */
+.awb .blf-box[data-code="accounting_info"] { min-height: 118px; }
+.awb .blf-box[data-code="notify"] { min-height: 84px; }
+.awb .blf-box[data-code="agent_iata_code"], .awb .blf-box[data-code="agent_account_no"] { min-height: 34px; }
+.awb .blf-box[data-code="airport_departure"] { min-height: 34px; }
+/* routing + charges strip: To | By First Carrier | to | by | To | by | Currency | CHGS | WT/VAL | Other | Decl.Carriage | Decl.Customs */
+.awb-routing { display: grid; grid-template-columns: .7fr 1.2fr .6fr .6fr .7fr .6fr .8fr .8fr 1.1fr 1.1fr 1.4fr 1.4fr; }
+.awb-routing .blf-box { min-height: 44px; }
+.awb-pc-box { padding-bottom: 2px; }
+.awb-pc { display: grid; grid-template-columns: 1fr 1fr; }
+.awb-pc-col { padding: 0 1px; text-align: center; border-left: 1px solid #c6ced6; }
+.awb-pc-col:first-child { border-left: none; }
+.awb-pc-sub { font-size: 8px; letter-spacing: .2px; color: #4a5a6c; }
+.awb-pc-col input { width: 100%; border: none; outline: none; text-align: center; font: 11px "Segoe UI", Arial, sans-serif; background: #fbfdff; padding: 1px 0; }
+.awb-pc-col input:focus { background: #eef6ff; }
+.awb-pc-col .blf-val { text-align: center; min-height: 14px; }
+/* lower goods block: [rate columns + Marks] | [Nature & Quantity], draggable divider between them */
+.awb-goods { display: flex; position: relative; align-items: stretch; }
+.awb-goods-left { display: flex; flex-direction: column; flex: 0 0 60%; min-width: 0; }
+.awb-goods-right { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+.awb-rate { display: grid; grid-template-columns: .8fr 1.1fr .5fr .7fr 1.1fr 1fr 1fr; }
+.awb-rate .blf-box { min-height: 40px; }
+.awb-marks { flex: 1; min-height: 200px; }
+.awb-nature { flex: 1; min-height: 160px; }
+.awb-dim { min-height: 64px; }
+.awb-marks .blf-input, .awb-nature .blf-input { min-height: 180px; height: 100%; }
+.awb-split { position: absolute; top: 0; bottom: 0; width: 9px; margin-left: -5px; cursor: col-resize; background: rgba(21, 101, 192, .18); }
+.awb-split:hover { background: rgba(21, 101, 192, .45); }
+.awb-sum.blf-box { min-height: 0; }
+table.awb-sumtbl { width: 100%; border-collapse: collapse; margin-top: 2px; }
+.awb-sumtbl th, .awb-sumtbl td { border: 1px solid #9aa6b2; padding: 1px 4px; font-size: 11px; text-align: left; }
+.awb-sumtbl th { background: #f3f6f9; font-size: 10px; color: #4a5a6c; text-transform: uppercase; letter-spacing: .3px; }
+.awb-sumtbl tr th:first-child { font-weight: 600; text-transform: none; letter-spacing: 0; color: #38465a; background: #fff; width: 44%; }
+.awb-sumtbl td { width: 28%; }
+.awb-sumtbl td input { width: 100%; border: none; outline: none; font: 11px "Segoe UI", Arial, sans-serif; background: #fbfdff; padding: 1px; }
+.awb-sumtbl td input:focus { background: #eef6ff; }
+
 /* mini tables inside the was/now diff */
 table.blf-mini { border-collapse: collapse; }
 .blf-mini th, .blf-mini td { border: 1px solid #c6ced6; padding: 2px 5px; font-size: 11px; background: #fff; }
@@ -105,4 +148,8 @@ table.blf-diff { width: 100%; border-collapse: collapse; }
   .blf-cell-chg, .blf-cell-chg input, .blf-cell-chg textarea { background: #fff !important; }
   .rider-page { page-break-before: always; border-width: 2px; margin-bottom: 0; }
   .rider-col textarea { background: #fff !important; }
+  .awb { border-width: 2px; }
+  .awb-sumtbl th, .awb-sumtbl td { border-color: #111; }
+  .awb-sumtbl td input, .awb-pc-col input { background: #fff !important; }
+  .awb-pc-col { border-left-color: #111; }
 }

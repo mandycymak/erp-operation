@@ -213,6 +213,25 @@ function Task-Proj($n,$info){
 }
 # "My Tasks" = follow-ups only (excludes bypass/reopen completion records). fromOthers = OPEN notes
 # others @-mentioned me on; mine = OPEN notes I authored. Each enriched with shipment info; mine sorted by due date.
+# Draft-review alerts for the My-Tasks inbox: drafts a customer has acted on and that now await the
+# operator - CUSTOMER_SUBMITTED (changes + an optional message) or CUSTOMER_APPROVED (ready to agree).
+# Self-clearing: the moment the operator saves/agrees/issues, the status leaves these two values and the
+# alert disappears. Scope: an operator sees drafts they created; admin/manager see all pending.
+function Get-DraftAlerts($cn,$me){
+  $tier=Cur-Tier; $p=@{}
+  $where="d.status IN ('CUSTOMER_SUBMITTED','CUSTOMER_APPROVED')"
+  if($tier -notin 'admin','manager'){ $where+=" AND d.created_by=@dme"; $p['dme']="$me" }
+  $rows=@(RunQ $cn "SELECT d.doc_id,d.job_no,d.doc_type,d.status,d.customer_name,d.current_version,CONVERT(varchar(19),d.updated_at,120) updated_at,a.consignee_name FROM dbo.doc_draft d LEFT JOIN dbo.shipment_alerts a ON a.job_no=d.job_no WHERE $where ORDER BY d.updated_at DESC" $p)
+  $out=@()
+  foreach($r in $rows){
+    $comment=''
+    $ev=@(RunQ $cn "SELECT TOP 1 detail FROM dbo.doc_event_log WHERE doc_id=@d AND actor LIKE 'customer%' AND event IN ('submitted','approved') ORDER BY occurred_at DESC" @{ d="$($r.doc_id)" })
+    if($ev.Count){ try{ $comment="$(($ev[0].detail|ConvertFrom-Json).comment)".Trim() }catch{} }
+    $out+=[pscustomobject]@{ docId="$($r.doc_id)"; jobNo="$($r.job_no)"; docType="$($r.doc_type)"; status="$($r.status)"
+      customerName="$($r.customer_name)"; consignee="$($r.consignee_name)"; version=[int]$r.current_version; comment=$comment; updatedAt="$($r.updated_at)" }
+  }
+  $out
+}
 function Handle-MyTasks($cn,$me){
   $arr=Read-Notes
   $open=@($arr|Where-Object{ $_ -and (-not $_.status -or "$($_.status)" -eq 'open') -and ("$($_.kind)" -ne 'bypass') -and ("$($_.kind)" -ne 'reopen') })
@@ -231,7 +250,8 @@ function Handle-MyTasks($cn,$me){
   $mineT=@($mine|ForEach-Object{ Task-Proj $_ $info }|Sort-Object (& $byDue))
   $today=Today-Str
   $dueNow=@($mineT|Where-Object{ $_.remindOn -and "$($_.remindOn)" -le $today }).Count
-  @{ assigned=$assignedT; mine=$mineT; assignedOpen=@($assignedT).Count; dueNow=$dueNow; today=$today }
+  $draftAlerts=@(); try{ $draftAlerts=@(Get-DraftAlerts $cn $me) }catch{}
+  @{ assigned=$assignedT; mine=$mineT; drafts=$draftAlerts; assignedOpen=@($assignedT).Count; dueNow=$dueNow; draftCount=@($draftAlerts).Count; today=$today }
 }
 # jobs the user is involved in via notes (authored or mentioned) — folded into the worklist "mine" lens
 function My-NoteJobs($me){ @(Read-Notes|Where-Object{ $_ -and (("$($_.user)" -eq $me) -or (@($_.mentions) -contains $me)) }|ForEach-Object{"$($_.job_no)"}|Where-Object{$_}|Select-Object -Unique) }
@@ -539,8 +559,15 @@ function Get-ErpCols($srcCn,$db,$table,$wantCsv,[string[]]$ntextCols){
   # and a db|table-only key would hand one caller the other's (possibly narrower) cached list
   $key="$db|$table|$wantCsv"
   if($script:ErpCols[$key]){ return $script:ErpCols[$key] }
-  $have=@{}; foreach($r in @(RunQ $srcCn "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=@t" @{ t=$table } 8)){ $have["$($r.COLUMN_NAME)".ToLower()]=1 }
-  $keep=@(@($wantCsv -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $have[$_.ToLower()] })
+  # We do NOT probe column metadata. INFORMATION_SCHEMA.COLUMNS / sys.columns are CATASTROPHICALLY slow for
+  # the read-only login on the ERP's very wide tables (awbhead 465 cols / blhead 381 cols run 40-70s of
+  # per-column permission checks - even a 1s CommandTimeout takes 6s+ and DROPS the connection), while the
+  # keyed data SELECT is ~0.3s. That probe sat on the draft request path with RunQ's no-retry-on-timeout,
+  # so its 8s timeout aborted the whole ERP seed -> drafts came back snapshot-only AND slow. The doc-seed
+  # want-lists are core ERP columns present across the fm3k group, so we trust the want-list and let the
+  # fast keyed SELECT run. If a schema-variant office genuinely lacks a wanted column, that one SELECT
+  # throws and the caller's try/catch degrades to the snapshot seed - never a multi-second hang.
+  $keep=@(@($wantCsv -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
   $csv=(@($keep | ForEach-Object { if($ntextCols -contains $_){ "CONVERT(nvarchar(4000),$_) AS $_" } else { $_ } }) -join ',')
   $script:ErpCols[$key]=$csv; $csv
 }
@@ -755,7 +782,7 @@ function Doc-SaSeed($a,$type){
     $f['hawb_no']="$($a.house_bill)"; $f['mawb_no']="$($a.master_bill)"
     $f['shipper']="$($a.shipper_name)"; $f['consignee']="$($a.consignee_name)"
     $f['airport_departure']="$($a.pol)"; $f['airport_destination']="$($a.pod)"
-    $f['routing']="$($a.route_summary)"; $f['executed_date']=(Today-Str)
+    $f['routing_to1']="$($a.pod)"; $f['executed_date']=(Today-Str)
     if("$($a.total_weight)".Trim()){ $f['gross_weight']="$($a.total_weight)".Trim() }
     if("$($a.commodity)".Trim()){ $f['nature_quantity_goods']="$($a.commodity)".Trim() }
   }
@@ -768,6 +795,12 @@ function Doc-PartyText($name,$adds){
   $ls=@(); $nv="$name".Trim(); if($nv){ $ls+=$nv }
   foreach($x in @($adds)){ $xv="$x".Trim(); if($xv -and $xv -ne $nv){ $ls+=$xv } }
   ($ls -join "`n")
+}
+# Carrier code from a flight number: the leading alpha prefix (e.g. 'SQ' from 'SQ7861'). awbhead.carr is
+# usually blank in these copies, so the AWB 'By Carrier' code falls back to the flight's prefix.
+function Awb-CarrierFromFlight($flight){
+  $fl="$flight".Trim(); if(-not $fl){ return '' }
+  $m=[regex]::Match($fl,'^[A-Za-z]+'); if($m.Success){ $m.Value.ToUpper() } else { '' }
 }
 # customer-master lookup (custsub): code -> "name\naddress" using the documentation English block,
 # falling back to the mailing block. Returns '' when the code/table is absent (seed stays blank).
@@ -793,31 +826,102 @@ function Doc-ErpSeed($a,$f){
   try{
     $srcCn.Open()
     if($isAir){
-      $cols=Get-ErpCols $srcCn $db 'awbhead' 'pol_name,pod_name,flight1,f_date1,t_book_qty,t_book_wgt,ttl_cwt,special_remark,shpr_name,shpr_add1,shpr_add2,shpr_add3,shpr_add4,shpr_add5,cgne_name,cgne_add1,cgne_add2,cgne_add3,cgne_add4,cgne_add5,agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5,issu_at' @('special_remark')
+      $cols=Get-ErpCols $srcCn $db 'awbhead' 'pol_name,pod_name,pod,dest,dest_name,to1,to1_name,deli,deli_name,to3,to3_name,flight1,flight2,flight3,f_date1,f_date2,f_date3,carr,iatacode,currency,frt_terms,oth_terms,v_carriage,v_customs,v_insurance,t_book_qty,t_rece_qty,t_book_wgt,ttl_cwt,wgt_unit,not_show_dim,commodity,handling,special_remark,shpr_name,shpr_add1,shpr_add2,shpr_add3,shpr_add4,shpr_add5,cgne_name,cgne_add1,cgne_add2,cgne_add3,cgne_add4,cgne_add5,agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5,not1_name,not1_add1,not1_add2,not1_add3,not1_add4,not1_add5,issu_at' @('special_remark','commodity','handling')
       $hdr=@(); if($cols){ $hdr=@(RunQ $srcCn "SELECT TOP 1 $cols FROM dbo.awbhead WHERE ref=@k" @{ k=$key } 8) }
       if($hdr.Count){
         $b=$hdr[0]
         if("$($b.pol_name)".Trim()){ $f['airport_departure']="$($b.pol_name)".Trim() }
-        if("$($b.pod_name)".Trim()){ $f['airport_destination']="$($b.pod_name)".Trim() }
+        # Airport of Destination = FINAL destination (dest_name), not the discharge/transfer (pod_name)
+        $adest="$($b.dest_name)".Trim(); if(-not $adest){ $adest="$($b.pod_name)".Trim() }
+        if($adest){ $f['airport_destination']=$adest }
         # party boxes print name + FULL address (awbhead carries the printed blocks denormalized)
         $stx=Doc-PartyText $b.shpr_name @($b.shpr_add1,$b.shpr_add2,$b.shpr_add3,$b.shpr_add4,$b.shpr_add5)
         if($stx){ $f['shipper']=$stx }
         $ctx=Doc-PartyText $b.cgne_name @($b.cgne_add1,$b.cgne_add2,$b.cgne_add3,$b.cgne_add4,$b.cgne_add5)
         if($ctx){ $f['consignee']=$ctx }
+        # Destination Agent (awbhead agnt_* block) -> prints inside Accounting Information. The Issuing
+        # Carrier's Agent box is OUR own office, set by the fm3kco.site owncode lookup below (blank if it
+        # can't resolve - never the destination agent).
         $atx=Doc-PartyText $b.agnt_name @($b.agnt_add1,$b.agnt_add2,$b.agnt_add3,$b.agnt_add4,$b.agnt_add5)
-        if($atx){ $f['issuing_carrier_agent']=$atx }
         if("$($b.issu_at)".Trim()){ $f['executed_place']="$($b.issu_at)".Trim() }
-        $fl=@(); if("$($b.flight1)".Trim()){ $fl+="$($b.flight1)".Trim() }
-        if($b.f_date1){ try{ $fl+=([datetime]$b.f_date1).ToString('yyyy-MM-dd') }catch{} }
-        if($fl.Count){ $f['flight_date']=($fl -join ' / ') }
-        if("$($b.t_book_qty)".Trim()){ $f['pieces']="$($b.t_book_qty)".Trim() }
+        # Notify Party -> its own box under Consignee
+        $ntx=Doc-PartyText $b.not1_name @($b.not1_add1,$b.not1_add2,$b.not1_add3,$b.not1_add4,$b.not1_add5)
+        if($ntx){ $f['notify']=$ntx }
+        # Accounting Information: freight payment term + Destination Agent
+        $ftv="$($b.frt_terms)".Trim().ToUpper()
+        $acc=@(); if($ftv){ $acc+= if($ftv -eq 'PP'){ 'FREIGHT PREPAID' } else { 'FREIGHT COLLECT' } }
+        if($atx){ if($acc.Count){ $acc+='' }; $acc+='DESTINATION AGENT:'; $acc+=$atx }
+        if($acc.Count){ $f['accounting_info']=($acc -join "`n") }
+        if("$($b.iatacode)".Trim()){ $f['agent_iata_code']="$($b.iatacode)".Trim() }
+        # freight currency + CHGS code (= freight term) + WT/VAL & Other prepaid/collect X marks
+        if("$($b.currency)".Trim()){ $f['currency']="$($b.currency)".Trim() }
+        if($ftv){ $f['chgs_code']=$ftv; if($ftv -eq 'PP'){ $f['wtval_ppd']='X' } else { $f['wtval_coll']='X' } }
+        $otv="$($b.oth_terms)".Trim().ToUpper()
+        if($otv -eq 'PP'){ $f['other_ppd']='X' } elseif($otv){ $f['other_coll']='X' }
+        # declared values + amount of insurance (text fields; blank/0 insurance prints NIL)
+        if("$($b.v_carriage)".Trim()){ $f['declared_value_carriage']="$($b.v_carriage)".Trim() }
+        if("$($b.v_customs)".Trim()){ $f['declared_value_customs']="$($b.v_customs)".Trim() }
+        $vi="$($b.v_insurance)".Trim(); $f['amount_of_insurance']= if($vi -and $vi -ne '0'){ $vi } else { 'NIL' }
+        # routing strip To points = the routing legs to1 / deli / to3 (codes); By carriers = carr or the
+        # flightN alpha prefix. The intermediate leg code is awbhead.deli (e.g. CHI); 'NUL'/blank = skipped.
+        $to1="$($b.to1)".Trim(); if(-not $to1){ $to1="$($b.pod)".Trim() }
+        if($to1){ $f['routing_to1']=$to1 }
+        $deliC="$($b.deli)".Trim()
+        if($deliC -and $deliC.ToUpper() -notin 'NUL','NULL'){ $f['routing_to2']=$deliC }
+        $to3="$($b.to3)".Trim(); if($to3 -and $to3.ToUpper() -notin 'NUL','NULL'){ $f['routing_to3']=$to3 }
+        $carr1="$($b.carr)".Trim(); if(-not $carr1){ $carr1=Awb-CarrierFromFlight $b.flight1 }
+        if($carr1){ $f['routing_by1']=$carr1 }
+        $c2=Awb-CarrierFromFlight $b.flight2; if($c2){ $f['routing_by2']=$c2 }
+        $c3=Awb-CarrierFromFlight $b.flight3; if($c3){ $f['routing_by3']=$c3 }
+        # Flight / Date box: flight1..3 with their dates, one per line
+        $pairs=@(); $pairs+=,@($b.flight1,$b.f_date1); $pairs+=,@($b.flight2,$b.f_date2); $pairs+=,@($b.flight3,$b.f_date3)
+        $fld=@()
+        foreach($pr in $pairs){
+          $fn="$($pr[0])".Trim(); if(-not $fn){ continue }
+          $dt=''; if($pr[1]){ try{ $dt=([datetime]$pr[1]).ToString('yyyy-MM-dd') }catch{} }
+          $fld+= if($dt){ "$fn / $dt" } else { $fn }
+        }
+        if($fld.Count){ $f['flight_date']=($fld -join "`n") }
+        # No. of Pieces: booked qty, falling back to received qty (t_book_qty is often blank)
+        $pcs="$($b.t_book_qty)".Trim(); if(-not $pcs -or $pcs -eq '0'){ $pcs="$($b.t_rece_qty)".Trim() }
+        if($pcs -and $pcs -ne '0'){ $f['pieces']=$pcs }
         if("$($b.t_book_wgt)".Trim()){ $f['gross_weight']="$($b.t_book_wgt)".Trim() }
         if("$($b.ttl_cwt)".Trim()){ $f['chargeable_weight']="$($b.ttl_cwt)".Trim() }
-        if("$($b.special_remark)".Trim()){ $f['handling_info']="$($b.special_remark)".Trim() }
+        # kg/lb = weight-unit initial (KGS -> K, LBS -> L)
+        $wu="$($b.wgt_unit)".Trim().ToUpper(); if($wu){ $f['kg_lb']=$wu.Substring(0,1) }
+        # Handling Information = awbhead.handling, falling back to special_remark
+        $hand="$($b.handling)".Trim(); if(-not $hand){ $hand="$($b.special_remark)".Trim() }
+        if($hand){ $f['handling_info']=$hand }
+        # Issuing Carrier's Agent = own office via fm3kco.site owncode -> custsub, else the latest blhead
+        # agnt_* of the own office (mode-independent address); leaves the box blank if it can't resolve.
+        try{
+          $oc=@(RunQ $srcCn "SELECT TOP 1 owncode FROM fm3kco.dbo.site WHERE dbname=@d" @{ d=$db } 8)
+          if($oc.Count -and "$($oc[0].owncode)".Trim()){
+            $ocv="$($oc[0].owncode)".Trim()
+            $own=Doc-CustLookup $srcCn $db $ocv
+            if(-not $own){
+              $ob=@(RunQ $srcCn "SELECT TOP 1 agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5 FROM dbo.blhead WHERE agn2_code=@c AND LTRIM(RTRIM(ISNULL(agnt_name,'')))<>'' ORDER BY ref DESC" @{ c=$ocv } 8)
+              if($ob.Count){ $own=Doc-PartyText $ob[0].agnt_name @($ob[0].agnt_add1,$ob[0].agnt_add2,$ob[0].agnt_add3,$ob[0].agnt_add4,$ob[0].agnt_add5) }
+            }
+            if($own){ $f['issuing_carrier_agent']=$own }
+          }
+        }catch{}
       }
-      $items=@(RunQ $srcCn "SELECT TOP 10 item_seq, CONVERT(nvarchar(400),good_desc2) AS gd FROM dbo.awbdetl WHERE blh=@r ORDER BY item_seq" @{ r=$key } 8)
-      $descs=@(); foreach($it in $items){ $dv="$($it.gd)".Trim(); if($dv -and $descs -notcontains $dv){ $descs+=$dv } }
-      if($descs.Count){ $f['nature_quantity_goods']=($descs -join "`n") }
+      # line items: Marks and Numbers = mark2; goods description = the FULL goods text desc2 (good_desc2 is
+      # the short commodity summary); dimensions = dimension (L x W x H x Qty) unless suppressed (not_show_dim)
+      $items=@(RunQ $srcCn "SELECT TOP 20 item_seq, CONVERT(nvarchar(2000),mark2) AS mk, CONVERT(nvarchar(2000),desc2) AS d2, CONVERT(nvarchar(2000),good_desc2) AS gd2, CONVERT(nvarchar(400),dimension) AS dim FROM dbo.awbdetl WHERE blh=@r ORDER BY item_seq" @{ r=$key } 8)
+      $marks=@(); $goods=@(); $dims=@()
+      foreach($it in $items){
+        $mv="$($it.mk)".Trim(); if($mv -and $marks -notcontains $mv){ $marks+=$mv }
+        $gv="$($it.d2)".Trim(); if(-not $gv){ $gv="$($it.gd2)".Trim() }
+        if($gv -and $goods -notcontains $gv){ $goods+=$gv }
+        $dv="$($it.dim)".Trim(); if($dv -and $dims -notcontains $dv){ $dims+=$dv }
+      }
+      if($marks.Count){ $f['marks_numbers']=($marks -join "`n") }
+      if(-not $goods.Count -and $b -and "$($b.commodity)".Trim()){ $goods=@("$($b.commodity)".Trim()) }   # header commodity last resort
+      if($goods.Count){ $f['nature_quantity_goods']=($goods -join "`n") }
+      $showDim=$true; if($b -and $b.PSObject.Properties['not_show_dim']){ try{ $showDim = -not [bool]$b.not_show_dim }catch{} }
+      if($showDim -and $dims.Count){ $f['dimensions']=($dims -join "`n") }
     } else {
       $cols=Get-ErpCols $srcCn $db 'blhead' 'pol_name,pod_name,deli_name,dest_name,t_book_qty,t_book_wgt,t_book_cbm,no_orig,telex_rel,frt_terms,shpr_name,shpr_add1,shpr_add2,shpr_add3,shpr_add4,shpr_add5,cgne_name,cgne_add1,cgne_add2,cgne_add3,cgne_add4,cgne_add5,not1_name,not1_add1,not1_add2,not1_add3,not1_add4,not1_add5,carr_name,rece_name,issu_at,payable_at,agn2_code,agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5' @()
       $hdr=@(); if($cols){ $hdr=@(RunQ $srcCn "SELECT TOP 1 $cols FROM dbo.blhead WHERE ref=@k" @{ k=$key } 8) }

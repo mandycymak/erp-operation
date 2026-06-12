@@ -220,12 +220,14 @@ function Get-SeaRoutePoints($b,$bound,$vesselDisplay){
 # fa_dateN is that leg's arrival at the NEXT stop. Airline is embedded in the flight no (CX909); rout_by_1
 # only confirms leg-1's carrier. deli appended when it differs from dest.
 function Get-AirRoutePoints($b){
+  # leg order pol -> to1 -> deli -> to3/dest. The ERP carries the three routing legs in to1 / deli / to3
+  # (deli holds the MIDDLE transit, e.g. CHI), with flightN departing the (N-1)th point. _RoutePack drops
+  # blank legs and merges consecutive duplicates, so single-leg shipments collapse to POL -> DEST.
   $pts = @(
     @{ role='POL';  code=(_RS $b.pol);  name=(_RS $b.pol_name);  flight=(_RS $b.flight1); dep=(_RD $b.f_date1); time=(_RS $b.f_time1) },
     @{ role='VIA';  code=(_RS $b.to1);  name=(_RS $b.to1_name);  arr=(_RD $b.fa_date1); flight=(_RS $b.flight2); dep=(_RD $b.f_date2); time=(_RS $b.f_time2) },
-    @{ role='VIA';  code=(_RS $b.to3);  name=(_RS $b.to3_name);  arr=(_RD $b.fa_date2); flight=(_RS $b.flight3); dep=(_RD $b.f_date3); time=(_RS $b.f_time3) },
-    @{ role='DEST'; code=(_RS $(if(_RS $b.dest){$b.dest}else{$b.pod})); name=(_RS $(if(_RS $b.dest){$b.dest_name}else{$b.pod_name})); arr=(_RD $(if($b.fa_date3){$b.fa_date3}else{$b.ata_date})) },
-    @{ role='DELI'; code=(_RS $b.deli); name=(_RS $b.deli_name) }
+    @{ role='VIA';  code=(_RS $b.deli); name=(_RS $b.deli_name); arr=(_RD $b.fa_date2); flight=(_RS $b.flight3); dep=(_RD $b.f_date3); time=(_RS $b.f_time3) },
+    @{ role='DEST'; code=(_RS $(if(_RS $b.to3){$b.to3}elseif(_RS $b.dest){$b.dest}else{$b.pod})); name=(_RS $(if(_RS $b.to3){$b.to3_name}elseif(_RS $b.dest){$b.dest_name}else{$b.pod_name})); arr=(_RD $(if($b.fa_date3){$b.fa_date3}else{$b.ata_date})) }
   )
   _RoutePack $pts
 }

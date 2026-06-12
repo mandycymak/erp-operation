@@ -16,8 +16,8 @@
   "_event": "The event stamped via /event/update when the document is issued. status must match the Status Code master in the ERP - per ops, the Transport Bill Confirm event maps to 'transportBill'.",
   "event": { "status": "transportBill", "description": "Transport Bill Confirm" },
 
-  "_documentTypeCode": "ERP Document Type Code per doc type - used by /file/upload (attachment documentTypeCode) and /document/generate.",
-  "documentTypeCode": { "HBL": "HBL", "HAWB": "HAWB" },
+  "_documentTypeCode": "ERP Document Type Code per doc type - used by /file/upload (attachment documentTypeCode) and /document/generate. The customer-agreed draft PDF is uploaded under this code; it MUST exist in the ERP Document Type master or /file/upload will reject it. Set to BL_REVIEW per ops (same code for HBL + HAWB).",
+  "documentTypeCode": { "HBL": "BL_REVIEW", "HAWB": "BL_REVIEW" },
 
   "_generateDocument": "true = after saving data + event, also call /document/generate so the ERP produces the official house bill document.",
   "generateDocument": false,

@@ -103,7 +103,7 @@ function Build-ErpBookingPayload($head,$fields,$sa,$map){
     boundTypeCode=$(if("$($head.bound)" -eq 'Import'){'I'}else{'O'})
     serviceCode="$($map.serviceCodeDefault)".Trim()
     commodity=$commodity
-    shipMarks=$(if($isAir){''}else{ $mg.marks })
+    shipMarks=$(if($isAir){ FieldV $fields 'marks_numbers' }else{ $mg.marks })
     goodsDescription=$goods
     portOfLoadingCode="$($sa.pol)".Trim()
     portOfLoadingName=$(if($isAir){ FieldV $fields 'airport_departure' }else{ FieldV $fields 'port_of_loading' })

@@ -1012,16 +1012,32 @@ function noteItem(n) {
 // ---------- My Tasks ----------
 async function loadTasks() {
   const data = await api('/api-ops/my-tasks');
-  const assigned = arr(data.assigned), mine = arr(data.mine), today = data.today || '';
-  const n = (data.assignedOpen || assigned.length) + (data.dueNow || 0);   // from others + my due/overdue
+  const assigned = arr(data.assigned), mine = arr(data.mine), drafts = arr(data.drafts), today = data.today || '';
+  const n = (data.assignedOpen || assigned.length) + (data.dueNow || 0) + (data.draftCount || drafts.length);   // from others + my due/overdue + draft reviews
   ['#taskBadge', '#taskBadge2'].forEach(s => { const b = $(s); if (n > 0) { b.textContent = n; b.style.display = ''; } else b.style.display = 'none'; });
   const body = $('#tasksBody'); body.innerHTML = '';
-  body.appendChild(el('div', 'muted', '🔔 Reminders from others'));
+  if (drafts.length) {   // customer-acted drafts awaiting you — most actionable, shown first
+    body.appendChild(el('div', 'muted', '📄 Draft reviews'));
+    drafts.forEach(dr => body.appendChild(draftCard(dr)));
+    const h0 = el('div', 'muted', '🔔 Reminders from others'); h0.style.marginTop = '10px'; body.appendChild(h0);
+  } else body.appendChild(el('div', 'muted', '🔔 Reminders from others'));
   if (!assigned.length) body.appendChild(el('div', 'empty', 'Nothing waiting on you.'));
   assigned.forEach(t => body.appendChild(taskCard(t, true, today)));
   const h = el('div', 'muted', '📌 My follow-ups'); h.style.marginTop = '10px'; body.appendChild(h);
   if (!mine.length) body.appendChild(el('div', 'empty', 'No reminders set. Open a shipment → 🔔 Remind me.'));
   mine.forEach(t => body.appendChild(taskCard(t, false, today)));
+}
+function draftCard(dr) {
+  const d = el('div', 'task');
+  const who = dr.consignee || dr.customerName || dr.jobNo;
+  const approved = dr.status === 'CUSTOMER_APPROVED';
+  const label = approved ? '✅ approved · ready to agree' : '✏️ customer replied';
+  d.innerHTML =
+    '<div class="tk-head"><span class="kind">' + esc(dr.docType) + '</span> <strong>' + esc(who) + '</strong> <span class="due now">' + label + '</span></div>' +
+    '<div class="tk-sub mut">' + esc(dr.jobNo) + ' · v' + esc('' + dr.version) + (dr.updatedAt ? ' · ' + esc(dr.updatedAt) : '') + '</div>' +
+    (dr.comment ? '<div class="tk-note">💬 ' + esc(dr.comment) + '</div>' : '');
+  d.onclick = () => openShipment(dr.jobNo);   // open the shipment → its 📄 Draft review panel
+  return d;
 }
 function taskCard(t, fromOthers, today) {
   const d = el('div', 'task');
