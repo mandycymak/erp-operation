@@ -17,7 +17,45 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-12d — Neutral Air Waybill + verified Air field map + LIVE ERP issue + auto-PDF + docs — RESUME HERE).**
+**Latest session (2026-06-13 — booking-stage identity fix + UI declutter/theme/mobile + draft speed/UX + ERP-files browse — RESUME HERE).**
+- **Early-booking identity fix (the `job_no` collapse).** The listener keyed `shipment_alerts` on the raw ERP
+  `jobn`, which is blank at booking stage AND **non-unique once issued** (one job number can cover many house
+  bills — `SEHKG220800007` = **200** HBLs), so distinct shipments collapsed onto one card (HKG Sea stored only
+  ~30 of 120). Fixed by keying identity on the **immutable ERP `ref`**: `job_no` = synthetic `<STN>-<S|A>-R<ref>`;
+  added column **`erp_job_no`** (raw human jobn, for display/search). Card headline now leads with the
+  per-shipment id (house bill → booking → job no), never the synthetic key; a same-`ref` cleanup DELETE absorbs
+  the booking→job transition; unbooked-export bucket relabelled "Awaiting booking / space". **Full reseed of all
+  12 stations → 1200 rows, 1200 distinct, 0 collapse, 344 booking-stage shipments now visible.** Retrieval
+  (`/api-ops/erp-detail`, draft seed) and the future delta listener already key on `erp_ref`, so this is the
+  correct production foundation. **Existing notes keyed by the old jobn-style keys detach** (user chose to
+  re-make rather than migrate). `seed-alerts.ps1`/`setup-ops.ps1`/`serve-ops.ps1`/`ops.js`.
+- **UI declutter + light/dark + mobile.** Stripped decorative emoji (kept the Sea/Air toggle, R/A/G colour, and
+  control glyphs ✕ ✓ ↻ ▾); **light is now the default palette with dark via `prefers-color-scheme` + an
+  Auto/Light/Dark header toggle** (remembered, flash-free boot script); responsive `@media` (≤860/≤560: side
+  panel stacks, filters go fluid, drawer full-screen, header subtitle hidden). `styles.css`/`index.html`/`login.html`/`admin-ops.html`/`ops.js`.
+- **Unified search + quick filters.** The filter box gained a **field selector** (Company type-ahead | Job No |
+  Booking/SO | PO | House B/L | Master B/L). Identifier search hits the server (`ref`/`refField`) and **ignores
+  the date window AND the ownership lens** (still station/mode-scoped) so any file is findable by its number —
+  "Job No" matches both the synthetic key and `erp_job_no`. Added **"My notes"** (shipments with an OPEN note of
+  mine, any date — clears when the note is marked done) and **"Alerts"** (R/A only) toggles; removed the
+  redundant "All dates" button; added a **"Hide filters"** toggle that collapses the whole view-control row
+  (saves mobile space). Restored the My-Tasks card icons; the red `R` severity badge is bolder.
+- **Draft create — speed + UX.** Cached the own-office "issuing/forwarding agent" per station
+  (`Get-OwnOfficeAgent`, `$script:OwnAgentByDb`): it was 1–3 ERP round-trips recomputed on **every** draft
+  (incl. a `blhead … ORDER BY ref DESC` scan, since the `S0001` own-code isn't in `custsub`) — now resolved once
+  per station/run. The **+ Create draft** button now opens the editor tab **immediately** on click (user
+  gesture, so the browser doesn't block it) showing a "preparing…" placeholder, then navigates it to the editor
+  when ready, with honest "Creating… / Draft ready" button feedback (the old code called `window.open` *after*
+  the await → silently popup-blocked → the operator saw a spinner forever). `serve-ops.ps1`/`ops.js`.
+- **ERP files browse panel (new).** A drawer panel lists the files the ERP already holds for a shipment
+  (document type · file name · remark), via new `Invoke-ErpFileEnquiry` (`erp-doc-api.ps1`) + session-gated
+  `/api-ops/erp-files` (`Handle-ErpFiles`, Test-JobScope) + `erpFilesPanel` (`ops.js`). **KEY FINDING (resolves
+  open item c):** `/file/enquiry` matches on **`3rdBookingID` = our booking number (`sono`)** — `bookingNo`/`houseNo`
+  return "No corresponding data". It tries `3rdBookingID` first, then `bookingNo`, across the identifier
+  candidates in priority order (Sea: `sono`→HBL ; Air: HAWB→booking→MAWB) and returns the first hit, reporting
+  which id+field matched. **Live-verified** on demoerp (2 files for booking `HK012606010`). Download/upload/delete deferred.
+
+**Previous session (2026-06-12d — Neutral Air Waybill + verified Air field map + LIVE ERP issue + auto-PDF + docs).**
 Driven by the user's head-to-toe test of the **Draft HAWB** review on demoerp booking `HKGAE6060004`
 (job `AEHKG260600006`, ref 62885, HKG->SEL->CHI->LAX). All Air mappings reconciled against live `fm3khkg`
 `awbhead`/`awbdetl`.
@@ -150,8 +188,9 @@ would CREATE one), reuse live `serviceCode`.
 "Departure date not active yet, Invalid carrier code" - payload-invariant (fails even with required-only
 fields, master-listed carrier APLU, future ETD+ETA) -> `bookingUpdateMode: best-effort` in
 `erp-api-map.json` logs the rejection and continues with upload+event; flip to `strict` once fixed.
-(b) `/event/get` returns a server SQL error ("Ambiguous column name 'seq'"). (c) Which filter
-`/file/enquiry` needs ("No corresponding data" for houseNo+bookingNo that file/upload just accepted).
+(b) `/event/get` returns a server SQL error ("Ambiguous column name 'seq'"). (c) **RESOLVED 2026-06-13:**
+`/file/enquiry` (and `/file/download`) key on **`3rdBookingID`** (= our booking number / `sono`), NOT
+`bookingNo`/`houseNo` (those return "No corresponding data"); used by the new ERP-files browse panel.
 
 **Open items:** Swivel answers above, public exposure (reverse proxy for `/bl-review/*` + `/api-doc/*` only)
 + `publicBaseUrl` (configurable, never hard-coded), optional SMTP (today: copy link / mailto prefill).

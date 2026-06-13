@@ -255,6 +255,18 @@ function Handle-MyTasks($cn,$me){
 }
 # jobs the user is involved in via notes (authored or mentioned) — folded into the worklist "mine" lens
 function My-NoteJobs($me){ @(Read-Notes|Where-Object{ $_ -and (("$($_.user)" -eq $me) -or (@($_.mentions) -contains $me)) }|ForEach-Object{"$($_.job_no)"}|Where-Object{$_}|Select-Object -Unique) }
+# Jobs where I have an OPEN, real remark/reminder (mine or @-mentioning me) — the exact rule behind the worklist
+# 💬 dot: done notes are excluded, and a silent milestone-tick (no remark) doesn't count. Backs the "My notes"
+# filter, so a noted shipment leaves the list the moment its note is marked done.
+function My-OpenNoteJobs($me){
+  @(Read-Notes | Where-Object {
+      $_ -and (("$($_.user)" -eq $me) -or (@($_.mentions) -contains $me)) -and (("$($_.status)" -eq '') -or ("$($_.status)" -eq 'open'))
+    } | Where-Object {
+      $kk="$($_.kind)"; $isMs=($kk -eq 'bypass' -or $kk -eq 'reopen'); $sil=$false
+      if($_.PSObject.Properties['silent']){ $sil=[bool]$_.silent } elseif($isMs -and ("$($_.note)" -notmatch ':')){ $sil=$true }
+      -not ($isMs -and $sil)
+    } | ForEach-Object {"$($_.job_no)"} | Where-Object {$_} | Select-Object -Unique)
+}
 
 # ---------------- access scope (auth mode; every builder is a no-op when unrestricted/open) ----------------
 # NB: these EMIT items (no leading-comma wrap) — every call site collects with @(Cur-...). A `,@()` return
@@ -448,9 +460,19 @@ function Handle-Worklist($cn,$qs,$me){
     if(-not $tu -or -not $shared.Count){ return @{ lens=$lens; who=$who; rows=@(); error='not a teammate' } }
   }
   $p=@{}; $w=" WHERE job_status='active' "
+  # identifier lookup ("find this file by its number"): when ?ref= is present we deliberately bypass BOTH the
+  # ownership lens AND the date window, because the operator is chasing a specific job/BL/PO that is very likely
+  # outside this week and/or owned by someone else. Station/pair access scope still applies (security).
+  $ref="$($qs['ref'])".Trim()
+  $refField="$($qs['refField'])"
+  # "My notes" filter: show the shipments this user has noted/been @-mentioned in, regardless of date. The note
+  # set IS the involvement, so (like ?ref=) it bypasses the ownership lens AND the date window; station/pair scope
+  # still applies. Evaluated up front so the lens/date guards below can see it.
+  $flagNotes = ("$($qs['flag'])" -match 'notes')
+  $myNoteJobs = if($flagNotes){ @(My-OpenNoteJobs $who) } else { @() }
   # admin oversight: an admin sees every shipment without owning the ERP pic_user (no erpUser match needed).
   # 'all' lens is unfiltered for everyone; the teammate ('user') lens still narrows to the chosen person.
-  if($lens -eq 'all' -or ($lens -ne 'user' -and (Cur-Tier) -eq 'admin')){ }
+  if($ref -or $flagNotes -or $lens -eq 'all' -or ($lens -ne 'user' -and (Cur-Tier) -eq 'admin')){ }
   else {
     # match the user's WHOLE ERP-alias list (login name != ERP pic_user; see Erp-Aliases)
     $als=@(Erp-Aliases $who)
@@ -476,7 +498,7 @@ function Handle-Worklist($cn,$qs,$me){
   # Older overdue = zombie jobs nobody closed (some date back years) - they only appear under "All dates",
   # otherwise they would drown the default week view (418 of 622 rows on the live test DB).
   # Rows with none of the three dates are kept so a window never silently hides a shipment.
-  if($qs['from'] -or $qs['to']){
+  if(-not $ref -and -not $flagNotes -and ($qs['from'] -or $qs['to'])){
     $p['dlo']=$(if($qs['from']){"$($qs['from'])"}else{'0001-01-01'})
     $p['dhi']=$(if($qs['to']){"$($qs['to'])"}else{'9999-12-31'})
     $p['dtoday']=(Today-Date).ToString('yyyy-MM-dd')
@@ -484,6 +506,23 @@ function Handle-Worklist($cn,$qs,$me){
         "OR sort_key BETWEEN @dlo AND @dhi OR next_due BETWEEN @dlo AND @dhi " +
         "OR (next_due<@dtoday AND next_due>=DATEADD(day,-30,CONVERT(date,@dtoday))) " +
         "OR anchor_date BETWEEN @dlo AND @dhi ) "
+  }
+  # identifier search: match one column (when a field is picked) or the whole identifier set (Any). The ops
+  # table is small (~hundreds-thousands of rows) so a LIKE scan is cheap and bounded by CommandTimeout.
+  if($ref){
+    $p['ref']='%'+(Like-Esc $ref)+'%'
+    # "Job No" matches BOTH the stored key and the human jobn (the key may be a synthetic for booking-stage rows)
+    if($refField -eq 'job'){ $w+=" AND (job_no LIKE @ref OR erp_job_no LIKE @ref) " }
+    else{
+      $col=@{ booking='sono'; po='cust_ref'; house='house_bill'; master='master_bill'; liner='liner_so'; container='container_no' }[$refField]
+      if($col){ $w+=" AND $col LIKE @ref " }
+      else{ $w+=" AND (job_no LIKE @ref OR erp_job_no LIKE @ref OR sono LIKE @ref OR house_bill LIKE @ref OR master_bill LIKE @ref OR cust_ref LIKE @ref OR container_no LIKE @ref OR liner_so LIKE @ref) " }
+    }
+  }
+  # "My notes": restrict to the user's noted job_nos (empty set -> no rows rather than the whole worklist)
+  if($flagNotes){
+    if($myNoteJobs.Count){ $ins=@(); $i=0; foreach($j in $myNoteJobs){ $ins+="@nf$i"; $p["nf$i"]=$j; $i++ }; $w+=" AND job_no IN ("+($ins -join ',')+") " }
+    else { $w+=" AND 1=0 " }
   }
   # company filter: match the picked code against ANY role the company may play on a shipment
   if($qs['company']){ $w+=" AND @co IN (cust_code,shipper_code,consignee_code,agent_code,ctrl_code) "; $p['co']="$($qs['company'])" }
@@ -493,7 +532,7 @@ function Handle-Worklist($cn,$qs,$me){
   # auth-mode access scope (stations + mode-bound pairs) — applies to EVERY lens incl. 'all'
   $w += Scope-StationClause $p
   $w += Scope-PairClause $p
-  $sel="SELECT job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,last_updated_by," +
+  $sel="SELECT job_no,erp_job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,last_updated_by," +
     "CONVERT(varchar(10),anchor_date,23) anchor_date,CONVERT(varchar(10),etd,23) etd,CONVERT(varchar(10),eta,23) eta," +
     "CONVERT(varchar(10),atd,23) atd,CONVERT(varchar(10),ata,23) ata,worst_light,open_amber,open_red," +
     "CONVERT(varchar(10),next_due,23) next_due,auto_done,manual_done,consignee_name,shipper_name,cust_contact,cust_phone," +
@@ -526,7 +565,7 @@ function Handle-Worklist($cn,$qs,$me){
   } }catch{}
   # milestone code -> human name (keyed mode|bound|code; a code like A3 means different things per bound)
   $msName=@{}; try{ foreach($md in @(RunQ $cn "SELECT mode,bound,milestone_code,name FROM dbo.milestone_def")){ $msName[("$($md.mode)|$($md.bound)|$($md.milestone_code)").ToUpper()]=("$($md.name)").Trim() } }catch{}
-  @{ lens=$lens; who=$who; rows=@($rows|ForEach-Object{ [pscustomobject]@{ jobNo=[string]$_.job_no; station=[string]$_.station; mode=[string]$_.mode; cargoType=[string]$_.cargo_type; bound=[string]$_.bound; lane=[string]$_.lane; carrier=[string]$_.carrier; custCode=[string]$_.cust_code; salesman=[string]$_.salesman; picUser=[string]$_.pic_user; createdBy=[string]$_.created_by; anchor=[string]$_.anchor_date; etd=[string]$_.etd; eta=[string]$_.eta; atd=[string]$_.atd; ata=[string]$_.ata; worst=[string]$_.worst_light; openAmber=[int]$_.open_amber; openRed=[int]$_.open_red; nextDue=[string]$_.next_due; autoDone=[int]$_.auto_done; manualDone=[int]$_.manual_done; consigneeName=[string]$_.consignee_name; shipperName=[string]$_.shipper_name; custContact=[string]$_.cust_contact; custPhone=[string]$_.cust_phone; custEmail=[string]$_.cust_email; vesselVoyage=[string]$_.vessel_voyage; containerSummary=[string]$_.container_summary; containerCount=[int]$_.container_count; totalWeight=[string]$_.total_weight; totalCbm=[string]$_.total_cbm; arrivalState=[string]$_.arrival_state; houseBill=[string]$_.house_bill; masterBill=[string]$_.master_bill; incoterm=[string]$_.incoterm; custRef=[string]$_.cust_ref; containerNo=[string]$_.container_no; linerSo=[string]$_.liner_so; cargoReady=[string]$_.cargo_ready; sortKey=[string]$_.sort_key; shipperCode=[string]$_.shipper_code; consigneeCode=[string]$_.consignee_code; agentCode=[string]$_.agent_code; ctrlCode=[string]$_.ctrl_code; commodity=[string]$_.commodity; sono=[string]$_.sono; routeSummary=[string]$_.route_summary; availableDate=[string]$_.available_date; etaDelivery=[string]$_.eta_delivery; goodsDelivery=[string]$_.goods_delivery; hasNotes=[bool]$chatJobs["$($_.job_no)"]; noteText=$(if($chatJobs["$($_.job_no)"]){[string]$chatJobs["$($_.job_no)"].text}else{''}); noteMilestone=$(if($chatJobs["$($_.job_no)"]){[string]$chatJobs["$($_.job_no)"].code}else{''}); hasUpdate=[bool]$updJobs["$($_.job_no)"]; updateMilestone=$(if($updJobs["$($_.job_no)"]){[string]$updJobs["$($_.job_no)"].code}else{''}); updateMilestoneName=$(if($updJobs["$($_.job_no)"]){ $uc=[string]$updJobs["$($_.job_no)"].code; [string]$msName[("$($_.mode)|$($_.bound)|$uc").ToUpper()] }else{''}) } }) }
+  @{ lens=$lens; who=$who; rows=@($rows|ForEach-Object{ [pscustomobject]@{ jobNo=[string]$_.job_no; erpJobNo=[string]$_.erp_job_no; station=[string]$_.station; mode=[string]$_.mode; cargoType=[string]$_.cargo_type; bound=[string]$_.bound; lane=[string]$_.lane; carrier=[string]$_.carrier; custCode=[string]$_.cust_code; salesman=[string]$_.salesman; picUser=[string]$_.pic_user; createdBy=[string]$_.created_by; anchor=[string]$_.anchor_date; etd=[string]$_.etd; eta=[string]$_.eta; atd=[string]$_.atd; ata=[string]$_.ata; worst=[string]$_.worst_light; openAmber=[int]$_.open_amber; openRed=[int]$_.open_red; nextDue=[string]$_.next_due; autoDone=[int]$_.auto_done; manualDone=[int]$_.manual_done; consigneeName=[string]$_.consignee_name; shipperName=[string]$_.shipper_name; custContact=[string]$_.cust_contact; custPhone=[string]$_.cust_phone; custEmail=[string]$_.cust_email; vesselVoyage=[string]$_.vessel_voyage; containerSummary=[string]$_.container_summary; containerCount=[int]$_.container_count; totalWeight=[string]$_.total_weight; totalCbm=[string]$_.total_cbm; arrivalState=[string]$_.arrival_state; houseBill=[string]$_.house_bill; masterBill=[string]$_.master_bill; incoterm=[string]$_.incoterm; custRef=[string]$_.cust_ref; containerNo=[string]$_.container_no; linerSo=[string]$_.liner_so; cargoReady=[string]$_.cargo_ready; sortKey=[string]$_.sort_key; shipperCode=[string]$_.shipper_code; consigneeCode=[string]$_.consignee_code; agentCode=[string]$_.agent_code; ctrlCode=[string]$_.ctrl_code; commodity=[string]$_.commodity; sono=[string]$_.sono; routeSummary=[string]$_.route_summary; availableDate=[string]$_.available_date; etaDelivery=[string]$_.eta_delivery; goodsDelivery=[string]$_.goods_delivery; hasNotes=[bool]$chatJobs["$($_.job_no)"]; noteText=$(if($chatJobs["$($_.job_no)"]){[string]$chatJobs["$($_.job_no)"].text}else{''}); noteMilestone=$(if($chatJobs["$($_.job_no)"]){[string]$chatJobs["$($_.job_no)"].code}else{''}); hasUpdate=[bool]$updJobs["$($_.job_no)"]; updateMilestone=$(if($updJobs["$($_.job_no)"]){[string]$updJobs["$($_.job_no)"].code}else{''}); updateMilestoneName=$(if($updJobs["$($_.job_no)"]){ $uc=[string]$updJobs["$($_.job_no)"].code; [string]$msName[("$($_.mode)|$($_.bound)|$uc").ToUpper()] }else{''}) } }) }
 }
 function Handle-Shipment($cn,$qs){
   $job="$($qs['job'])".Trim(); if(-not $job){ return @{error='job required'} }
@@ -552,6 +591,7 @@ function Handle-Shipment($cn,$qs){
 $SrcAuthClause= if($auth -eq 'sql'){"User ID=$user;Password=$password"}else{"Integrated Security=True"}
 $DbByStation=@{}; foreach($s in @($cfg.stations)){ if($s -and $s.code -and $s.database){ $DbByStation["$($s.code)".Trim().ToUpper()]="$($s.database)".Trim() } }
 $script:ErpCols=@{}   # per (db|table) Filter-Cols cache so repeat clicks skip INFORMATION_SCHEMA
+$script:OwnAgentByDb=@{}   # per-db cache of the own-office agent block (stable per station) - see Get-OwnOfficeAgent
 $SeaDetailCols="jobn,ref,blno,mobl,bound,routing,pol,pod,deli,dest,pol_name,pod_name,deli_name,dest_name,vessel_1,voyage_1,vessel_2,voyage_2,departure1,departure2,arrival1,arrival1d,arrival2,arrival2d,arrival3,available_date,eta_delivery,goods_delivery,cargoready,spotid,sono,t_book_qty,t_book_wgt,t_book_cbm,t_rece_qty,t_rece_wgt,t_rece_cbm,remark"
 $AirDetailCols="jobn,ref,hawb,mawb,bound,routing,booking,po_no,pol,pod,to1,to3,dest,deli,pol_name,pod_name,to1_name,to3_name,dest_name,deli_name,flight1,flight2,flight3,f_date1,f_date2,f_date3,f_time1,f_time2,f_time3,fa_date1,fa_date2,fa_date3,rout_by_1,atd_date,ata_date,cargoready,goods_delivery,t_book_qty,t_book_wgt,t_book_cwt,t_book_cbm,t_rece_qty,t_rece_cbm,ttl_cwt,remark,special_remark"
 function Get-ErpCols($srcCn,$db,$table,$wantCsv,[string[]]$ntextCols){
@@ -611,6 +651,24 @@ function Handle-ErpDetail($cn,$qs){
   } catch {
     @{ error="ERP lookup failed: $($_.Exception.Message)" }
   } finally { try{ $srcCn.Close() }catch{} }
+}
+# List the files the Swivel ERP holds for this shipment (browse only; download is a later round). The ERP file
+# enquiry filters by bookingNo/3rdBookingID only, so we pick the best-available identifier off the snapshot by
+# the ops priority - Air: HAWB -> booking -> MAWB ; Sea: booking(sono) -> HBL - and let Invoke-ErpFileEnquiry
+# try it as bookingNo then 3rdBookingID. One bounded outbound HTTP call (same accepted cost as Handle-ErpDetail).
+function Handle-ErpFiles($cn,$qs){
+  $job="$($qs['job'])".Trim(); if(-not $job){ return @{error='job required'} }
+  $al=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound,sono,house_bill,master_bill FROM dbo.shipment_alerts WHERE job_no=@j" @{ j=$job })
+  if(-not $al.Count){ return @{error='not found'} }
+  if(-not (Test-JobScope $al[0])){ return @{error='not found'} }
+  $a=$al[0]
+  $isAir=("$($a.mode)" -eq 'Air'); $module= if($isAir){'AIR'}else{'SEA'}
+  $sono="$($a.sono)".Trim(); $hbl="$($a.house_bill)".Trim(); $mbl="$($a.master_bill)".Trim()
+  # ordered identifier candidates (ops rule): Air HAWB -> Booking -> MAWB ; Sea Booking(sono) -> HBL
+  $cands= if($isAir){ @(@{kind='HAWB';val=$hbl},@{kind='Booking';val=$sono},@{kind='MAWB';val=$mbl}) } else { @(@{kind='Booking';val=$sono},@{kind='HBL';val=$hbl}) }
+  if(-not @(@($cands)|Where-Object{ "$($_.val)".Trim() }).Count){ return @{ error='no booking / bill number on this shipment to query the ERP' } }
+  $r=Invoke-ErpFileEnquiry $cfg.erpApi (Get-ErpApiMap) $module $cands
+  @{ keyUsed=[string]$r.keyUsed; keyKind=[string]$r.keyKind; keyField=[string]$r.keyField; mock=[bool]$r.mock; files=@($r.files); error=[string]$r.error }
 }
 # Manual Tick & Confirm on a milestone: overlay bypass/reopen onto the stored checklist, recompute the rollup,
 # persist, and drop a note (so it threads + can @-mention). Pure JSON — no ERP touched.
@@ -858,6 +916,28 @@ function Doc-CustLookup($srcCn,$db,$code){
   if(-not $t){ $t=Doc-PartyText $b.mal_e_name @($b.mal_e_add1,$b.mal_e_add2,$b.mal_e_add3,$b.mal_e_add4,$b.mal_e_add5) }
   $t
 }
+# Own issuing/forwarding office for a station = fm3kco.site dbname->owncode, resolved via custsub then a latest
+# blhead agnt_* fallback. It's IDENTICAL for every draft of a station and stable over time, so resolve it at most
+# once per server lifetime (PERF: removes 1-3 ERP round-trips from every draft create after the first; also
+# stops the dev path - where fm3kco is absent - from paying 3 failing round-trips each time). Empty is cached too
+# (a deployment-stable "can't resolve"); a server restart re-resolves if the office is set up later.
+function Get-OwnOfficeAgent($srcCn,$db){
+  if($script:OwnAgentByDb.ContainsKey($db)){ return $script:OwnAgentByDb[$db] }
+  $own=''
+  try{
+    $oc=@(RunQ $srcCn "SELECT TOP 1 owncode FROM fm3kco.dbo.site WHERE dbname=@d" @{ d=$db } 8)
+    if($oc.Count -and "$($oc[0].owncode)".Trim()){
+      $ocv="$($oc[0].owncode)".Trim()
+      $own=Doc-CustLookup $srcCn $db $ocv
+      if(-not $own){
+        $ob=@(RunQ $srcCn "SELECT TOP 1 agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5 FROM dbo.blhead WHERE agn2_code=@c AND LTRIM(RTRIM(ISNULL(agnt_name,'')))<>'' ORDER BY ref DESC" @{ c=$ocv } 8)
+        if($ob.Count){ $own=Doc-PartyText $ob[0].agnt_name @($ob[0].agnt_add1,$ob[0].agnt_add2,$ob[0].agnt_add3,$ob[0].agnt_add4,$ob[0].agnt_add5) }
+      }
+    }
+  }catch{}
+  $script:OwnAgentByDb[$db]=$own
+  $own
+}
 # Best-effort ERP enrichment at DRAFT-CREATION time only (staff click; never on a customer request path).
 # Same bounded pattern as Handle-ErpDetail: keyed seek, Connect Timeout=5, CommandTimeout=8, Packet Size=512.
 # Returns '' on success or a note string; failure leaves the affected boxes on their snapshot/blank values.
@@ -935,20 +1015,8 @@ function Doc-ErpSeed($a,$f){
         # Handling Information = awbhead.handling, falling back to special_remark
         $hand="$($b.handling)".Trim(); if(-not $hand){ $hand="$($b.special_remark)".Trim() }
         if($hand){ $f['handling_info']=$hand }
-        # Issuing Carrier's Agent = own office via fm3kco.site owncode -> custsub, else the latest blhead
-        # agnt_* of the own office (mode-independent address); leaves the box blank if it can't resolve.
-        try{
-          $oc=@(RunQ $srcCn "SELECT TOP 1 owncode FROM fm3kco.dbo.site WHERE dbname=@d" @{ d=$db } 8)
-          if($oc.Count -and "$($oc[0].owncode)".Trim()){
-            $ocv="$($oc[0].owncode)".Trim()
-            $own=Doc-CustLookup $srcCn $db $ocv
-            if(-not $own){
-              $ob=@(RunQ $srcCn "SELECT TOP 1 agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5 FROM dbo.blhead WHERE agn2_code=@c AND LTRIM(RTRIM(ISNULL(agnt_name,'')))<>'' ORDER BY ref DESC" @{ c=$ocv } 8)
-              if($ob.Count){ $own=Doc-PartyText $ob[0].agnt_name @($ob[0].agnt_add1,$ob[0].agnt_add2,$ob[0].agnt_add3,$ob[0].agnt_add4,$ob[0].agnt_add5) }
-            }
-            if($own){ $f['issuing_carrier_agent']=$own }
-          }
-        }catch{}
+        # Issuing Carrier's Agent = own office (cached per station; mode-independent). Blank if it can't resolve.
+        $own=Get-OwnOfficeAgent $srcCn $db; if($own){ $f['issuing_carrier_agent']=$own }
       }
       # line items: Marks and Numbers = mark2; goods description = the FULL goods text desc2 (good_desc2 is
       # the short commodity summary); dimensions = dimension (L x W x H x Qty) unless suppressed (not_show_dim)
@@ -1007,23 +1075,10 @@ function Doc-ErpSeed($a,$f){
         if(-not $datx){ $datx=Doc-CustLookup $srcCn $db $b.agn2_code }
         if($datx){ $f['delivery_agent']=$datx }
       }
-      # forwarding agent = OUR issuing office: fm3kco.site maps this station db -> owncode (e.g. HK01
-      # site -> fm3khkg -> S0001). The S-codes have no custsub master reachable with the read login, so
-      # after trying the master we fall back to the latest blhead whose agn2 IS the own office - its
-      # denormalized agnt_* block carries the office name+address. fm3kco is absent on the local dev
-      # server - the bounded try just leaves the box blank there.
-      try{
-        $oc=@(RunQ $srcCn "SELECT TOP 1 owncode FROM fm3kco.dbo.site WHERE dbname=@d" @{ d=$db } 8)
-        if($oc.Count -and "$($oc[0].owncode)".Trim()){
-          $ocv="$($oc[0].owncode)".Trim()
-          $own=Doc-CustLookup $srcCn $db $ocv
-          if(-not $own){
-            $ob=@(RunQ $srcCn "SELECT TOP 1 agnt_name,agnt_add1,agnt_add2,agnt_add3,agnt_add4,agnt_add5 FROM dbo.blhead WHERE agn2_code=@c AND LTRIM(RTRIM(ISNULL(agnt_name,'')))<>'' ORDER BY ref DESC" @{ c=$ocv } 8)
-            if($ob.Count){ $own=Doc-PartyText $ob[0].agnt_name @($ob[0].agnt_add1,$ob[0].agnt_add2,$ob[0].agnt_add3,$ob[0].agnt_add4,$ob[0].agnt_add5) }
-          }
-          if($own){ $f['forwarding_agent']=$own }
-        }
-      }catch{}
+      # forwarding agent = OUR issuing office (cached per station; see Get-OwnOfficeAgent). fm3kco maps this
+      # station db -> owncode -> custsub, falling back to the latest blhead agnt_* of the own office. fm3kco is
+      # absent on the local dev server, so this leaves the box blank there (cached as empty after one attempt).
+      $own=Get-OwnOfficeAgent $srcCn $db; if($own){ $f['forwarding_agent']=$own }
       # marks + description: blitem good_desc1 is often blank - the real text lives in the ntext pair
       # mark2/desc2 (mark3/desc3 = continuation). When the joined text overflows its on-bill box, the
       # FULL text seeds attachment/rider page 1 and the box prints the standard pointer instead.
@@ -1638,6 +1693,7 @@ while($listener.IsListening){
                 "/api-ops/companies"       { Send-Json $ctx (Handle-Companies $cn) }
                 "/api-ops/ports"           { Send-Ports $ctx $cn }
                 "/api-ops/erp-detail"      { Send-Json $ctx (Handle-ErpDetail $cn $qs) }
+                "/api-ops/erp-files"       { Send-Json $ctx (Handle-ErpFiles $cn $qs) }
                 "/api-ops/inbound"         { Send-Json $ctx (Handle-Inbound $cn $qs) }
                 "/api-ops/inbound-assign"  { Send-Json $ctx (Save-InboundAssign $cn $ctx $me) }
                 "/api-ops/my-tasks"        { Send-Json $ctx (Handle-MyTasks $cn $me) }

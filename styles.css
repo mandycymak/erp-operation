@@ -1,4 +1,16 @@
+/* Light is the default palette; dark applies via the OS preference (unless the user forced light)
+   or an explicit data-theme="dark" on <html>. The theme toggle in the header writes that attribute. */
 :root{
+  --bg:#f4f6fb; --panel:#ffffff; --panel2:#eceff6; --line:#d7dce8; --ink:#1b2030; --mut:#5b6478;
+  --g:#1f9d57; --a:#c77d12; --r:#cf3b36; --accent:#2f6bd6; --accent2:#6a5cf0;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1220; --panel:#181c2e; --panel2:#1f2438; --line:#2a3050; --ink:#e8ebf5; --mut:#9aa3c0;
+    --g:#2fbf71; --a:#f0a830; --r:#e0524e; --accent:#5b8def; --accent2:#7a6cf0;
+  }
+}
+:root[data-theme="dark"]{
   --bg:#0f1220; --panel:#181c2e; --panel2:#1f2438; --line:#2a3050; --ink:#e8ebf5; --mut:#9aa3c0;
   --g:#2fbf71; --a:#f0a830; --r:#e0524e; --accent:#5b8def; --accent2:#7a6cf0;
 }
@@ -17,21 +29,29 @@ button:hover{filter:brightness(1.08)}
 .wrap{display:grid;grid-template-columns:1fr 360px;gap:14px;padding:14px;max-width:1400px;margin:0 auto}
 .col h2{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);margin:4px 2px 8px}
 .lens{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.vctl{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
+.vctl.hidden{display:none}
 .lens .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .lens .seg button{border:0;border-radius:0;background:transparent;padding:6px 12px}
 .lens .seg button.on{background:var(--accent);color:#fff}
 .lens .seg button.disabled{opacity:.35;cursor:not-allowed;text-decoration:line-through}
 .filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.filters.hidden{display:none}
 .filters .fl{display:inline-flex;align-items:center;gap:4px;color:var(--mut);font-size:12px}
 .filters select{font-size:12px;padding:5px 8px;max-width:230px}
 .filters .datebox{font-size:12px;padding:5px 8px;width:104px;font-variant-numeric:tabular-nums}
 .datebox.bad{border-color:var(--r)}
 .filters button{font-size:12px;padding:5px 10px}
+.filters button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 .combo{position:relative;display:inline-flex;align-items:center}
 .combo input{font-size:12px;padding:5px 8px;min-width:210px}
 .combo .combo-x{position:absolute;right:4px;border:0;background:transparent;padding:2px 6px;color:var(--mut);font-size:12px;cursor:pointer}
 .combo .mention-pop{top:100%;left:0;margin-top:2px;min-width:260px;font-size:12px}
 .combo .mention-pop .mut{color:var(--mut);font-size:11px}
+.searchbox{display:inline-flex;align-items:center;gap:0}
+.searchbox .sf{font-size:12px;padding:5px 6px;border-top-right-radius:0;border-bottom-right-radius:0;border-right:0;color:var(--mut)}
+.searchbox .combo input{border-top-left-radius:0;border-bottom-left-radius:0}
+.themebtn{font-size:12px;padding:5px 10px}
 .bucket{margin-bottom:16px}
 .bucket .bh{display:flex;align-items:center;gap:8px;margin:0 2px 6px;font-weight:650}
 .bucket .bh .cnt{color:var(--mut);font-weight:400;font-size:12px}
@@ -43,7 +63,8 @@ button:hover{filter:brightness(1.08)}
 .card .lane{color:var(--mut);font-size:12.5px}
 .card .meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--mut);font-size:12px;margin-top:4px}
 .pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);font-size:11.5px}
-.pill.R{color:var(--r);border-color:var(--r)} .pill.A{color:var(--a);border-color:var(--a)} .pill.G{color:var(--g);border-color:var(--g)}
+/* RED = action-now (e.g. overdue ATD/departure): bolder outline so it draws the eye. Amber/green stay quiet. */
+.pill.R{color:var(--r);border-color:var(--r);border-width:2px;font-weight:700} .pill.A{color:var(--a);border-color:var(--a)} .pill.G{color:var(--g);border-color:var(--g)}
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
 .dot.G{background:var(--g)} .dot.A{background:var(--a)} .dot.R{background:var(--r)} .dot.x{background:#444b6e}
 .note-ind{margin-left:auto;color:var(--accent);font-size:12px}
@@ -79,6 +100,7 @@ button:hover{filter:brightness(1.08)}
 .mlane{color:var(--mut);font-size:11.5px}
 .mspacer{flex:1}
 .mcard .pill{font-size:11px;padding:0 6px}
+.mcard .pill.R{font-size:12px;padding:0 8px}
 .mcard .note-ind{margin:0}
 .refdocs{font-size:12px;color:var(--ink,#cdd3df);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;margin-bottom:10px}
 /* inbound cross-station bookings panel */
@@ -221,3 +243,21 @@ button:hover{filter:brightness(1.08)}
 .docstatus.s-CUSTOMER_APPROVED,.docstatus.s-AGREED{color:var(--g);border-color:var(--g)}
 .docstatus.s-ISSUED{color:#fff;background:#1c2733;border-color:#1c2733}
 .docstatus.s-AMEND_DRAFT{color:#963049;border-color:#963049}
+
+/* ---- responsive / mobile ---- */
+@media (max-width:860px){
+  .wrap{grid-template-columns:1fr;gap:10px;padding:10px}
+  header{flex-wrap:wrap;gap:8px}
+  .filters{gap:6px}
+  .combo,.portchips{flex:1 1 100%;max-width:none}
+  .combo input,.portchips input{min-width:0;width:100%}
+  .searchbox{flex:1 1 100%}
+}
+@media (max-width:560px){
+  .wrap{padding:8px}
+  header{padding:8px 10px}
+  header .sub{display:none}   /* drop the environment subtitle on phones to save a line */
+  .drawer{width:100%;max-width:100%}
+  .lens{gap:6px}
+  .lens .seg{flex-wrap:wrap}
+}

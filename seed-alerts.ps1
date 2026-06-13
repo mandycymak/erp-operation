@@ -191,20 +191,20 @@ WHEN MATCHED THEN UPDATE SET station=@station,mode=@mode,cargo_type=@cargo,bound
   house_bill=@house,master_bill=@master,incoterm=@inco,cust_ref=@cref,container_no=@cno,liner_so=@lso,cargo_ready=@cready,
   shipper_code=@shpr,consignee_code=@cgne,agent_code=@agent,ctrl_code=@ctrl,pol=@pol,pod=@pod,
   route_summary=@rsum,route_json=@rjson,detail_json=@djson,commodity=@commod,sono=@sono,
-  available_date=@avail,eta_delivery=@etadel,goods_delivery=@gdel,erp_ref=@eref,
+  available_date=@avail,eta_delivery=@etadel,goods_delivery=@gdel,erp_ref=@eref,erp_job_no=@erpjob,
   milestone_checklist=@chk,updated_at=SYSDATETIME()
 WHEN NOT MATCHED THEN INSERT(job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,
   last_updated_by,anchor_date,etd,eta,atd,ata,job_status,worst_light,open_amber,open_red,next_due,auto_done,manual_done,
   consignee_name,shipper_name,cust_contact,cust_phone,cust_email,vessel_voyage,container_summary,container_count,
   total_weight,total_cbm,arrival_state,sort_key,house_bill,master_bill,incoterm,cust_ref,container_no,liner_so,cargo_ready,
   shipper_code,consignee_code,agent_code,ctrl_code,pol,pod,
-  route_summary,route_json,detail_json,commodity,sono,available_date,eta_delivery,goods_delivery,erp_ref,
+  route_summary,route_json,detail_json,commodity,sono,available_date,eta_delivery,goods_delivery,erp_ref,erp_job_no,
   milestone_checklist,updated_at)
   VALUES(@job,@station,@mode,@cargo,@bound,@lane,@carrier,@cust,@salesman,@pic,@cby,@uby,@anchor,@etd,@eta,@atd,@ata,
   @jstat,@worst,@amber,@red,@nextdue,@auto,@man,@cgname,@shipname,@ccontact,@cphone,@cemail,@vv,@csum,@ccount,
   @twgt,@tcbm,@astate,@skey,@house,@master,@inco,@cref,@cno,@lso,@cready,
   @shpr,@cgne,@agent,@ctrl,@pol,@pod,
-  @rsum,@rjson,@djson,@commod,@sono,@avail,@etadel,@gdel,@eref,
+  @rsum,@rjson,@djson,@commod,@sono,@avail,@etadel,@gdel,@eref,@erpjob,
   @chk,SYSDATETIME());
 "@
 function DOnly($d){ if($d -is [datetime]){ $d.ToString('yyyy-MM-dd') } else { $null } }
@@ -303,13 +303,20 @@ foreach($b in $ships){
   if(-not $custRef){$custRef=$null}; if(-not $containerNo){$containerNo=$null}; if(-not $linerSo){$linerSo=$null}
   if(-not $shprCode){$shprCode=$null}; if(-not $cgneCode){$cgneCode=$null}; if(-not $agentCode){$agentCode=$null}
   if(-not $ctrlCode){$ctrlCode=$null}; if(-not $polCode){$polCode=$null}; if(-not $podCode){$podCode=$null}
-  $checklist = @{ shipment=@{ job_no="$($b.jobn)"; mode=$Mode; bound=$ship.bound; cargo_type=$ship.cargo_type; lane=$lane;
+  # STABLE per-shipment identity, ALWAYS anchored on the immutable ERP ref (the header PK: always present,
+  # unique per source row, never changes as jobn/blno/mawb fill in). jobn must NOT be the key: it is blank at
+  # booking stage AND non-unique once issued (one job number can cover many house bills - e.g. a consol job with
+  # 200 HBLs), so keying on it collapses distinct shipments. erp_job_no carries the human jobn for display/search.
+  # (Eval/PIC below still key on the raw $b.jobn - only the alert identity changes here.)
+  $rawJob=("$($b.jobn)").Trim()
+  $jobNo = if($null -ne $b.ref){ "$StationCode-" + $(if($Mode -eq 'Air'){'A'}else{'S'}) + "-R$($b.ref)" } elseif($rawJob){ $rawJob } else { $null }
+  $checklist = @{ shipment=@{ job_no=$jobNo; mode=$Mode; bound=$ship.bound; cargo_type=$ship.cargo_type; lane=$lane;
                     carrier=$carrierVal; anchor=(DOnly $ship.crtdate); etd=(DOnly $etdV); eta=(DOnly $etaV); atd=(DOnly $atdV); ata=(DOnly $ataV);
                     consignee_name=$cgname; shipper_name=$shipname; cust_contact=$ccontact; cust_phone=$cphone; cust_email=$cemail;
                     vessel_voyage=$vv; container_summary=$cp.summary; container_count=$cp.count; total_weight=$cp.wgt; total_cbm=$cp.cbm; arrival_state=$astate;
                     house_bill=$houseBill; master_bill=$masterBill; incoterm=$incoterm; cust_ref=$custRef; container_no=$containerNo; liner_so=$linerSo; cargo_ready=(DOnly $cargoReady) };
                   milestones=$res.items; rollup=@{ worst_light=$res.worst; open_amber=$res.open_amber; open_red=$res.open_red; next_due=$res.next_due; automation=@{auto=$res.auto_done; manual=$res.manual_done} } }
-  Exec $merge @{ job="$($b.jobn)"; station=$StationCode; mode=$Mode; cargo=$ship.cargo_type; bound=$ship.bound; lane=$lane;
+  Exec $merge @{ job=$jobNo; erpjob=$(if($rawJob){$rawJob}else{$null}); station=$StationCode; mode=$Mode; cargo=$ship.cargo_type; bound=$ship.bound; lane=$lane;
     carrier=$carrierVal; cust=$cust; salesman=$ship.salesman; pic=$pic; cby=$ship.crtuser; uby=$ship.upduser;
     anchor=(DOnly $ship.crtdate); etd=(DOnly $etdV); eta=(DOnly $etaV); atd=(DOnly $atdV); ata=(DOnly $ataV);
     jstat='active'; worst=$res.worst; amber=$res.open_amber; red=$res.open_red; nextdue=$res.next_due; auto=$res.auto_done; man=$res.manual_done;
@@ -320,6 +327,9 @@ foreach($b in $ships){
     rsum=$routeSummary; rjson=$routeJson; djson=$detailJson; commod=$commod; sono=$(if("$sono".Trim()){"$sono".Trim()}else{$null});
     avail=(DOnly $availDate); etadel=(DOnly $etaDel); gdel=(DOnly $gdsDel); eref=$(if($null -ne $b.ref){"$($b.ref)"}else{$null});
     chk=($checklist | ConvertTo-Json -Depth 8 -Compress) }
+  # Transition cleanup: this source row (erp_ref) maps to exactly one alert. If a prior pass stored it under a
+  # different job_no (a synthetic key before jobn was assigned, or the legacy empty-key collapse row), drop it.
+  if($null -ne $b.ref){ Exec "DELETE FROM dbo.shipment_alerts WHERE station=@st AND mode=@md AND erp_ref=@er AND job_no<>@jb" @{ st=$StationCode; md=$Mode; er="$($b.ref)"; jb=$jobNo } }
   $dist[$res.worst]++; $n++
 }
 $opsCn.Close()

@@ -8,7 +8,7 @@ const arr = v => Array.isArray(v) ? v : (v == null ? [] : [v]);   // coerce PS s
 const isYmd = s => !s || /^\d{4}-\d{2}-\d{2}$/.test(('' + s).trim());   // house date standard: yyyy-mm-dd only
 
 const state = { user: localStorage.getItem('opsUser') || '', roster: [], lens: 'mine', teammate: '', bound: localStorage.getItem('opsBound') || 'Import', tmode: localStorage.getItem('opsMode') || 'Sea',
-  from: '', to: '', company: '', pols: [], pods: [], station: localStorage.getItem('opsStation') || '', _companies: [], _portDim: [], _activePorts: { pol: [], pod: [] }, _stations: [],
+  from: '', to: '', company: '', searchField: 'company', ref: '', alertsOnly: false, notesOnly: false, pols: [], pods: [], station: localStorage.getItem('opsStation') || '', _companies: [], _portDim: [], _activePorts: { pol: [], pod: [] }, _stations: [],
   ib: { origin: '', party: '', q: '', pols: [], pods: [] } };   // inbound (pre-arrival) panel search
 let allCollapsed = false;   // collapse-all toggle for vessel groups
 
@@ -53,7 +53,7 @@ async function init() {
   const rost = await api('/api-ops/roster'); state.roster = arr(rost.users).map(u => u.username);
   if (!state.user && state.roster.length) state.user = state.roster[0];
   buildUserPicker(); buildTeammate();
-  wireLens(); wireBound(); wireMode(); wireFilters();
+  wireLens(); wireBound(); wireMode(); wireFilters(); wireTheme();
   applyAccessGating();
   await loadFilters();
   $('#refreshBtn').onclick = refreshAll;
@@ -86,6 +86,18 @@ function buildStationPicker() {
   list.forEach(s => { const o = el('option'); o.value = s.code; o.textContent = s.code + ' · ' + (s.name || s.code); if (s.code === state.station) o.selected = true; sel.appendChild(o); });
   sel.style.display = list.length > 1 ? '' : 'none';   // hide for single-station users/instances
   sel.onchange = () => { state.station = sel.value; localStorage.setItem('opsStation', state.station); loadWorklist(); };
+}
+// Theme: cycle Auto (follow device) -> Light -> Dark. 'auto' clears the override so prefers-color-scheme wins.
+function wireTheme() {
+  const btn = $('#themeBtn'); if (!btn) return;
+  const order = ['auto', 'light', 'dark'], label = { auto: 'Auto', light: 'Light', dark: 'Dark' };
+  const apply = t => {
+    if (t === 'auto') { document.documentElement.removeAttribute('data-theme'); localStorage.removeItem('theme'); }
+    else { document.documentElement.setAttribute('data-theme', t); localStorage.setItem('theme', t); }
+    btn.textContent = label[t];
+  };
+  const saved = localStorage.getItem('theme'); apply(saved === 'light' || saved === 'dark' ? saved : 'auto');
+  btn.onclick = () => { const cur = localStorage.getItem('theme') || 'auto'; apply(order[(order.indexOf(cur) + 1) % order.length]); };
 }
 function wireLens() {
   document.querySelectorAll('#lensSeg button').forEach(b => b.onclick = () => {
@@ -139,6 +151,14 @@ function applyAccessGating() {
     b.classList.toggle('disabled', !hasPair(state.tmode, b.dataset.bound));
   });
 }
+// align the mode/bound toggle to a value (used so an identifier search shows its hit in the right view)
+function syncModeBound(m, b) {
+  if (m) { state.tmode = m; localStorage.setItem('opsMode', m); }
+  if (b) { state.bound = b; localStorage.setItem('opsBound', b); }
+  document.querySelectorAll('#modeSeg button').forEach(x => x.classList.toggle('on', x.dataset.tmode === state.tmode));
+  document.querySelectorAll('#boundSeg button').forEach(x => x.classList.toggle('on', x.dataset.bound === state.bound));
+  applyAccessGating();
+}
 // ---------- filters (date window + company + POL/POD) ----------
 function fmtDate(x) { const m = String(x.getMonth() + 1).padStart(2, '0'); const d = String(x.getDate()).padStart(2, '0'); return x.getFullYear() + '-' + m + '-' + d; }
 function currentWeek() { const d = (ME && ME.today) ? new Date(ME.today + 'T00:00:00') : new Date(); const dow = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - dow); const sun = new Date(mon); sun.setDate(mon.getDate() + 6); return { from: fmtDate(mon), to: fmtDate(sun) }; }
@@ -149,7 +169,18 @@ function wireFilters() {
   ff.onchange = () => applyDate(ff, 'from');
   ft.onchange = () => applyDate(ft, 'to');
   $('#thisWeek').onclick = () => { const w = currentWeek(); state.from = w.from; state.to = w.to; ff.value = w.from; ft.value = w.to; loadWorklist(); };
-  $('#allDates').onclick = () => { state.from = ''; state.to = ''; ff.value = ''; ft.value = ''; loadWorklist(); };
+  // show/hide ALL filter + view controls (Sea/Air, Import/Export, lens, station, dates, search, POL/POD) to
+  // reclaim space, esp. on mobile. The toggle, Collapse-all and the count stay visible; the count keeps the
+  // current Sea/Air · Import/Export context so you still know which view you're in while collapsed. Choice persists.
+  const tf = $('#toggleFilters'), fbar = $('#filters'), vctl = $('#viewControls');
+  const applyFiltersHidden = h => { if (fbar) fbar.classList.toggle('hidden', h); if (vctl) vctl.classList.toggle('hidden', h); if (tf) tf.textContent = h ? 'Show filters' : 'Hide filters'; };
+  let filtersHidden = localStorage.getItem('opsFiltersHidden') === '1';
+  applyFiltersHidden(filtersHidden);
+  if (tf) tf.onclick = () => { filtersHidden = !filtersHidden; localStorage.setItem('opsFiltersHidden', filtersHidden ? '1' : '0'); applyFiltersHidden(filtersHidden); };
+  // quick filters: "Alerts" narrows the current view to red/amber; "My notes" surfaces shipments I've noted (any date)
+  const fa = $('#fAlerts'), fn = $('#fNotes');
+  if (fa) fa.onclick = () => { state.alertsOnly = !state.alertsOnly; fa.classList.toggle('on', state.alertsOnly); loadWorklist(); };
+  if (fn) fn.onclick = () => { state.notesOnly = !state.notesOnly; fn.classList.toggle('on', state.notesOnly); setDateBoxesEnabled(!state.notesOnly); loadWorklist(); };
   wireCompanyCombo();
   state._polChips = makePortChips('#fPolChips', { kind: 'pol', get: () => state.pols, set: v => { state.pols = v; }, onChange: loadWorklist });
   state._podChips = makePortChips('#fPodChips', { kind: 'pod', get: () => state.pods, set: v => { state.pods = v; }, onChange: loadWorklist });
@@ -226,12 +257,21 @@ function setCompany(code) {
   const inp = $('#fCompany'); if (inp) inp.value = code ? companyLabel(code) : '';
   const x = $('#fCompanyClear'); if (x) x.style.display = code ? '' : 'none';
 }
+// Unified search: a field selector + one box. "Company" = the instant client-side type-ahead (date-windowed,
+// filters by role code). Any identifier field (job/booking/PO/house/master) = a server lookup that ignores the
+// date window AND the ownership lens, so you can pull up any file by its number even if it's outside this week
+// or another operator's. The date boxes are disabled in identifier mode to make that explicit.
+const SEARCH_PH = { company: 'Company name…', job: 'Job number…', booking: 'Booking / SO number…', po: 'PO number…', house: 'House B/L number…', master: 'Master B/L number…' };
+function setDateBoxesEnabled(on) {
+  ['#fFrom', '#fTo', '#thisWeek'].forEach(s => { const e = $(s); if (e) { e.disabled = !on; e.style.opacity = on ? '' : '.5'; } });
+}
 function wireCompanyCombo() {
-  const inp = $('#fCompany'), pop = $('#fCompanyPop'), clr = $('#fCompanyClear');
+  const inp = $('#fCompany'), pop = $('#fCompanyPop'), clr = $('#fCompanyClear'), sf = $('#fSearchField');
   if (!inp) return;
-  let items = [], active = -1;
+  let items = [], active = -1, debTimer = null;
   const close = () => { pop.style.display = 'none'; active = -1; };
-  const render = q => {
+  const isCompany = () => state.searchField === 'company';
+  const render = q => {   // company type-ahead only
     const ql = ('' + q).trim().toLowerCase();
     items = (state._companies || []).filter(c => !ql || c.name.toLowerCase().includes(ql) || c.code.toLowerCase().includes(ql)).slice(0, 12);
     if (!items.length) { pop.innerHTML = '<div class="mut">No active company matches “' + esc(q) + '”</div>'; pop.style.display = 'block'; active = -1; return; }
@@ -240,17 +280,29 @@ function wireCompanyCombo() {
   };
   const pick = c => { setCompany(c.code); close(); loadWorklist(); };
   const hi = () => { [...pop.children].forEach((d, i) => d.className = i === active ? 'sel' : ''); };
-  inp.addEventListener('focus', () => { inp.select(); render(''); });
-  inp.addEventListener('input', () => render(inp.value));
+  const runRef = () => { state.ref = inp.value.trim(); clr.style.display = state.ref ? '' : 'none'; loadWorklist(); };
+  inp.addEventListener('focus', () => { if (isCompany()) { inp.select(); render(''); } });
+  inp.addEventListener('input', () => {
+    if (isCompany()) { render(inp.value); return; }
+    clearTimeout(debTimer); debTimer = setTimeout(runRef, 350);   // identifier mode: debounced server lookup
+  });
   inp.addEventListener('keydown', e => {
+    if (!isCompany()) { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(debTimer); runRef(); } else if (e.key === 'Escape') { inp.blur(); } return; }
     if (pop.style.display !== 'block') return;
     if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, items.length - 1); hi(); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); hi(); }
     else if (e.key === 'Enter') { e.preventDefault(); if (items[active]) pick(items[active]); }
     else if (e.key === 'Escape') { close(); inp.blur(); }
   });
-  inp.addEventListener('blur', () => { setTimeout(() => { close(); inp.value = state.company ? companyLabel(state.company) : ''; }, 120); });
-  if (clr) clr.onclick = () => { setCompany(''); close(); loadWorklist(); };
+  inp.addEventListener('blur', () => { setTimeout(() => { close(); if (isCompany()) inp.value = state.company ? companyLabel(state.company) : ''; }, 120); });
+  if (clr) clr.onclick = () => { if (isCompany()) setCompany(''); else { state.ref = ''; inp.value = ''; clr.style.display = 'none'; } close(); loadWorklist(); };
+  if (sf) sf.onchange = () => {
+    // switching field clears the other mode's value so the two never combine
+    state.searchField = sf.value; state.company = ''; state.ref = ''; inp.value = ''; close();
+    inp.placeholder = SEARCH_PH[state.searchField] || 'Search…';
+    clr.style.display = 'none'; setDateBoxesEnabled(isCompany());
+    loadWorklist();
+  };
 }
 async function loadFilters() {
   try { const c = await api('/api-ops/companies'); state._companies = arr(c.companies); } catch (e) { state._companies = []; }
@@ -274,8 +326,8 @@ function refreshAll() { loadWorklist(); loadTasks(); loadInbound(); }
 // Grouped by booking STAGE (what the origin has done so far), not urgency — so the operator sees what is coming
 // before it is EDI'd to them: a fresh booking (no schedule) vs one where the vessel/flight is already arranged.
 const IB_STAGES = [
-  { k: 'sched', t: '🚢 Vessel / flight scheduled' },
-  { k: 'new', t: '🆕 New booking — awaiting schedule' },
+  { k: 'sched', t: 'Vessel / flight scheduled' },
+  { k: 'new', t: 'New booking — awaiting schedule' },
 ];
 function ibStage(r) { return (r.vesselFlight || r.etd) ? 'sched' : 'new'; }
 function ibByDate(a, b) { const x = a.etd || a.cargoReady || a.bookingDate || '9999'; const y = b.etd || b.cargoReady || b.bookingDate || '9999'; return x < y ? -1 : x > y ? 1 : 0; }
@@ -286,12 +338,12 @@ function buildInboundShell(panel) {
   if (panel.dataset.built) return;
   panel.dataset.built = '1';
   panel.innerHTML =
-    '<div class="ib-head">📥 Inbound bookings (pre-arrival)<span class="ib-station"></span> <span class="cnt ib-count"></span>' +
+    '<div class="ib-head">Inbound bookings (pre-arrival)<span class="ib-station"></span> <span class="cnt ib-count"></span>' +
       '<button class="ghost ib-alltoggle"></button><button class="ghost ib-collapse" title="Collapse">▾</button></div>' +
     '<div class="ib-search">' +
       '<select id="ibOrigin" title="Origin office that received the booking"><option value="">All origins</option></select>' +
-      '<input type="text" id="ibParty" placeholder="🔍 shipper / consignee / customer" autocomplete="off" title="Match a party name or code in any role">' +
-      '<input type="text" id="ibQ" placeholder="🔍 booking / ship-id / PO / HBL / ctr" autocomplete="off" title="Search booking no, spot/ship ID, PO, house or master bill, container">' +
+      '<input type="text" id="ibParty" placeholder="shipper / consignee / customer" autocomplete="off" title="Match a party name or code in any role">' +
+      '<input type="text" id="ibQ" placeholder="booking / ship-id / PO / HBL / ctr" autocomplete="off" title="Search booking no, spot/ship ID, PO, house or master bill, container">' +
       '<span class="combo portchips" id="ibPolChips" title="POL — type a code or name"><input type="text" placeholder="POL…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span></span>' +
       '<span class="combo portchips" id="ibPodChips" title="POD — type a code or name"><input type="text" placeholder="POD…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span></span>' +
     '</div>' +
@@ -345,7 +397,7 @@ async function loadInbound() {
       return x < y ? -1 : x > y ? 1 : 0;
     });
     fgroups.forEach(([k, gs]) => {
-      body.appendChild(el('div', 'bh', '✈ ' + esc(k) + ' <span class="cnt">' + gs.length + '</span>'));
+      body.appendChild(el('div', 'bh', esc(k) + ' <span class="cnt">' + gs.length + '</span>'));
       gs.sort(ibByDate).forEach(r => body.appendChild(inboundCard(r)));
     });
   } else {
@@ -368,19 +420,19 @@ function inboundCard(r) {
   // service label only meaningful for sea (FCL/LCL); for air "Air" is redundant (mode already selected)
   const svc = (r.cargoType && r.cargoType.toUpperCase() !== 'AIR') ? (r.service ? r.cargoType + ' (' + r.service.trim() + ')' : r.cargoType) : '';
   const qty = [r.bookingQty, r.bookingWgt].filter(Boolean).join(' / ') || r.cargoSummary || '';
-  const conv = r.vesselFlight ? (r.mode === 'Air' ? '✈ ' : '🚢 ') + esc(r.vesselFlight) : '';
-  const asg = r.assignedTo ? '<span class="ib-asg" title="Reassign">👤 ' + esc(r.assignedTo) + '</span>'
+  const conv = r.vesselFlight ? esc(r.vesselFlight) : '';
+  const asg = r.assignedTo ? '<span class="ib-asg" title="Reassign">' + esc(r.assignedTo) + '</span>'
                            : '<button class="tick primary ib-assign">Assign</button>';
   // dates are the operator's lever for talking to the consignee — give them their own prominent row
   const dates = [];
-  if (r.cargoReady) dates.push('📅 cargo-ready <b>' + esc(r.cargoReady) + '</b>');
-  if (r.etd) dates.push((r.mode === 'Air' ? '🛫' : '⚓') + ' ETD <b>' + esc(r.etd) + '</b>');
-  const dateRow = dates.length ? dates.join('&nbsp;&nbsp;·&nbsp;&nbsp;') : '⏳ dates not set yet — confirm with origin';
+  if (r.cargoReady) dates.push('cargo-ready <b>' + esc(r.cargoReady) + '</b>');
+  if (r.etd) dates.push('ETD <b>' + esc(r.etd) + '</b>');
+  const dateRow = dates.length ? dates.join('&nbsp;&nbsp;·&nbsp;&nbsp;') : 'dates not set yet — confirm with origin';
   // line 2: the operational shape — origin, service, qty, route, planned conveyance
   const sub = ['from ' + esc(r.sourceStation), esc(svc), esc(qty), esc(route), conv].filter(Boolean).join('  ·  ');
   // line 3: the reference numbers used when talking to the consignee / tracing the box
   const ids = [r.masterBill ? (r.mode === 'Air' ? 'MAWB ' : 'MBL ') + esc(r.masterBill) : '',
-    r.containerNo ? '📦 ' + esc(r.containerNo) : '', r.spotId ? 'ship-id ' + esc(r.spotId) : '',
+    r.containerNo ? 'ctr ' + esc(r.containerNo) : '', r.spotId ? 'ship-id ' + esc(r.spotId) : '',
     r.poNo ? 'PO ' + esc(r.poNo) : '']
     .filter(Boolean).join('  ·  ');
   // parties subline: clickable — fills the panel's party search (matches name or code in any role)
@@ -429,34 +481,47 @@ function assignInbound(r) {
 // arrival-driven buckets, by bound. Rows arrive already server-sorted (bound, arrival rank, sort_key).
 const BUCKETS = {
   Import: [
-    { key: 'arrived', title: '🚢 Arrived — deliver now' },
-    { key: 'arriving', title: '⏳ Arriving — prepare' },
-    { key: 'planning', title: '🗓 Planning' },
+    { key: 'arrived', title: 'Arrived — deliver now' },
+    { key: 'arriving', title: 'Arriving — prepare' },
+    { key: 'planning', title: 'Planning' },
   ],
   Export: [
-    { key: 'no_space', title: '⛔ No space (carrier)' },
-    { key: 'customs_window', title: '📋 Customs window (ETD−3)' },
-    { key: 'cargo_pending', title: '📦 Cargo not ready' },
-    { key: 'on_track', title: '✅ On track' },
+    { key: 'no_space', title: 'Awaiting booking / space' },
+    { key: 'customs_window', title: 'Customs window (ETD−3)' },
+    { key: 'cargo_pending', title: 'Cargo not ready' },
+    { key: 'on_track', title: 'On track' },
   ],
 };
 async function loadWorklist() {
   const wl = $('#worklist'); wl.innerHTML = '<div class="empty">Loading…</div>';
+  const refMode = state.searchField !== 'company' && state.ref;
   let q = '/api-ops/worklist?lens=' + encodeURIComponent(state.lens);
   if (state.lens === 'user') q += '&user=' + encodeURIComponent(state.teammate || state.user);
-  if (state.from) q += '&from=' + encodeURIComponent(state.from);
-  if (state.to) q += '&to=' + encodeURIComponent(state.to);
-  if (state.company) q += '&company=' + encodeURIComponent(state.company);
-  if (state.pols.length) q += '&pol=' + encodeURIComponent(state.pols.join(','));
-  if (state.pods.length) q += '&pod=' + encodeURIComponent(state.pods.join(','));
-  if (state.station) q += '&station=' + encodeURIComponent(state.station);
+  if (refMode) {
+    // identifier lookup: ignore date window, lens and other filters server-side; just find the file by its number
+    q += '&ref=' + encodeURIComponent(state.ref) + '&refField=' + encodeURIComponent(state.searchField);
+  } else {
+    // "My notes": server returns shipments I've noted across ALL dates (so a note never gets lost off-window)
+    if (state.notesOnly) q += '&flag=notes';
+    else { if (state.from) q += '&from=' + encodeURIComponent(state.from); if (state.to) q += '&to=' + encodeURIComponent(state.to); }
+    if (state.company) q += '&company=' + encodeURIComponent(state.company);
+    if (state.pols.length) q += '&pol=' + encodeURIComponent(state.pols.join(','));
+    if (state.pods.length) q += '&pod=' + encodeURIComponent(state.pods.join(','));
+    if (state.station) q += '&station=' + encodeURIComponent(state.station);
+  }
   const data = await api(q);
-  const rows = arr(data.rows).filter(r => (r.bound || 'Import') === state.bound && (r.mode || 'Sea') === state.tmode);
+  // an identifier hit may be a different mode/bound than the current toggle — align the view so it shows in context
+  if (refMode && arr(data.rows).length) { const r0 = arr(data.rows)[0]; syncModeBound(r0.mode, r0.bound || 'Import'); }
+  let rows = arr(data.rows).filter(r => (r.bound || 'Import') === state.bound && (r.mode || 'Sea') === state.tmode);
+  if (state.alertsOnly) rows = rows.filter(r => r.worst === 'R' || r.worst === 'A');   // narrow to red/amber alerts
   const word = (state.tmode === 'Air' ? 'air ' : 'sea ') + state.bound.toLowerCase();
   wl.innerHTML = '';
   if (!rows.length) {
     $('#wlCount').textContent = '0 ' + word + ' shipments';
-    const win = (state.from || state.to) ? ' moving, due or created in ' + esc(state.from || '…') + ' → ' + esc(state.to || '…') + ' (try “All dates”)' : '';
+    if (refMode) { wl.innerHTML = '<div class="empty">No shipment found for ' + esc(($('#fSearchField') && $('#fSearchField').selectedOptions[0].text) || '') + ' “' + esc(state.ref) + '” (searched all dates, within your access).</div>'; return; }
+    if (state.notesOnly) { wl.innerHTML = '<div class="empty">No ' + esc(word) + ' shipments you’ve noted' + (state.alertsOnly ? ' with a red/amber alert' : '') + '. Notes you add appear here on any date.</div>'; return; }
+    if (state.alertsOnly) { wl.innerHTML = '<div class="empty">No ' + esc(word) + ' shipments with a red/amber alert in this view.</div>'; return; }
+    const win = (state.from || state.to) ? ' moving, due or created in ' + esc(state.from || '…') + ' → ' + esc(state.to || '…') + ' (clear the dates to see all)' : '';
     const filt = (state.company || state.pols.length || state.pods.length) ? ' matching the active filters' : '';
     wl.innerHTML = '<div class="empty">No ' + esc(word) + ' shipments' + filt + win + '.</div>'; return;
   }
@@ -497,7 +562,6 @@ function vesselGroup(g) {
   const sample = rs.find(r => r.arrivalState === g.key) || rs[0];
   const totalCont = rs.reduce((a, r) => a + (r.containerCount || 0), 0);
   const isAir = (rs[0] && rs[0].mode === 'Air');
-  const icon = isAir ? '✈' : '🚢';
   const unit = isAir ? '' : (totalCont ? ' · ' + totalCont + ' ctr' : '');
   const box = el('div', 'vgroup' + (allCollapsed ? ' collapsed' : ''));
   const head = el('div', 'vhead ' + worst);
@@ -505,7 +569,7 @@ function vesselGroup(g) {
   // weekly, so MAWB + flight + route together identify the consol at a glance
   const airBits = isAir ? [sample.vesselVoyage ? esc(sample.vesselVoyage) : '', sample.routeSummary ? '<span class="vroute">' + esc(sample.routeSummary) + '</span>' : '']
     .filter(Boolean).map(s => ' · ' + s).join('') : '';
-  head.innerHTML = '<span class="vtoggle">▾</span><span class="vname">' + icon + ' ' + esc(g.vv) + airBits + '</span>' +
+  head.innerHTML = '<span class="vtoggle">▾</span><span class="vname">' + esc(g.vv) + airBits + '</span>' +
     arrivalChip(sample) + '<span class="vmeta">' + rs.length + ' shp' + unit + '</span>';
   const list = el('div', 'vlist');
   rs.forEach(r => list.appendChild(miniCard(r)));
@@ -532,7 +596,7 @@ function arrivalChip(r) {
     case 'arrived': return '<span class="chip arrived">Arrived ' + esc(r.ata || '') + '</span>';
     case 'arriving': return '<span class="chip transit">In transit' + (r.eta ? ' · ETA ' + esc(r.eta) : (r.etd ? ' · dep ' + esc(r.etd) : '')) + '</span>';
     case 'planning': return '<span class="chip plan">Planning</span>';
-    case 'no_space': return '<span class="chip nospace">No space</span>';
+    case 'no_space': return '<span class="chip nospace">Awaiting space</span>';
     case 'customs_window': return '<span class="chip transit">Customs' + (r.etd ? ' · ETD ' + esc(r.etd) : '') + '</span>';
     case 'cargo_pending': return '<span class="chip plan">Cargo pending</span>';
     case 'on_track': return '<span class="chip arrived">On track</span>';
@@ -563,32 +627,36 @@ function miniCard(r) {
     noteTip = (r.noteMilestone ? r.noteMilestone + ': ' : '') + (txt || r.noteText);
   }
   const note = (r.hasNotes ? '<span class="note-ind" title="' + esc(noteTip) + '">💬</span>' : '')
-    + (r.hasUpdate ? '<span class="upd-ind" title="' + esc(updTip) + '">🔄' + (updLbl ? ' ' + esc(updLbl) : '') + '</span>' : '');
-  const docLbl = isAir ? 'HAWB' : 'HBL';
+    + (r.hasUpdate ? '<span class="upd-ind" title="' + esc(updTip) + '">' + (updLbl ? esc(updLbl) : 'updated') + '</span>' : '');
   const mLbl = isAir ? 'MAWB' : 'MBL';
   // 🆕 = job created within the last 7 days — a fresh booking the operator may not have seen yet
   const today = (ME && ME.today) ? new Date(ME.today + 'T00:00:00') : new Date();
   const isNew = r.anchor && (today - new Date(r.anchor + 'T00:00:00')) / 86400000 < 7;
-  const newTag = isNew ? '<span class="chip newbk" title="new booking - created ' + esc(r.anchor) + '">🆕 NEW</span>' : '';
-  // primary id: import customers know the origin house bill, not our internal job number
-  const primary = (isImport && r.houseBill) ? esc(r.houseBill) : esc(r.jobNo);
+  const newTag = isNew ? '<span class="chip newbk" title="new booking - created ' + esc(r.anchor) + '">NEW</span>' : '';
+  // primary id: the PER-SHIPMENT number the operator/customer recognises, never the internal synthetic key
+  // and never the job number first (one job no can cover many house bills). Lead with the house bill, then the
+  // booking (sono) — both per-HBL — then the job no, then the synthetic key as a last resort.
+  const humanId = isImport
+    ? (r.houseBill || r.sono || r.erpJobNo || r.masterBill || r.jobNo)
+    : (r.houseBill || r.sono || r.erpJobNo || r.jobNo);
+  const primary = esc(humanId);
   const inco = r.incoterm ? '<span class="minco" title="Incoterm — your delivery responsibility">' + esc(r.incoterm) + '</span>' : '';
   // sub-line bits (all pre-escaped)
   const diff = r.containerNo
-    ? '🔢 ' + esc(r.containerNo) + (r.containerCount > 1 ? ' +' + (r.containerCount - 1) : '')
+    ? 'ctr ' + esc(r.containerNo) + (r.containerCount > 1 ? ' +' + (r.containerCount - 1) : '')
     : (r.linerSo ? 'SO ' + esc(r.linerSo) : '');
-  // import: show the master (OBL for sea, MAWB for air); fall back to our job no when no master is issued yet
-  const otherBill = isImport ? (mLbl + ' ' + esc(r.masterBill || r.jobNo))
-                             : (r.houseBill ? docLbl + ' ' + esc(r.houseBill) : '');
+  // import: show the master (OBL for sea, MAWB for air). House bill is the headline, job no rides jobTag,
+  // booking rides the sono bit — so this only adds the master, and only for import.
+  const otherBill = (isImport && r.masterBill) ? (mLbl + ' ' + esc(r.masterBill)) : '';
   // sea custRef = spot/ship ID, air = customer PO (both are what the customer quotes back)
   const po = r.custRef ? (isAir ? 'PO ' : 'ship-id ') + esc(r.custRef) : '';
-  const sono = r.sono ? 'bkg ' + esc(r.sono) : '';
-  const commod = r.commodity ? '<span title="' + esc(r.commodity) + '">📦 ' + esc(r.commodity.length > 28 ? r.commodity.slice(0, 28) + '…' : r.commodity) + '</span>' : '';
+  const sono = (r.sono && r.sono !== humanId) ? 'bkg ' + esc(r.sono) : '';   // skip if the booking is already the headline
+  const commod = r.commodity ? '<span title="' + esc(r.commodity) + '">' + esc(r.commodity.length > 28 ? r.commodity.slice(0, 28) + '…' : r.commodity) + '</span>' : '';
   const exp = !isImport ? [r.cargoReady ? 'cargo-ready ' + esc(r.cargoReady) : '', r.etd ? 'ETD ' + esc(r.etd) : ''].filter(Boolean).join(' · ') : '';
   // import logistics dates: pickup-available and (expected or actual) delivery — the consignee's questions
   const impDates = isImport ? [r.availableDate ? 'avail ' + esc(r.availableDate) : '',
     r.goodsDelivery ? 'dlvd ' + esc(r.goodsDelivery) : (r.etaDelivery ? 'dlv ' + esc(r.etaDelivery) : '')].filter(Boolean).join(' · ') : '';
-  const jobTag = (isImport && r.houseBill) ? esc(r.jobNo) : '';   // keep our job no visible when HBL is primary
+  const jobTag = (r.erpJobNo && r.erpJobNo !== humanId) ? 'job ' + esc(r.erpJobNo) : '';   // always keep the human job no visible when it isn't the headline
   const sub = [diff, cargo, commod, po, sono, otherBill, exp, impDates, esc(r.routeSummary || r.lane || ''), jobTag].filter(Boolean).join('  ·  ');
   // parties subline: shipper / consignee / agent — each clickable to apply the company filter
   const mkPty = (lbl, code, title) => code
@@ -602,15 +670,15 @@ function miniCard(r) {
     '</div>' +
     (sub ? '<div class="r2">' + sub + '</div>' : '') +
     (pty ? '<div class="r2 pty-row">' + pty + '</div>' : '');
-  c.onclick = () => openShipment(r.jobNo);
+  c.onclick = () => openShipment(r.jobNo, humanId);
   c.querySelectorAll('.pty').forEach(p => p.onclick = e => { e.stopPropagation(); setCompany(p.dataset.code); loadWorklist(); });
   return c;
 }
 
 // ---------- shipment drawer ----------
-async function openShipment(job) {
+async function openShipment(job, label) {
   $('#drawerBg').classList.add('open'); $('#drawer').classList.add('open');
-  $('#dJob').textContent = job; $('#dLane').textContent = ''; $('#drawerBody').innerHTML = '<div class="empty">Loading…</div>';
+  $('#dJob').textContent = label || job; $('#dLane').textContent = ''; $('#drawerBody').innerHTML = '<div class="empty">Loading…</div>';
   const data = await api('/api-ops/shipment?job=' + encodeURIComponent(job));
   renderShipment(job, data);
 }
@@ -645,7 +713,7 @@ function renderShipment(job, data) {
   body.appendChild(deepDetailSection(job, data));
 
   const actions = el('div'); actions.style.cssText = 'margin-bottom:10px';
-  const rb = el('button', 'ghost', '🔔 Remind me'); rb.style.fontSize = '12px'; rb.onclick = () => remindMe(job);
+  const rb = el('button', 'ghost', 'Remind me'); rb.style.fontSize = '12px'; rb.onclick = () => remindMe(job);
   actions.appendChild(rb); body.appendChild(actions);
 
   // milestones
@@ -657,10 +725,13 @@ function renderShipment(job, data) {
   // draft document review (HBL/HAWB customer agreement loop; editor opens in its own tab)
   body.appendChild(documentsPanel(job, sh));
 
+  // files the ERP already holds for this shipment (browse only; keyed by booking/bill number)
+  body.appendChild(erpFilesPanel(job, sh));
+
   // notes (plain notes only — arrangement-kind notes live in the panel above)
   const plain = arr(data.notes).filter(n => n.kind !== 'arrangement');
   const nx = el('div', 'notes');
-  nx.appendChild(el('h3', null, '💬 Notes & reminders'));
+  nx.appendChild(el('h3', null, 'Notes & reminders'));
   nx.appendChild(composer(job, null));
   const list = el('div', 'notelist');
   plain.forEach(n => list.appendChild(noteItem(n)));
@@ -669,21 +740,21 @@ function renderShipment(job, data) {
   body.appendChild(nx);
 }
 const ARR_TYPES = [
-  { key: 'customer', label: '👤 Customer' },
-  { key: 'trucker', label: '🚚 Trucker' },
-  { key: 'broker', label: '🛃 Customs broker' },
-  { key: 'warehouse', label: '🏭 Warehouse' },
+  { key: 'customer', label: 'Customer' },
+  { key: 'trucker', label: 'Trucker' },
+  { key: 'broker', label: 'Customs broker' },
+  { key: 'warehouse', label: 'Warehouse' },
 ];
 function arrPlaceholder(t) { return ({ customer: 'customer contact person', trucker: 'trucker company', broker: 'broker name', warehouse: 'warehouse' })[t] || 'party'; }
 function arrangementsPanel(job, sh, notes) {
   const wrap = el('div', 'arrange');
-  wrap.appendChild(el('h3', null, '📦 Arrangements'));
+  wrap.appendChild(el('h3', null, 'Arrangements'));
   const isImport = (sh.bound || 'Import') === 'Import';
   const who = isImport ? sh.consignee_name : sh.shipper_name;
   const bits = [];
   if (sh.cust_contact) bits.push(esc(sh.cust_contact));
-  if (sh.cust_phone) bits.push('<a href="tel:' + esc(sh.cust_phone) + '">📞 ' + esc(sh.cust_phone) + '</a>');
-  if (sh.cust_email) bits.push('<a href="mailto:' + esc(sh.cust_email) + '">✉ ' + esc(sh.cust_email) + '</a>');
+  if (sh.cust_phone) bits.push('Phone: <a href="tel:' + esc(sh.cust_phone) + '">' + esc(sh.cust_phone) + '</a>');
+  if (sh.cust_email) bits.push('Email: <a href="mailto:' + esc(sh.cust_email) + '">' + esc(sh.cust_email) + '</a>');
   const contact = el('div', 'contact');
   contact.innerHTML = '<span class="lbl">' + (isImport ? 'Consignee' : 'Shipper') + '</span> <b>' + esc(who || '—') + '</b>' +
     (bits.length ? ' · ' + bits.join(' · ') : ' <span class="mut">(no contact on file)</span>');
@@ -758,7 +829,7 @@ function routeTimeline(route) {
   return '<div class="rt">' + pts.map(p => {
     const dates = [p.dep ? 'dep <b>' + esc(p.dep) + (p.time ? ' ' + esc(p.time) : '') + '</b>' : '',
       p.arr ? 'arr <b>' + esc(p.arr) + '</b>' : ''].filter(Boolean).join(' · ');
-    const conv = [p.flight ? '✈ ' + esc(p.flight) : '', p.vessel ? '🚢 ' + esc(p.vessel) : ''].filter(Boolean).join(' ');
+    const conv = [p.flight ? 'flight ' + esc(p.flight) : '', p.vessel ? 'vessel ' + esc(p.vessel) : ''].filter(Boolean).join(' ');
     return '<div class="rt-pt"><span class="rt-role ' + esc(p.role || '') + '">' + esc(p.role || '') + '</span>' +
       '<span class="rt-port"><b>' + esc(p.code || '') + '</b>' + (p.name ? ' · ' + esc(p.name) : '') + '</span>' +
       (conv ? '<span class="rt-conv">' + conv + '</span>' : '') +
@@ -777,17 +848,17 @@ function cargoLine(c) {
 function deepDetailSection(job, data) {
   const wrap = el('div', 'deep');
   const h = el('div', 'deep-head');
-  h.innerHTML = '<h3>🧭 Route & ERP detail</h3>';
+  h.innerHTML = '<h3>Route & ERP detail</h3>';
   const stamp = el('span', 'deep-stamp mut', '');
-  const btn = el('button', 'ghost deep-btn', '🔄 Refresh from ERP');
+  const btn = el('button', 'ghost deep-btn', 'Refresh from ERP');
   btn.title = 'Fetch this shipment live from the station ERP (one keyed lookup) — remark, route and cargo as of right now';
   h.appendChild(stamp); h.appendChild(btn);
   const inner = el('div', 'deep-body');
   wrap.appendChild(h); wrap.appendChild(inner);
   const renderInner = (d, live) => {
     let html = routeTimeline(d.route);
-    const cg = cargoLine(d.cargo); if (cg) html += '<div class="deep-cargo">⚖ ' + cg + '</div>';
-    if (d.commodity.length) html += '<div class="deep-comm">📦 ' + d.commodity.map(esc).join(' · ') + '</div>';
+    const cg = cargoLine(d.cargo); if (cg) html += '<div class="deep-cargo">Cargo: ' + cg + '</div>';
+    if (d.commodity.length) html += '<div class="deep-comm">Goods: ' + d.commodity.map(esc).join(' · ') + '</div>';
     if (d.remark) html += '<div class="deep-rem"><span class="lbl">Internal remark</span><div class="rem">' + esc(d.remark) + '</div></div>';
     if (d.special) html += '<div class="deep-rem"><span class="lbl">Special remark</span><div class="rem">' + esc(d.special) + '</div></div>';
     inner.innerHTML = html || '<div class="empty">No route / remark on the snapshot yet — try “Refresh from ERP”.</div>';
@@ -796,13 +867,13 @@ function deepDetailSection(job, data) {
   };
   renderInner(normDeep(data), false);
   btn.onclick = async () => {
-    btn.disabled = true; btn.textContent = '⏳ fetching…';
+    btn.disabled = true; btn.textContent = 'fetching…';
     try {
       const live = await api('/api-ops/erp-detail?job=' + encodeURIComponent(job));
       if (live && live.error) { stamp.className = 'deep-stamp err'; stamp.textContent = live.error; }
       else renderInner(normDeep(live), true);
     } catch (e) { stamp.className = 'deep-stamp err'; stamp.textContent = 'ERP fetch failed — is the VPN/source DB reachable?'; }
-    btn.disabled = false; btn.textContent = '🔄 Refresh from ERP';
+    btn.disabled = false; btn.textContent = 'Refresh from ERP';
   };
   return wrap;
 }
@@ -853,14 +924,14 @@ function askReminder() {
   return new Promise(resolve => {
     const bg = el('div', 'modal-bg');
     const box = el('div', 'modal');
-    box.innerHTML = '<h3>🔔 Remind me</h3><p class="modal-msg">A note to yourself about what to follow up on this shipment. Set a date to chase it (optional).</p>';
+    box.innerHTML = '<h3>Remind me</h3><p class="modal-msg">A note to yourself about what to follow up on this shipment. Set a date to chase it (optional).</p>';
     const ta = el('textarea'); ta.placeholder = 'e.g. chase trucker to confirm terminal pickup → warehouse'; box.appendChild(ta);
     const drow = el('div', 'modal-date');
     drow.innerHTML = '<span class="muted">Follow up on</span>';
     const date = el('input'); date.type = 'text'; date.placeholder = 'yyyy-mm-dd'; date.maxLength = 10; date.className = 'datebox'; drow.appendChild(date); box.appendChild(drow);
     const bar = el('div', 'modal-bar');
     const cancel = el('button', 'ghost', 'Cancel');
-    const ok = el('button', 'primary', '🔔 Set reminder');
+    const ok = el('button', 'primary', 'Set reminder');
     bar.appendChild(cancel); bar.appendChild(ok); box.appendChild(bar);
     bg.appendChild(box); document.body.appendChild(bg);
     setTimeout(() => ta.focus(), 30);
@@ -881,7 +952,7 @@ const DOC_STATUS_LABEL = {
 function documentsPanel(job, sh) {
   const dtype = sh.mode === 'Air' ? 'HAWB' : 'HBL';
   const wrap = el('div', 'arrange');
-  wrap.appendChild(el('h3', null, '📄 Draft ' + dtype + ' review'));
+  wrap.appendChild(el('h3', null, 'Draft ' + dtype + ' review'));
   const bodyEl = el('div', null, '<div class="empty">Loading…</div>');
   wrap.appendChild(bodyEl);
   api('/api-ops/docs?job=' + encodeURIComponent(job)).then(d => {
@@ -890,12 +961,21 @@ function documentsPanel(job, sh) {
     if (!docs.length) {
       const b = el('button', 'ghost', '+ Create draft ' + dtype + ' from this shipment');
       b.style.fontSize = '12px';
+      const label = b.textContent;
       b.onclick = async () => {
-        b.disabled = true;
-        const r = await api('/api-ops/doc-create', { method: 'POST', body: { job_no: job } });
-        if (r.error && !r.docId) { alert(r.error); b.disabled = false; return; }
-        window.open('doc-editor.html?id=' + encodeURIComponent(r.docId), '_blank');
-        openShipment(job);   // refresh the drawer so the panel shows the new doc
+        // Open the editor tab NOW (inside the click = a user gesture, so the browser won't block it); it shows a
+        // "preparing" placeholder and we point it at the editor once the draft is ready. Creating the draft reads
+        // the ERP, so it takes a few seconds — keep the button honest about that instead of a silent spinner.
+        let w = null; try { w = window.open('about:blank', '_blank'); } catch (e) {}
+        if (w) { try { w.document.write('<!doctype html><meta charset="utf-8"><title>Preparing draft ' + dtype + '…</title><body style="font:15px -apple-system,Segoe UI,Roboto,Arial,sans-serif;padding:48px;color:#333">Preparing your draft ' + dtype + ' from the shipment and ERP… this tab opens the editor automatically when it\'s ready.</body>'); } catch (e) {} }
+        b.disabled = true; b.textContent = 'Creating draft ' + dtype + '… (reading ERP, a few seconds)';
+        let r; try { r = await api('/api-ops/doc-create', { method: 'POST', body: { job_no: job } }); }
+        catch (e) { r = { error: 'network error' }; }
+        if (r.error && !r.docId) { if (w) w.close(); alert(r.error); b.disabled = false; b.textContent = label; return; }
+        const url = 'doc-editor.html?id=' + encodeURIComponent(r.docId);
+        if (w) w.location = url;                 // navigate the already-open tab to the editor
+        b.textContent = 'Draft ' + dtype + ' ready' + (w ? '' : ' — click “Open editor” below');
+        openShipment(job);   // refresh the drawer so the panel shows the new doc + its Open editor button
       };
       bodyEl.appendChild(b);
       return;
@@ -909,13 +989,46 @@ function documentsPanel(job, sh) {
       if (dc.activeToken) bits.push('link live (' + esc(dc.activeToken.customerEmail || 'customer') + ', viewed ' + dc.activeToken.viewCount + 'x)');
       else if (dc.customerEmail) bits.push(esc(dc.customerEmail));
       card.innerHTML = '<b>' + esc(dc.docType) + '</b> · ' + bits.join(' · ') + ' ';
-      const open = el('button', 'ghost', '✎ Open editor');
+      const open = el('button', 'ghost', 'Open editor');
       open.style.fontSize = '12px';
       open.onclick = () => window.open('doc-editor.html?id=' + encodeURIComponent(dc.docId), '_blank');
       card.appendChild(open);
       bodyEl.appendChild(card);
     });
   }).catch(() => { bodyEl.innerHTML = '<div class="empty">Could not load documents.</div>'; });
+  return wrap;
+}
+
+// Browse the files the ERP holds for this shipment. Read-only this round (document type / file name / remark);
+// the heading shows which identifier was used so it's clear what the ERP matched on. Download comes later.
+function erpFilesPanel(job, sh) {
+  const wrap = el('div', 'arrange');
+  const h = el('h3', null, 'ERP files');
+  wrap.appendChild(h);
+  const bodyEl = el('div', null, '<div class="empty">Loading…</div>');
+  wrap.appendChild(bodyEl);
+  api('/api-ops/erp-files?job=' + encodeURIComponent(job)).then(d => {
+    bodyEl.innerHTML = '';
+    if (d.error) { bodyEl.innerHTML = '<div class="empty">' + esc(d.error) + '</div>'; return; }
+    if (d.mock) { bodyEl.innerHTML = '<div class="empty">ERP not configured — no live file lookup in this environment.</div>'; return; }
+    const keyLabel = (d.keyKind || 'booking') + (d.keyUsed ? ' ' + d.keyUsed : '');
+    const files = arr(d.files);
+    if (!files.length) {
+      h.textContent = 'ERP files · ' + keyLabel;
+      bodyEl.innerHTML = '<div class="empty">No files in the ERP for this ' + esc((d.keyKind || 'booking').toLowerCase()) + '.</div>';
+      return;
+    }
+    h.textContent = 'ERP files · ' + keyLabel + (d.keyField ? '  ·  matched on ' + d.keyField : '');
+    files.forEach(f => {
+      const card = el('div', 'doccard');
+      const bits = [];
+      if (f.documentTypeCode) bits.push('<span class="docstatus">' + esc(f.documentTypeCode) + '</span>');
+      bits.push('<b>' + esc(f.fileName || '(unnamed)') + '</b>');
+      if (f.remark) bits.push('<span class="mut">' + esc(f.remark) + '</span>');
+      card.innerHTML = bits.join(' · ');
+      bodyEl.appendChild(card);
+    });
+  }).catch(() => { bodyEl.innerHTML = '<div class="empty">Could not reach the ERP for files.</div>'; });
   return wrap;
 }
 
@@ -1033,7 +1146,7 @@ function draftCard(dr) {
   const approved = dr.status === 'CUSTOMER_APPROVED';
   const label = approved ? '✅ approved · ready to agree' : '✏️ customer replied';
   d.innerHTML =
-    '<div class="tk-head"><span class="kind">' + esc(dr.docType) + '</span> <strong>' + esc(who) + '</strong> <span class="due now">' + label + '</span></div>' +
+    '<div class="tk-head"><span class="kind">📄 ' + esc(dr.docType) + '</span> <strong>' + esc(who) + '</strong> <span class="due now">' + label + '</span></div>' +
     '<div class="tk-sub mut">' + esc(dr.jobNo) + ' · v' + esc('' + dr.version) + (dr.updatedAt ? ' · ' + esc(dr.updatedAt) : '') + '</div>' +
     (dr.comment ? '<div class="tk-note">💬 ' + esc(dr.comment) + '</div>' : '');
   d.onclick = () => openShipment(dr.jobNo);   // open the shipment → its 📄 Draft review panel

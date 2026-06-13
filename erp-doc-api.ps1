@@ -193,6 +193,45 @@ function ErpMockWrite($name,$obj){
   if(-not (Test-Path $dir)){ New-Item -ItemType Directory -Path $dir | Out-Null }
   [IO.File]::WriteAllText((Join-Path $dir $name),($obj|ConvertTo-Json -Depth 10),(New-Object System.Text.UTF8Encoding($false)))
 }
+# Normalize a /file/enquiry response into a plain file array. The endpoint may return a bare array or an
+# enveloped one ({message:{message:[...]}} like the other endpoints), so probe the likely containers and pick
+# whichever holds objects with a fileName. PSCustomObject property access is case-insensitive, so this also
+# tolerates fileName/FileName casing.
+function Erp-FileArray($resp){
+  if($null -eq $resp){ return @() }
+  $arr=$null
+  foreach($c in @($resp, $resp.message.message, $resp.message, $resp.data)){
+    if($null -eq $c){ continue }
+    $items=@($c)
+    if($items.Count -and $items[0] -and $items[0].PSObject.Properties['fileName']){ $arr=$items; break }
+  }
+  if($null -eq $arr){ return @() }
+  @($arr | ForEach-Object { [pscustomobject]@{ fileName="$($_.fileName)".Trim(); documentTypeCode="$($_.documentTypeCode)".Trim(); remark="$($_.remark)".Trim() } })
+}
+# List the files the ERP holds for a shipment. /file/enquiry filters by 3rdBookingID OR bookingNo only (NOT
+# house/master/MAWB/HAWB). Verified live: OUR booking number (sono) is the ERP's 3rdBookingID (the external
+# reference) - bookingNo/houseNo return "No corresponding data". So $candidates is the ordered identifier list
+# (e.g. Air: HAWB,Booking,MAWB ; Sea: Booking,HBL); we try each as 3rdBookingID first, then bookingNo, and
+# return the FIRST hit so files attached at the booking surface even when a higher-priority id doesn't match.
+# Returns @{ files=@({fileName,documentTypeCode,remark}); keyUsed; keyKind; keyField; mock; error? }.
+function Invoke-ErpFileEnquiry($api,$map,$module,$candidates){
+  if(ErpMockMode $api){ return @{ files=@(); keyUsed=''; keyKind=''; keyField=''; mock=$true } }
+  $cands=@(@($candidates) | Where-Object { $_ -and "$($_.val)".Trim() })
+  if(-not $cands.Count){ return @{ files=@(); keyUsed=''; keyKind=''; keyField=''; mock=$false; error='no booking/bill number on this shipment' } }
+  $base=@{ partyGroupCode="$($map.partyGroupCode)".Trim(); forwarderCode="$($map.forwarderCode)".Trim(); moduleTypeCode="$module" }
+  $lastErr=''
+  foreach($field in '3rdBookingID','bookingNo'){
+    foreach($c in $cands){
+      $val="$($c.val)".Trim()
+      try{
+        $payload=[ordered]@{}; foreach($k in $base.Keys){ $payload[$k]=$base[$k] }; $payload[$field]=$val
+        $files=@(Erp-FileArray (Invoke-ErpCall $api '/file/enquiry' $payload))
+        if($files.Count){ return @{ files=$files; keyUsed=$val; keyKind="$($c.kind)"; keyField=$field; mock=$false } }
+      }catch{ $lastErr=(ErpErr $_.Exception) }
+    }
+  }
+  @{ files=@(); keyUsed="$($cands[0].val)".Trim(); keyKind="$($cands[0].kind)"; keyField=''; mock=$false; error=$lastErr }
+}
 
 # ---- AGREE: save the agreed booking data (read-merge-write). Returns @{ ok; mock; steps; error? } ----
 function Invoke-ErpDocAgree($head,$fields,$sa,$by){

@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in — Control Tower</title>
+<script>
+// Apply the saved theme before paint (no flash). Absent = follow the device.
+(function(){try{var t=localStorage.getItem('theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();
+</script>
 <link rel="stylesheet" href="styles.css">
 <style>
   .loginwrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; }

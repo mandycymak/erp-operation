@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Admin — Control Tower</title>
+<script>
+// Apply the saved theme before paint (no flash). Absent = follow the device.
+(function(){try{var t=localStorage.getItem('theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();
+</script>
 <link rel="stylesheet" href="styles.css">
 <style>
   .admwrap{max-width:1100px;margin:0 auto;padding:14px}
@@ -63,7 +67,7 @@
     Empty stations / access = unrestricted. Changes apply immediately — no restart.
   </div>
   <div class="toolbar">
-    <input id="usrSearch" type="search" autocomplete="off" placeholder="🔍 Find a user — login, name, email, station, team, ERP name…">
+    <input id="usrSearch" type="search" autocomplete="off" placeholder="Find a user — login, name, email, station, team, ERP name…">
     <span class="count" id="usrCount"></span>
     <button class="ghost" id="addUserBtn" style="font-size:12px;margin-left:auto">+ Add user</button>
   </div>
@@ -90,10 +94,10 @@
     <div class="frow">
       <div class="grp" id="gStations"><div class="gh">Stations (tick = works there; ◉ = primary)</div></div>
       <div class="grp"><div class="gh">Access — mode·bound pairs <span class="hint">(none ticked = all)</span></div>
-        <label class="ck"><input type="checkbox" class="acc" value="Air-Export"> ✈ Air Export</label>
-        <label class="ck"><input type="checkbox" class="acc" value="Air-Import"> ✈ Air Import</label>
-        <label class="ck"><input type="checkbox" class="acc" value="Sea-Export"> 🚢 Sea Export</label>
-        <label class="ck"><input type="checkbox" class="acc" value="Sea-Import"> 🚢 Sea Import</label>
+        <label class="ck"><input type="checkbox" class="acc" value="Air-Export"> Air Export</label>
+        <label class="ck"><input type="checkbox" class="acc" value="Air-Import"> Air Import</label>
+        <label class="ck"><input type="checkbox" class="acc" value="Sea-Export"> Sea Export</label>
+        <label class="ck"><input type="checkbox" class="acc" value="Sea-Import"> Sea Import</label>
       </div>
       <div class="fcol" style="flex:1;min-width:260px">
         <label>Teams <span class="hint">(Enter/comma adds)</span></label>

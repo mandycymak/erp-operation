@@ -167,6 +167,9 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_pod' AND object_i
 #       available_date / eta_delivery / goods_delivery = pickup-available / expected / actual delivery (sea).
 #       erp_ref       = source header PK (blhead.ref | awbhead.ref) — keyed seek handle for the on-demand
 #                       /api-ops/erp-detail lookup and the blitem/awbdetl child reads.
+#       erp_job_no    = raw ERP job number (blhead/awbhead.jobn), may be blank at booking stage. job_no (PK) is
+#                       jobn when present, else a stable synthetic from erp_ref; erp_job_no holds the human jobn
+#                       for display/search so the synthetic key never surfaces to the operator.
 ExecSql $opsDb @"
 IF COL_LENGTH('dbo.shipment_alerts','route_summary')  IS NULL ALTER TABLE dbo.shipment_alerts ADD route_summary  nvarchar(120) NULL;
 IF COL_LENGTH('dbo.shipment_alerts','route_json')     IS NULL ALTER TABLE dbo.shipment_alerts ADD route_json     nvarchar(max) NULL;
@@ -177,6 +180,7 @@ IF COL_LENGTH('dbo.shipment_alerts','available_date') IS NULL ALTER TABLE dbo.sh
 IF COL_LENGTH('dbo.shipment_alerts','eta_delivery')   IS NULL ALTER TABLE dbo.shipment_alerts ADD eta_delivery   date          NULL;
 IF COL_LENGTH('dbo.shipment_alerts','goods_delivery') IS NULL ALTER TABLE dbo.shipment_alerts ADD goods_delivery date          NULL;
 IF COL_LENGTH('dbo.shipment_alerts','erp_ref')        IS NULL ALTER TABLE dbo.shipment_alerts ADD erp_ref        nvarchar(24)  NULL;
+IF COL_LENGTH('dbo.shipment_alerts','erp_job_no')     IS NULL ALTER TABLE dbo.shipment_alerts ADD erp_job_no     nvarchar(24)  NULL;
 "@
 
 # --- 2.8 port_dim — full port/airport master copy (ERP portmstr: ~3.9k sea UN/LOCODEs + ~1.5k IATA codes)
