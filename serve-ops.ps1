@@ -670,6 +670,31 @@ function Handle-ErpFiles($cn,$qs){
   $r=Invoke-ErpFileEnquiry $cfg.erpApi (Get-ErpApiMap) $module $cands
   @{ keyUsed=[string]$r.keyUsed; keyKind=[string]$r.keyKind; keyField=[string]$r.keyField; mock=[bool]$r.mock; files=@($r.files); error=[string]$r.error }
 }
+# Stream one ERP-held file's bytes (download round). Same identifier resolution as Handle-ErpFiles, then
+# /file/download for the requested fileName. Returns $true when the blob is sent so the router skips JSON.
+function Handle-ErpFileDownload($cn,$ctx,$qs){
+  $job="$($qs['job'])".Trim(); $file="$($qs['file'])".Trim()
+  if(-not $job){ return $false }
+  $al=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound,sono,house_bill,master_bill FROM dbo.shipment_alerts WHERE job_no=@j" @{ j=$job })
+  if(-not $al.Count){ return $false }
+  if(-not (Test-JobScope $al[0])){ return $false }
+  $a=$al[0]
+  $isAir=("$($a.mode)" -eq 'Air'); $module= if($isAir){'AIR'}else{'SEA'}
+  $sono="$($a.sono)".Trim(); $hbl="$($a.house_bill)".Trim(); $mbl="$($a.master_bill)".Trim()
+  $cands= if($isAir){ @(@{kind='HAWB';val=$hbl},@{kind='Booking';val=$sono},@{kind='MAWB';val=$mbl}) } else { @(@{kind='Booking';val=$sono},@{kind='HBL';val=$hbl}) }
+  if(-not @(@($cands)|Where-Object{ "$($_.val)".Trim() }).Count){ return $false }
+  $r=Invoke-ErpFileDownload $cfg.erpApi (Get-ErpApiMap) $module $cands $file
+  if($r.mock -or -not $r.bytes){ return $false }
+  $name= if("$($r.fileName)".Trim()){ "$($r.fileName)".Trim() } elseif($file){ $file } else { 'erp-file' }
+  $ct= switch([IO.Path]::GetExtension($name).ToLower()){
+    ".pdf"{"application/pdf"} ".png"{"image/png"} ".jpg"{"image/jpeg"} ".jpeg"{"image/jpeg"} ".gif"{"image/gif"}
+    ".txt"{"text/plain; charset=utf-8"} ".csv"{"text/csv; charset=utf-8"} ".xml"{"application/xml"}
+    ".doc"{"application/msword"} ".docx"{"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+    ".xls"{"application/vnd.ms-excel"} ".xlsx"{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+    default{"application/octet-stream"} }
+  Send-Blob $ctx ([byte[]]$r.bytes) $ct $name
+  $true
+}
 # Manual Tick & Confirm on a milestone: overlay bypass/reopen onto the stored checklist, recompute the rollup,
 # persist, and drop a note (so it threads + can @-mention). Pure JSON — no ERP touched.
 function Save-MilestoneClose($cn,$ctx,$me){
@@ -1694,6 +1719,7 @@ while($listener.IsListening){
                 "/api-ops/ports"           { Send-Ports $ctx $cn }
                 "/api-ops/erp-detail"      { Send-Json $ctx (Handle-ErpDetail $cn $qs) }
                 "/api-ops/erp-files"       { Send-Json $ctx (Handle-ErpFiles $cn $qs) }
+                "/api-ops/erp-file-download" { if(-not (Handle-ErpFileDownload $cn $ctx $qs)){ Send-Json $ctx @{ error='file not available' } 404 } }
                 "/api-ops/inbound"         { Send-Json $ctx (Handle-Inbound $cn $qs) }
                 "/api-ops/inbound-assign"  { Send-Json $ctx (Save-InboundAssign $cn $ctx $me) }
                 "/api-ops/my-tasks"        { Send-Json $ctx (Handle-MyTasks $cn $me) }

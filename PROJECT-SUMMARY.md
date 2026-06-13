@@ -17,7 +17,7 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-13 — booking-stage identity fix + UI declutter/theme/mobile + draft speed/UX + ERP-files browse — RESUME HERE).**
+**Latest session (2026-06-13 — booking-stage identity fix + UI declutter/theme/mobile + draft speed/UX + ERP-files browse & download — RESUME HERE).**
 - **Early-booking identity fix (the `job_no` collapse).** The listener keyed `shipment_alerts` on the raw ERP
   `jobn`, which is blank at booking stage AND **non-unique once issued** (one job number can cover many house
   bills — `SEHKG220800007` = **200** HBLs), so distinct shipments collapsed onto one card (HKG Sea stored only
@@ -52,8 +52,17 @@ so the UI and Tick-&-Confirm loop can be exercised now.
   `/api-ops/erp-files` (`Handle-ErpFiles`, Test-JobScope) + `erpFilesPanel` (`ops.js`). **KEY FINDING (resolves
   open item c):** `/file/enquiry` matches on **`3rdBookingID` = our booking number (`sono`)** — `bookingNo`/`houseNo`
   return "No corresponding data". It tries `3rdBookingID` first, then `bookingNo`, across the identifier
-  candidates in priority order (Sea: `sono`→HBL ; Air: HAWB→booking→MAWB) and returns the first hit, reporting
-  which id+field matched. **Live-verified** on demoerp (2 files for booking `HK012606010`). Download/upload/delete deferred.
+  candidates in priority order (Sea: `sono`→HBL ; Air: HAWB→booking→MAWB) and returns the first hit. Works the
+  **same for Air** (`moduleTypeCode=AIR`, HAWB→booking→MAWB) as Sea. **Live-verified** on demoerp (2 files for
+  booking `HK012606010`). The internal `3rdBookingID` detail is **no longer shown** in the panel heading (now
+  just `ERP files - <kind> <id>`), and the ERP's `(422) No corresponding data` reply is treated as the empty
+  state ("No files in the ERP for this booking") rather than surfaced as an error.
+- **ERP file download (new).** Each listed file now has a **Download** button. `Invoke-ErpFileDownload`
+  (`erp-doc-api.ps1`) POSTs `/file/download` (same candidate/field order + optional `fileName`), decodes the
+  returned `base64`; session-gated `/api-ops/erp-file-download` (`Handle-ErpFileDownload`, Test-JobScope) infers
+  the Content-Type from the extension and `Send-Blob`s the bytes; `downloadErpFile` (`ops.js`) fetches it through
+  the authed `fetch` (carries cookie/`X-Ops-User` in either auth mode) and triggers a browser download with the
+  real filename. Upload/delete still deferred.
 
 **Previous session (2026-06-12d — Neutral Air Waybill + verified Air field map + LIVE ERP issue + auto-PDF + docs).**
 Driven by the user's head-to-toe test of the **Draft HAWB** review on demoerp booking `HKGAE6060004`

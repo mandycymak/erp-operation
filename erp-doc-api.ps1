@@ -227,10 +227,45 @@ function Invoke-ErpFileEnquiry($api,$map,$module,$candidates){
         $payload=[ordered]@{}; foreach($k in $base.Keys){ $payload[$k]=$base[$k] }; $payload[$field]=$val
         $files=@(Erp-FileArray (Invoke-ErpCall $api '/file/enquiry' $payload))
         if($files.Count){ return @{ files=$files; keyUsed=$val; keyKind="$($c.kind)"; keyField=$field; mock=$false } }
-      }catch{ $lastErr=(ErpErr $_.Exception) }
+      }catch{ $e=(ErpErr $_.Exception); if($e -notmatch 'No corresponding data'){ $lastErr=$e } }   # "No corresponding data" = ERP has no files here, not an error
     }
   }
   @{ files=@(); keyUsed="$($cands[0].val)".Trim(); keyKind="$($cands[0].kind)"; keyField=''; mock=$false; error=$lastErr }
+}
+# Download one ERP-held file's bytes. /file/download takes the same bookingNo/3rdBookingID filter as enquiry
+# plus an optional fileName, and returns an array of {fileName,documentTypeCode,remark,base64}. We try the same
+# candidate/field order as enquiry, pick the item matching $fileName (or the first with content), and decode the
+# base64. Returns @{ bytes=[byte[]]; fileName; mock; error? }.
+function Invoke-ErpFileDownload($api,$map,$module,$candidates,$fileName){
+  if(ErpMockMode $api){ return @{ bytes=$null; fileName="$fileName"; mock=$true } }
+  $cands=@(@($candidates) | Where-Object { $_ -and "$($_.val)".Trim() })
+  if(-not $cands.Count){ return @{ bytes=$null; fileName="$fileName"; mock=$false; error='no booking/bill number on this shipment' } }
+  $want="$fileName".Trim()
+  $base=@{ partyGroupCode="$($map.partyGroupCode)".Trim(); forwarderCode="$($map.forwarderCode)".Trim(); moduleTypeCode="$module" }
+  $lastErr=''
+  foreach($field in '3rdBookingID','bookingNo'){
+    foreach($c in $cands){
+      $val="$($c.val)".Trim()
+      try{
+        $payload=[ordered]@{}; foreach($k in $base.Keys){ $payload[$k]=$base[$k] }; $payload[$field]=$val
+        if($want){ $payload['fileName']=$want }
+        $resp=Invoke-ErpCall $api '/file/download' $payload
+        $items=$null
+        foreach($cc in @($resp,$resp.message.message,$resp.message,$resp.data)){
+          if($null -eq $cc){ continue }
+          $list=@($cc)
+          if($list.Count -and $list[0] -and $list[0].PSObject.Properties['base64']){ $items=$list; break }
+        }
+        if($items){
+          $pick= if($want){ @($items | Where-Object { "$($_.fileName)".Trim() -eq $want })[0] } else { $null }
+          if(-not $pick){ $pick=$items[0] }
+          $b64="$($pick.base64)".Trim()
+          if($b64){ return @{ bytes=[Convert]::FromBase64String($b64); fileName="$($pick.fileName)".Trim(); mock=$false } }
+        }
+      }catch{ $e=(ErpErr $_.Exception); if($e -notmatch 'No corresponding data'){ $lastErr=$e } }   # "No corresponding data" = no such file, not an error
+    }
+  }
+  @{ bytes=$null; fileName="$want"; mock=$false; error=$(if($lastErr){$lastErr}else{'file not found in the ERP'}) }
 }
 
 # ---- AGREE: save the agreed booking data (read-merge-write). Returns @{ ok; mock; steps; error? } ----

@@ -1018,18 +1018,39 @@ function erpFilesPanel(job, sh) {
       bodyEl.innerHTML = '<div class="empty">No files in the ERP for this ' + esc((d.keyKind || 'booking').toLowerCase()) + '.</div>';
       return;
     }
-    h.textContent = 'ERP files · ' + keyLabel + (d.keyField ? '  ·  matched on ' + d.keyField : '');
+    h.textContent = 'ERP files · ' + keyLabel;
     files.forEach(f => {
       const card = el('div', 'doccard');
       const bits = [];
       if (f.documentTypeCode) bits.push('<span class="docstatus">' + esc(f.documentTypeCode) + '</span>');
       bits.push('<b>' + esc(f.fileName || '(unnamed)') + '</b>');
       if (f.remark) bits.push('<span class="mut">' + esc(f.remark) + '</span>');
-      card.innerHTML = bits.join(' · ');
+      const meta = el('span'); meta.innerHTML = bits.join(' · '); card.appendChild(meta);
+      if (f.fileName) {
+        const dl = el('button', 'ghost', 'Download'); dl.style.cssText = 'margin-left:auto;font-size:11px;padding:2px 8px';
+        dl.onclick = () => downloadErpFile(job, f.fileName, dl);
+        card.appendChild(dl);
+      }
       bodyEl.appendChild(card);
     });
   }).catch(() => { bodyEl.innerHTML = '<div class="empty">Could not reach the ERP for files.</div>'; });
   return wrap;
+}
+// Fetch the file bytes through the authed fetch (carries the cookie / X-Ops-User header in either mode), then
+// trigger a browser download with the right filename. Avoids relying on cookie presence for a plain link.
+async function downloadErpFile(job, fileName, btn) {
+  const old = btn.textContent; btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch('/api-ops/erp-file-download?job=' + encodeURIComponent(job) + '&file=' + encodeURIComponent(fileName),
+      { cache: 'no-store', headers: { 'X-Ops-User': state.user || '(open)' } });
+    if (!r.ok) { btn.textContent = 'unavailable'; setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 2500); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = el('a'); a.href = url; a.download = fileName || 'erp-file';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    btn.textContent = old; btn.disabled = false;
+  } catch (e) { btn.textContent = 'failed'; setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 2500); }
 }
 
 async function remindMe(job) {
