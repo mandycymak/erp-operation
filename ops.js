@@ -728,6 +728,9 @@ function renderShipment(job, data) {
   // files the ERP already holds for this shipment (browse only; keyed by booking/bill number)
   body.appendChild(erpFilesPanel(job, sh));
 
+  // correct bad ERP master data (DUMMY party codes, ZZZ incoterm/port codes, etc.) - opens its own tab
+  body.appendChild(erpEditPanel(job, sh));
+
   // notes (plain notes only — arrangement-kind notes live in the panel above)
   const plain = arr(data.notes).filter(n => n.kind !== 'arrangement');
   const nx = el('div', 'notes');
@@ -996,6 +999,19 @@ function documentsPanel(job, sh) {
       bodyEl.appendChild(card);
     });
   }).catch(() => { bodyEl.innerHTML = '<div class="empty">Could not load documents.</div>'; });
+  return wrap;
+}
+
+// Correct bad ERP master data for this shipment (staff-internal). Opens erp-edit.html in its own tab, which
+// self-seeds the current ERP values + master-code lookups and pushes only the changed fields to /booking/update.
+function erpEditPanel(job, sh) {
+  const wrap = el('div', 'arrange');
+  wrap.appendChild(el('h3', null, 'Correct ERP data'));
+  wrap.appendChild(el('div', 'mut', 'Fix wrong master codes (shipper/consignee/notify/agent, incoterm, POL/POD, service), party details, or container booking qty, and push the correction back to the ERP. Opens in a new tab.'));
+  const b = el('button', 'ghost', 'Correct ERP master data');
+  b.style.cssText = 'font-size:12px;margin-top:6px';
+  b.onclick = () => window.open('erp-edit.html?job=' + encodeURIComponent(job), '_blank');
+  wrap.appendChild(b);
   return wrap;
 }
 

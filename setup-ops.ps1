@@ -508,8 +508,33 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_docevt_doc' AND object_i
   CREATE INDEX IX_docevt_doc ON dbo.doc_event_log(doc_id, occurred_at);
 "@
 
-Write-Host "Operational database [$opsDb] ready (15 tables + indexes):" -ForegroundColor Green
+# --- D.5 erp_edit_log — append-only audit of staff ERP master-code corrections pushed via /booking/update.
+#     Keyed by job_no (these are NOT drafts, so no doc_id). changed_json records before->after per field so a
+#     report can show exactly what an operator corrected and when. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.erp_edit_log') IS NULL
+CREATE TABLE dbo.erp_edit_log (
+  id           bigint IDENTITY(1,1) PRIMARY KEY,
+  job_no       nvarchar(60) NOT NULL,
+  erp_ref      nvarchar(40) NULL,
+  station      nvarchar(10) NULL,
+  mode         nvarchar(4)  NULL,        -- Sea|Air
+  bound        nvarchar(10) NULL,
+  actor        nvarchar(80) NULL,        -- staff username
+  ip           nvarchar(45) NULL,
+  changed_json nvarchar(max) NULL,       -- JSON: [{field, writeKey, before, after}]
+  erp_status   nvarchar(20) NULL,        -- saved|rejected|error|mock
+  erp_steps    nvarchar(max) NULL,       -- JSON array of step strings
+  erp_error    nvarchar(max) NULL,
+  occurred_at  datetime2    NOT NULL
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_erpedit_job' AND object_id=OBJECT_ID('dbo.erp_edit_log'))
+  CREATE INDEX IX_erpedit_job ON dbo.erp_edit_log(job_no, occurred_at);
+"@
+
+Write-Host "Operational database [$opsDb] ready (16 tables + indexes):" -ForegroundColor Green
 Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
 Write-Host "  milestone_event_log, company_dim, port_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
 Write-Host "  doc_draft, doc_version, doc_review_token, doc_event_log, doc_attachment (draft document review)" -ForegroundColor Green
+Write-Host "  erp_edit_log (ERP master-code corrections audit)" -ForegroundColor Green
 Write-Host "Next: map the alias/evidence fields to real ERP columns, then run listener-engine.ps1 -Mode Sea on the pilot station." -ForegroundColor Cyan

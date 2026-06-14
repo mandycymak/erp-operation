@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Correct ERP data</title>
+<style>
+  :root{ --bg:#f4f5f7; --card:#fff; --fg:#1c2330; --mut:#6b7280; --line:#e2e6ec; --accent:#2563eb; --chg:#fff7d6; --chgline:#e3b400; --bad:#b42318; --ok:#0f7b3f; }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0f141b; --card:#161d27; --fg:#e6eaf0; --mut:#9aa6b5; --line:#2a3340; --accent:#5b9bff; --chg:#3a3413; --chgline:#b89400; --bad:#ff6a5a; --ok:#4ed08a; }
+  }
+  *{ box-sizing:border-box }
+  body{ font:14px/1.45 -apple-system,Segoe UI,Roboto,Arial,sans-serif; margin:0; background:var(--bg); color:var(--fg) }
+  .wrap{ max-width:860px; margin:0 auto; padding:16px }
+  .bar{ display:flex; align-items:center; gap:10px; padding:6px 0 12px; flex-wrap:wrap }
+  .bar h1{ font-size:18px; margin:0 }
+  .sub{ color:var(--mut); font-size:13px }
+  .spacer{ flex:1 }
+  button{ font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; padding:6px 12px }
+  button.primary{ background:var(--accent); border-color:var(--accent); color:#fff }
+  button.ghost{ font-size:12px; padding:4px 9px }
+  button:disabled{ opacity:.55; cursor:default }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:12px }
+  .sect h2{ font-size:14px; margin:0 0 4px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut) }
+  .row{ display:flex; align-items:flex-start; gap:10px; padding:6px 0; border-top:1px solid var(--line) }
+  .row:first-of-type{ border-top:0 }
+  .row label{ flex:0 0 200px; padding-top:6px; color:var(--fg) }
+  .row .ctl{ flex:1; min-width:0 }
+  .row .tag{ font-size:11px; color:var(--mut); border:1px solid var(--line); border-radius:10px; padding:0 7px; margin-left:6px }
+  .row.internal label::after{ content:''; }
+  input[type=text], textarea, select{ width:100%; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px }
+  textarea{ min-height:54px; resize:vertical }
+  .codewrap{ display:flex; gap:6px; align-items:center }
+  .codewrap input{ flex:1 }
+  .hint{ font-size:12px; color:var(--mut); margin-top:3px; min-height:14px }
+  .row.changed input, .row.changed textarea{ background:var(--chg); border-color:var(--chgline) }
+  .lookup{ position:relative }
+  .lookbox{ position:absolute; z-index:30; left:0; right:0; background:var(--card); border:1px solid var(--line); border-radius:6px; margin-top:3px; max-height:240px; overflow:auto; box-shadow:0 6px 20px rgba(0,0,0,.18) }
+  .lookbox .li{ padding:6px 9px; cursor:pointer; border-top:1px solid var(--line); font-size:13px }
+  .lookbox .li:first-child{ border-top:0 }
+  .lookbox .li:hover{ background:var(--bg) }
+  .lookbox .li b{ font-family:ui-monospace,Consolas,monospace }
+  .addfield{ margin-top:8px }
+  .addfield select{ width:auto; min-width:220px }
+  table.ctab{ width:100%; border-collapse:collapse; font-size:13px }
+  table.ctab th{ text-align:left; color:var(--mut); font-weight:600; padding:4px 6px; border-bottom:1px solid var(--line) }
+  table.ctab td{ padding:3px 6px; border-bottom:1px solid var(--line) }
+  table.ctab input{ padding:4px 6px }
+  #msg .err{ background:rgba(180,35,24,.12); border:1px solid var(--bad); color:var(--bad); border-radius:6px; padding:8px 10px; margin-bottom:10px }
+  #msg .ok{ background:rgba(15,123,63,.12); border:1px solid var(--ok); color:var(--ok); border-radius:6px; padding:8px 10px; margin-bottom:10px }
+  .steps{ font-size:12px; color:var(--mut); margin-top:6px; white-space:pre-wrap }
+  .note{ font-size:12px; color:var(--mut) }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <h1>Correct ERP data</h1>
+    <span class="badge sub" id="status"></span>
+    <span class="spacer"></span>
+    <button id="saveBtn" class="primary">Save changes to ERP</button>
+    <button onclick="window.close()">Close</button>
+  </div>
+  <div class="sub" id="sub"></div>
+  <p class="note">Staff-internal correction tool. Pick the correct master code or type a correction; only the
+    fields you change are sent to the ERP. Liner agent and controlling customer are <b>internal</b> (for
+    reporting) and are not shown on the customer's bill.</p>
+  <div id="msg"></div>
+  <div id="sections"><div class="card">Loading shipment from the ERP...</div></div>
+</div>
+<script src="/erp-edit.js"></script>
+</body>
+</html>

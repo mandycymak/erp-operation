@@ -391,3 +391,84 @@ function Invoke-ErpDocIssue($head,$fields,$sa,$by,$attachment,$riderAtts){
   }
   @{ ok=$true; docNo="$houseNo"; mock=$false; steps=$steps }
 }
+
+# ============================================================================================================
+# ERP MASTER-CODE CORRECTION (staff-internal; no customer loop). Build a MINIMAL /booking/update payload that
+# carries the booking identity keys + ONLY the fields the operator changed (mapped by each dict field's
+# writeKey), so a wrong DUMMY/ZZZ master code is corrected at source without retyping the whole booking and
+# without a large JSON body. Party-prefixed writeKeys (shipper/consignee/notify/agentParty*) nest inside
+# bookingParty (matching the agree flow's Name/Address nesting); everything else is top-level. A kind:'table'
+# field (containers) rebuilds the bookingContainers array exactly like Build-ErpBookingPayload. Carrier/vessel/
+# voyage and dates are never editable here (master rejects them / demoerp date-reject ticket).
+# ============================================================================================================
+function RowV($r,$k){
+  # rows may be a Hashtable / [ordered] OrderedDictionary (server-built) OR a PSCustomObject (JSON-parsed)
+  if($r -is [System.Collections.IDictionary]){ if($r.Contains($k)){ return "$($r[$k])" } return '' }
+  if($r -and $r.PSObject.Properties[$k]){ return "$($r.$k)" }
+  ''
+}
+# $changed: ordered hashtable code -> cleaned value (ONLY the changed fields).  $defs: the SEA|AIR dict array.
+# $ident: @{ bookingNo; module ('SEA'|'AIR'); bound ('Import'|'Export') }.  Returns @{ payload; sent=@({field,writeKey,value}) }.
+function Build-ErpPatchPayload($changed,$defs,$ident,$map){
+  $p=[ordered]@{
+    partyGroupCode="$($map.partyGroupCode)".Trim()
+    bookingNo="$($ident.bookingNo)".Trim()
+    moduleTypeCode="$($ident.module)"
+    boundTypeCode=$(if("$($ident.bound)" -eq 'Import'){'I'}else{'O'})
+  }
+  $defByCode=@{}; foreach($d in @($defs)){ $defByCode["$($d.code)"]=$d }
+  $party=[ordered]@{}; $sent=@()
+  foreach($code in @($changed.Keys)){
+    $d=$defByCode["$code"]; if(-not $d){ continue }
+    $wk="$($d.writeKey)".Trim(); if(-not $wk){ continue }   # read-only field (no write key) - never pushed
+    $val=$changed[$code]
+    if("$($d.kind)" -eq 'table'){
+      $bc=@()
+      foreach($r in @($val)){
+        if($null -eq $r -or $r -is [string]){ continue }
+        $cno=(RowV $r 'container_no').Trim(); if(-not $cno){ continue }
+        $item=[ordered]@{ containerNo=$cno }
+        $sl=(RowV $r 'seal_no').Trim();   if($sl){ $item['sealNo']=$sl }
+        $tp=(RowV $r 'cont_type').Trim(); if($tp){ $item['containerTypeCode']=$tp }
+        $q=0; if([int]::TryParse((RowV $r 'qty').Trim(),[ref]$q) -and $q -gt 0){ $item['quantity']=$q }
+        $bc+=,$item
+      }
+      $p[$wk]=@($bc)
+      $sent+=,@{ field=$code; writeKey=$wk; value="$(@($bc).Count) container row(s)" }
+      continue
+    }
+    $sv="$val"
+    # any bookingParty member write key contains 'Party' (shipperParty*/consigneeParty*/notifyPartyParty*/
+    # agentParty*/linerAgentParty*/controllingCustomerParty* per the spec); top-level keys never do.
+    if($wk -match 'Party'){ $party[$wk]=$sv } else { $p[$wk]=$sv }
+    $sent+=,@{ field=$code; writeKey=$wk; value=$sv }
+  }
+  if($party.Count){ $p['bookingParty']=$party }
+  @{ payload=$p; sent=@($sent) }
+}
+# Push the prebuilt patch payload. Same read-merge-write existence guard as the agree flow: /booking/get first,
+# abort if the booking is absent so /booking/update can never CREATE a duplicate. Honors bookingUpdateMode
+# (best-effort logs an ERP rejection and reports rejected=$true; strict reports error). Returns
+# @{ ok; mock; rejected?; steps; error? }.
+function Invoke-ErpEditPush($payload,$bookingNo,$module,$by){
+  $api=$cfg.erpApi; $map=Get-ErpApiMap; $mock=ErpMockMode $api
+  if($mock){
+    try{
+      ErpMockWrite "erp-edit-$("$bookingNo" -replace '[^A-Za-z0-9_-]','_')-$((Get-Date).ToString('yyyyMMddHHmmss')).json" ([ordered]@{ at=(Get-Date).ToString('o'); editedBy="$by"; booking=$payload })
+      return @{ ok=$true; mock=$true; steps=@('booking/update (mock)') }
+    }catch{ return @{ ok=$false; mock=$true; steps=@(); error="mock edit failed: $($_.Exception.Message)" } }
+  }
+  $cur=Invoke-ErpBookingGet $api $map "$bookingNo" "$module"
+  if(-not $cur){ return @{ ok=$false; mock=$false; steps=@(); error="booking '$bookingNo' ($module) not found via /booking/get - aborting so the update cannot create a new booking. Check partyGroupCode/forwarderCode in erp-api-map.json and the booking number." } }
+  $bestEffort=("$($map.bookingUpdateMode)".Trim().ToLower() -eq 'best-effort')
+  $steps=@('booking/get ok (exists)')
+  try{
+    [void](Invoke-ErpCall $api '/booking/update' $payload)
+    $steps+='booking/update ok'
+    @{ ok=$true; mock=$false; steps=$steps }
+  }catch{
+    $msg=ErpErr $_.Exception
+    if($bestEffort){ $steps+="booking/update REJECTED by ERP validation (best-effort): $msg"; @{ ok=$true; mock=$false; steps=$steps; rejected=$true } }
+    else { @{ ok=$false; mock=$false; steps=$steps; error="booking/update failed: $msg" } }
+  }
+}

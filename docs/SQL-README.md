@@ -81,6 +81,42 @@ goes to the source. Single-server configs omit them and are unchanged.
 > `ISSUED → AMEND_DRAFT → … → ISSUED`. The My-Tasks inbox surfaces `CUSTOMER_SUBMITTED` / `CUSTOMER_APPROVED`
 > (self-clearing once the operator acts).
 
+### ERP data correction (master-code editor)
+
+Staff-internal editor (`erp-edit.html` / `erp-edit.js`, drawer panel "Correct ERP data") to fix wrong source
+data — a `DUMMY` party code, a `ZZZ` incoterm/port code, wrong container booking qty — and push **only the
+changed fields** to Swivel `/booking/update`. Dictionary `erp-edit-fields.json`; endpoints
+`/api-ops/erp-edit` (seed current value + resolved master name), `/api-ops/erp-master` (live master type-ahead),
+`/api-ops/erp-edit-save` (diff → minimal `/booking/update` → audit). Payload built by `Build-ErpPatchPayload`
+(party-prefixed write keys nest in `bookingParty`; container table → `bookingContainers`), pushed by
+`Invoke-ErpEditPush` (same read-merge-write existence guard + best-effort/strict as the agree flow).
+
+| Table | Grain | Purpose |
+|---|---|---|
+| `erp_edit_log` | append-only, keyed by `job_no` | audit of every correction: `actor`, `ip`, `changed_json` = `[{field, writeKey, before, after}]`, `erp_status` (saved/rejected/error/mock), `erp_steps`, `erp_error`. |
+
+**Field map verified on live `fm3khkg` (2026-06-13).** read column → master lookup → `/booking/update` write key:
+
+| Field | Read (`blhead`/`awbhead`) | Master lookup | Write key |
+|---|---|---|---|
+| Shipper / consignee / notify code | `shpr_code` / `cgne_code` / `not1_code` (n8) | `custsub.code2 → doc_e_name` | `shipperPartyCode` / `consigneePartyCode` / `notifyPartyPartyCode` |
+| Delivery agent code (on HBL/HAWB) | `agn2_code` | `custsub` | `agentPartyCode` |
+| Liner agent code (space booking, internal) | `iliner` (Sea) / `lin1_code` (Air) | `linermstr.code → name` | `linerAgentPartyCode` |
+| Controlling customer code (internal) | `rcustomer` | `custsub` | `controllingCustomerPartyCode` |
+| Party name / address / phone / tax | `*_name` / `*_add1..5` / `sphone`·`cphone`·`nphone`·`aphone` / `*_txncode` | — | `…PartyName` / `…PartyAddress` / `…PartyContactPhone` / `…PartyTaxCode` |
+| Incoterm | `routing` (free text, e.g. `FOB`) | **none** — fixed Incoterms-2020 list | `incoTermsCode` |
+| POL / POD code | `pol` / `pod` (n5) | `portmstr.code → port_ldes1` | `portOfLoadingCode` / `portOfDischargeCode` |
+| Service type | `service` | `servmstr.service → desc1` | `serviceCode` |
+| Containers (Sea) | `blcont` (`container`,`cont_type`,`seal`,`load_qty`; link `blh = blhead.ref`) | — | `bookingContainers[]` (`containerNo`,`containerTypeCode`,`sealNo`,`quantity`) |
+
+> All write keys **verified 2026-06-14 against the Swivel OpenAPI spec** (`NewBooking.bookingParty` + top-level);
+> each is tunable in `erp-edit-fields.json` (`writeKey`) with no code change. A correction is only sent when the
+> operator actually edits that field; `bookingUpdateMode: best-effort` records any rejection. Carrier/vessel/
+> voyage and dates exist in the schema but are deliberately **not** editable here (master rejects them; demoerp
+> date-reject ticket open). The container item also carries `soNo` (the liner SO) — available for a later round.
+> All four `custsub`/`portmstr`/`servmstr`/`linermstr` masters exist in **both** the station DB (`fm3k<code>`)
+> and corporate `fm3kco`; the editor reads the **station** DB.
+
 ---
 
 ## 3. ERP source field map — Sea (`blhead` + `blcont` + `blitem`)

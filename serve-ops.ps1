@@ -695,6 +695,198 @@ function Handle-ErpFileDownload($cn,$ctx,$qs){
   Send-Blob $ctx ([byte[]]$r.bytes) $ct $name
   $true
 }
+
+# ============================================================================================================
+# ERP DATA CORRECTION (staff-internal). Show a shipment's current ERP master codes + values, let the operator
+# pick the correct code from the live master (custsub/linermstr/portmstr/servmstr) or type a correction, and
+# push ONLY the changed fields to /booking/update. Every save is audited in erp_edit_log (before->after).
+# Reads use the same bounded pattern as Handle-ErpDetail (Connect Timeout=5 / CommandTimeout=8 / Packet=512).
+# The dictionary (erp-edit-fields.json) maps each field to its ERP read column + master lookup + write key.
+# ============================================================================================================
+$ErpEditFieldsPath=Join-Path $Root "erp-edit-fields.json"
+function ErpEdit-FieldDefs($mode){
+  if(-not $script:ErpEditDict){
+    $j=[IO.File]::ReadAllText($ErpEditFieldsPath)|ConvertFrom-Json
+    $script:ErpEditDict=@{ SEA=@($j.SEA); AIR=@($j.AIR) }
+  }
+  @($script:ErpEditDict[$mode])
+}
+# Incoterms 2020 - the fixed master for the incoterm lookup (there is NO incoterm table in the ERP; the code
+# lives free-text in blhead/awbhead.routing). Served by /api-ops/erp-master?kind=incoterm.
+$script:IncotermList=@(
+  @{ code='EXW'; name='Ex Works' }, @{ code='FCA'; name='Free Carrier' }, @{ code='FAS'; name='Free Alongside Ship' },
+  @{ code='FOB'; name='Free On Board' }, @{ code='CFR'; name='Cost and Freight' }, @{ code='CIF'; name='Cost, Insurance and Freight' },
+  @{ code='CPT'; name='Carriage Paid To' }, @{ code='CIP'; name='Carriage and Insurance Paid To' }, @{ code='DAP'; name='Delivered At Place' },
+  @{ code='DPU'; name='Delivered At Place Unloaded' }, @{ code='DDP'; name='Delivered Duty Paid' }
+)
+# Clean + clamp incoming corrections against the erp-edit dictionary (mirror of Doc-CleanFields, different dict).
+function ErpEdit-CleanFields($mode,$src){
+  $o=[ordered]@{}
+  foreach($f in (ErpEdit-FieldDefs $mode)){
+    $c="$($f.code)"; $raw=$null
+    if($src -is [hashtable]){ if($src.ContainsKey($c)){ $raw=$src[$c] } }
+    elseif($src -and $src.PSObject.Properties[$c]){ $raw=$src.$c }
+    if("$($f.kind)" -eq 'table'){
+      $maxR=50; [void][int]::TryParse("$($f.maxRows)",[ref]$maxR); if($maxR -lt 1){ $maxR=50 }
+      $rows=@()
+      foreach($r in @($raw)){
+        if($null -eq $r -or $r -is [string]){ continue }
+        $row=[ordered]@{}
+        foreach($col in @($f.columns)){
+          $cc="$($col.code)"; $cv=$null
+          if($r -is [hashtable]){ if($r.ContainsKey($cc)){ $cv=$r[$cc] } }
+          elseif($r.PSObject.Properties[$cc]){ $cv=$r.$cc }
+          $row[$cc]=Doc-CleanStr $cv $col.maxlen
+        }
+        $blank=$true; foreach($k in $row.Keys){ if("$($row[$k])".Trim()){ $blank=$false; break } }
+        if(-not $blank){ $rows+=,$row }
+        if($rows.Count -ge $maxR){ break }
+      }
+      $o[$c]=@($rows)
+    } else {
+      $o[$c]=Doc-CleanStr $raw $f.maxlen
+    }
+  }
+  [pscustomobject]$o
+}
+# Single keyed master-name lookup for a code (used to label the current code in the seed).
+function ErpMaster-Name($srcCn,$db,$kind,$code){
+  $code="$code".Trim(); if(-not $code){ return '' }
+  try{
+    switch($kind){
+      'custsub' { $r=@(RunQ $srcCn "SELECT TOP 1 doc_e_name,mal_e_name FROM dbo.custsub WHERE code2=@c AND ISNULL(isdel,0)=0" @{ c=$code } 8); if($r.Count){ $n="$($r[0].doc_e_name)".Trim(); if(-not $n){ $n="$($r[0].mal_e_name)".Trim() }; return $n } }
+      'liner'   { $r=@(RunQ $srcCn "SELECT TOP 1 name FROM dbo.linermstr WHERE code=@c" @{ c=$code } 8); if($r.Count){ return "$($r[0].name)".Trim() } }
+      'port'    { $r=@(RunQ $srcCn "SELECT TOP 1 port_ldes1 FROM dbo.portmstr WHERE code=@c" @{ c=$code } 8); if($r.Count){ return "$($r[0].port_ldes1)".Trim() } }
+      'service' { $r=@(RunQ $srcCn "SELECT TOP 1 desc1 FROM dbo.servmstr WHERE service=@c" @{ c=$code } 8); if($r.Count){ return "$($r[0].desc1)".Trim() } }
+    }
+  }catch{}
+  ''
+}
+# Seed the editor: current ERP value + resolved master name for every dict field on this shipment.
+function Handle-ErpEditSeed($cn,$qs){
+  $job="$($qs['job'])".Trim(); if(-not $job){ return @{error='job required'} }
+  $al=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound,erp_ref,sono FROM dbo.shipment_alerts WHERE job_no=@j" @{ j=$job })
+  if(-not $al.Count){ return @{error='not found'} }
+  if(-not (Test-JobScope $al[0])){ return @{error='not found'} }
+  $a=$al[0]; $isAir=("$($a.mode)" -eq 'Air'); $modeKey= if($isAir){'AIR'}else{'SEA'}
+  $db=$DbByStation["$($a.station)".Trim().ToUpper()]
+  if(-not $db){ return @{error="station '$($a.station)' has no ERP database mapped in config stations[]"} }
+  $defs=ErpEdit-FieldDefs $modeKey
+  # column set to read from the header table (skip the container table; expand a 'base..5' address into 5 cols)
+  $cols=@('ref')
+  foreach($d in $defs){
+    if("$($d.kind)" -eq 'table'){ continue }
+    $rf="$($d.readFrom)".Trim(); if(-not $rf){ continue }
+    if($rf -match '^(.+?)(\d+)\.\.(\d+)$'){ $pre=$Matches[1]; ([int]$Matches[2])..([int]$Matches[3]) | ForEach-Object { $cols+=($pre+"$_") } }
+    else { $cols+=$rf }
+  }
+  $cols=@($cols | Select-Object -Unique)
+  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=5;Packet Size=512"
+  try{
+    $srcCn.Open()
+    $tbl= if($isAir){'awbhead'}else{'blhead'}
+    $key="$($a.erp_ref)".Trim()
+    $csv=($cols -join ',')
+    if($key){ $hdr=@(RunQ $srcCn "SELECT TOP 1 $csv FROM dbo.$tbl WHERE ref=@k" @{ k=$key } 8) }
+    else { $hdr=@(RunQ $srcCn "SELECT TOP 1 $csv FROM dbo.$tbl WHERE jobn=@k ORDER BY ref DESC" @{ k=$job } 8) }
+    if(-not $hdr.Count){ return @{error="shipment not found in the ERP [$db.$tbl $(if($key){"ref=$key"}else{"jobn=$job"})]"} }
+    $b=$hdr[0]
+    $fields=[ordered]@{}; $resolved=[ordered]@{}
+    foreach($d in $defs){
+      $code="$($d.code)"
+      if("$($d.kind)" -eq 'table'){
+        $crows=@(); try{ $crows=@(RunQ $srcCn "SELECT container,cont_type,seal,load_qty FROM dbo.blcont WHERE blh=@r ORDER BY ref" @{ r=$b.ref } 8) }catch{}
+        $clist=@(); foreach($cr in $crows){ $clist+=,[ordered]@{ container_no="$($cr.container)".Trim(); cont_type="$($cr.cont_type)".Trim(); seal_no="$($cr.seal)".Trim(); qty=$(if($null -ne $cr.load_qty){ "$($cr.load_qty)".Trim() }else{ '' }) } }
+        $fields[$code]=@($clist)
+        continue
+      }
+      $rf="$($d.readFrom)".Trim()
+      if($rf -match '^(.+?)(\d+)\.\.(\d+)$'){
+        $pre=$Matches[1]; $s=[int]$Matches[2]; $e=[int]$Matches[3]
+        $parts=@(); $s..$e | ForEach-Object { $v="$($b.($pre+"$_"))".Trim(); if($v -and ($parts -notcontains $v)){ $parts+=$v } }
+        $fields[$code]=($parts -join "`n")
+      } else {
+        $fields[$code]="$($b.$rf)".Trim()
+      }
+      if("$($d.kind)" -eq 'code'){
+        $lk="$($d.lookup)".Trim(); $cv="$($fields[$code])".Trim()
+        if($cv -and $lk -ne 'incoterm'){ $nm=ErpMaster-Name $srcCn $db $lk $cv; if($nm){ $resolved[$code]=$nm } }
+      }
+    }
+    @{ jobNo=$job; mode="$($a.mode)"; bound="$($a.bound)"; dict=@($defs); fields=$fields; resolved=$resolved }
+  } catch {
+    @{ error="ERP lookup failed: $($_.Exception.Message)" }
+  } finally { try{ $srcCn.Close() }catch{} }
+}
+# Master type-ahead so the operator can find the CORRECT code. Bounded live LIKE seek (TOP 20, 8s). incoterm
+# returns the fixed Incoterms list (no DB). custsub/liner/port/service read the station's master.
+function Handle-ErpMasterSearch($cn,$qs){
+  $job="$($qs['job'])".Trim(); $kind="$($qs['kind'])".Trim().ToLower(); $q="$($qs['q'])".Trim()
+  if(-not $job){ return @{error='job required'} }
+  $al=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound FROM dbo.shipment_alerts WHERE job_no=@j" @{ j=$job })
+  if(-not $al.Count){ return @{error='not found'} }
+  if(-not (Test-JobScope $al[0])){ return @{error='not found'} }
+  $a=$al[0]; $isAir=("$($a.mode)" -eq 'Air')
+  if($kind -eq 'incoterm'){
+    $ql=$q.ToLower()
+    $res=@($script:IncotermList | Where-Object { -not $ql -or "$($_.code)".ToLower().Contains($ql) -or "$($_.name)".ToLower().Contains($ql) } | ForEach-Object { [pscustomobject]@{ code=$_.code; name=$_.name } })
+    return @{ kind='incoterm'; results=@($res) }
+  }
+  $db=$DbByStation["$($a.station)".Trim().ToUpper()]
+  if(-not $db){ return @{error="station '$($a.station)' has no ERP database mapped"} }
+  $like='%'+($q -replace '[%_\[\]]','')+'%'   # strip LIKE metachars (still parameterized) so it's a plain contains-search
+  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=5;Packet Size=512"
+  try{
+    $srcCn.Open()
+    $rows=@()
+    switch($kind){
+      'custsub' { $rows=@(RunQ $srcCn "SELECT TOP 20 code2 code, doc_e_name name FROM dbo.custsub WHERE ISNULL(isdel,0)=0 AND NULLIF(code2,'') IS NOT NULL AND (code2 LIKE @q OR doc_e_name LIKE @q) ORDER BY code2" @{ q=$like } 8) }
+      'liner'   { $rows=@(RunQ $srcCn "SELECT TOP 20 code, name FROM dbo.linermstr WHERE NULLIF(code,'') IS NOT NULL AND (code LIKE @q OR name LIKE @q) ORDER BY code" @{ q=$like } 8) }
+      'port'    { $mod= if($isAir){'AIR'}else{'SEA'}; $rows=@(RunQ $srcCn "SELECT TOP 20 code, port_ldes1 name FROM dbo.portmstr WHERE NULLIF(code,'') IS NOT NULL AND (NULLIF(module,'') IS NULL OR module=@m) AND (code LIKE @q OR port_ldes1 LIKE @q) ORDER BY code" @{ q=$like; m=$mod } 8) }
+      'service' { $rows=@(RunQ $srcCn "SELECT TOP 20 service code, desc1 name FROM dbo.servmstr WHERE NULLIF(service,'') IS NOT NULL AND (service LIKE @q OR desc1 LIKE @q) ORDER BY service" @{ q=$like } 8) }
+      default   { return @{error="unknown lookup kind '$kind'"} }
+    }
+    @{ kind=$kind; results=@($rows | ForEach-Object { [pscustomobject]@{ code="$($_.code)".Trim(); name="$($_.name)".Trim() } }) }
+  } catch {
+    @{ error="master lookup failed: $($_.Exception.Message)" }
+  } finally { try{ $srcCn.Close() }catch{} }
+}
+# Save: diff the corrected fields against the live ERP values, push ONLY the changed ones via /booking/update,
+# and audit before->after in erp_edit_log. Client sends the FULL field set (seed overlaid with edits) so a
+# field the operator never touched is never seen as cleared.
+function Save-ErpEdit($cn,$ctx,$me){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.job_no){ return @{error='invalid payload'} }
+  $job="$($j.job_no)".Trim()
+  $al=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound,erp_ref,sono FROM dbo.shipment_alerts WHERE job_no=@j" @{ j=$job })
+  if(-not $al.Count){ return @{error='not found'} }
+  if(-not (Test-JobScope $al[0])){ return @{error='not found'} }
+  $a=$al[0]; $isAir=("$($a.mode)" -eq 'Air'); $modeKey= if($isAir){'AIR'}else{'SEA'}
+  $defs=ErpEdit-FieldDefs $modeKey
+  # authoritative 'before' = re-read the live ERP values right now (never trust a client-sent baseline)
+  $seed=Handle-ErpEditSeed $cn @{ job=$job }
+  if($seed.error){ return @{ error="$($seed.error)" } }
+  $current=$seed.fields
+  $clean=ErpEdit-CleanFields $modeKey $j.fields
+  $curJson=($current|ConvertTo-Json -Depth 6 -Compress)
+  $changedCodes=@(Doc-Changed $curJson $clean)
+  if(-not $changedCodes.Count){ return @{error='no changes to save'} }
+  $defByCode=@{}; foreach($d in $defs){ $defByCode["$($d.code)"]=$d }
+  # block a change to a read-only field (no writeKey) up front, with a clear message
+  $blocked=@($changedCodes | Where-Object { -not "$($defByCode[$_].writeKey)".Trim() })
+  if($blocked.Count){ return @{ error="these fields cannot be written to the ERP (no write key): $($blocked -join ', ')" } }
+  $changed=[ordered]@{}; foreach($c in $changedCodes){ $changed[$c]=$clean.$c }
+  $bookingNo= if("$($a.sono)".Trim()){ "$($a.sono)".Trim() }else{ $job }
+  $ident=@{ bookingNo=$bookingNo; module=$modeKey; bound="$($a.bound)" }
+  $built=Build-ErpPatchPayload $changed $defs $ident (Get-ErpApiMap)
+  $erp=Invoke-ErpEditPush $built.payload $bookingNo $modeKey $me
+  $changeRecs=@(); foreach($c in $changedCodes){ $changeRecs+=,@{ field=$c; writeKey="$($defByCode[$c].writeKey)"; before=(Doc-ValStr $current[$c]); after=(Doc-ValStr $clean.$c) } }
+  $status= if($erp.mock){'mock'} elseif($erp.error){'error'} elseif($erp.rejected){'rejected'} else {'saved'}
+  $ip="$($ctx.Request.RemoteEndPoint.Address)"
+  RunQ $cn "INSERT INTO dbo.erp_edit_log(job_no,erp_ref,station,mode,bound,actor,ip,changed_json,erp_status,erp_steps,erp_error,occurred_at) VALUES(@j,@r,@s,@m,@b,@a,@ip,@cj,@st,@stp,@err,SYSDATETIME())" @{ j=$job; r="$($a.erp_ref)"; s="$($a.station)"; m="$($a.mode)"; b="$($a.bound)"; a=$me; ip=$ip; cj=(@($changeRecs)|ConvertTo-Json -Depth 5 -Compress); st=$status; stp=(@($erp.steps)|ConvertTo-Json -Compress); err="$($erp.error)" } | Out-Null
+  Audit $me "erp-edit $job [$($changedCodes -join ',')] -> erp:$status$(if($erp.error){' ERR '+$erp.error})"
+  @{ ok=$true; changed=@($changedCodes); sent=@($built.sent); status=$status; erp=@{ ok=[bool]$erp.ok; mock=[bool]$erp.mock; rejected=[bool]$erp.rejected; steps=@($erp.steps); error="$($erp.error)" } }
+}
 # Manual Tick & Confirm on a milestone: overlay bypass/reopen onto the stored checklist, recompute the rollup,
 # persist, and drop a note (so it threads + can @-mention). Pure JSON — no ERP touched.
 function Save-MilestoneClose($cn,$ctx,$me){
@@ -1720,6 +1912,9 @@ while($listener.IsListening){
                 "/api-ops/erp-detail"      { Send-Json $ctx (Handle-ErpDetail $cn $qs) }
                 "/api-ops/erp-files"       { Send-Json $ctx (Handle-ErpFiles $cn $qs) }
                 "/api-ops/erp-file-download" { if(-not (Handle-ErpFileDownload $cn $ctx $qs)){ Send-Json $ctx @{ error='file not available' } 404 } }
+                "/api-ops/erp-edit"        { Send-Json $ctx (Handle-ErpEditSeed $cn $qs) }
+                "/api-ops/erp-master"      { Send-Json $ctx (Handle-ErpMasterSearch $cn $qs) }
+                "/api-ops/erp-edit-save"   { Send-Json $ctx (Save-ErpEdit $cn $ctx $me) }
                 "/api-ops/inbound"         { Send-Json $ctx (Handle-Inbound $cn $qs) }
                 "/api-ops/inbound-assign"  { Send-Json $ctx (Save-InboundAssign $cn $ctx $me) }
                 "/api-ops/my-tasks"        { Send-Json $ctx (Handle-MyTasks $cn $me) }

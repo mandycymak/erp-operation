@@ -1,0 +1,72 @@
+{
+  "_comment": "ERP master-code correction editor dictionary. Mirrors doc-fields.json's shape. One entry per correctable field, grouped by 'section'. The server (Handle-ErpEditSeed) reads each field's current value from the ERP column named in 'readFrom' (suffix '..5' = join add1..add5 into one block); for a 'code' field it also resolves the code's current master NAME (custsub/linermstr/portmstr/servmstr) and returns it in the seed 'resolved' map so the editor can show 'code -> name'. On save, ONLY changed fields are pushed to Swivel /booking/update, mapped by 'writeKey'. A field with no 'writeKey' is read-only.",
+  "_fieldmap_verified": "2026-06-13 on live fm3khkg (HKG pilot): party codes shpr_code/cgne_code/not1_code/agn2_code(delivery agent)/rcustomer(controlling cust)/iliner(liner) are nvarchar(8/10); incoterm = blhead.routing & awbhead.routing (free text, e.g. FOB) with NO master table (incoterm lookup is the fixed Incoterms-2020 list, served by /api-ops/erp-master?kind=incoterm); service = blhead.service/awbhead.service -> servmstr.service/desc1; pol/pod -> portmstr.code/port_ldes1; custsub key = code2 -> doc_e_name; linermstr key = code -> name. Per-party phone = sphone/cphone/nphone/aphone; per-party tax = *_txncode.",
+  "_writekeys_confirmed": "ALL write keys verified 2026-06-14 against the Swivel OpenAPI spec (3rd-erpapi.json), NewBooking.bookingParty + top-level. bookingParty keys: shipperPartyCode/Name/Address/ContactPhone/TaxCode, consigneePartyCode/Name/Address/ContactPhone/TaxCode, notifyPartyPartyCode/Name/Address (double 'Party' is the real key), agentPartyCode/Name/Address, linerAgentPartyCode, controllingCustomerPartyCode. Top-level: incoTermsCode, serviceCode, portOfLoadingCode, portOfDischargeCode, bookingContainers[] (containerNo/sealNo/containerTypeCode/quantity; the item also has soNo = liner SO, available for a future round). Carrier/vessel/voyage and dates exist in the schema but are deliberately not editable here.",
+
+  "SEA": [
+    { "section": "Parties & master codes", "code": "shipper_code", "label": "Shipper code", "kind": "code", "lookup": "custsub", "writeKey": "shipperPartyCode", "readFrom": "shpr_code", "show": "default", "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "shipper_name", "label": "Shipper name", "kind": "text", "writeKey": "shipperPartyName", "readFrom": "shpr_name", "show": "optional", "maxlen": 100 },
+    { "section": "Parties & master codes", "code": "shipper_address", "label": "Shipper address", "kind": "text", "multiline": true, "writeKey": "shipperPartyAddress", "readFrom": "shpr_add1..5", "show": "optional", "maxlen": 250 },
+    { "section": "Parties & master codes", "code": "shipper_phone", "label": "Shipper phone", "kind": "text", "writeKey": "shipperPartyContactPhone", "readFrom": "sphone", "show": "optional", "maxlen": 30 },
+    { "section": "Parties & master codes", "code": "shipper_tax", "label": "Shipper tax / reg no.", "kind": "text", "writeKey": "shipperPartyTaxCode", "readFrom": "shpr_txncode", "show": "optional", "maxlen": 50 },
+
+    { "section": "Parties & master codes", "code": "consignee_code", "label": "Consignee code", "kind": "code", "lookup": "custsub", "writeKey": "consigneePartyCode", "readFrom": "cgne_code", "show": "default", "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "consignee_name", "label": "Consignee name", "kind": "text", "writeKey": "consigneePartyName", "readFrom": "cgne_name", "show": "optional", "maxlen": 100 },
+    { "section": "Parties & master codes", "code": "consignee_address", "label": "Consignee address", "kind": "text", "multiline": true, "writeKey": "consigneePartyAddress", "readFrom": "cgne_add1..5", "show": "optional", "maxlen": 250 },
+    { "section": "Parties & master codes", "code": "consignee_phone", "label": "Consignee phone", "kind": "text", "writeKey": "consigneePartyContactPhone", "readFrom": "cphone", "show": "optional", "maxlen": 30 },
+    { "section": "Parties & master codes", "code": "consignee_tax", "label": "Consignee tax / reg no.", "kind": "text", "writeKey": "consigneePartyTaxCode", "readFrom": "cgne_txncode", "show": "optional", "maxlen": 50 },
+
+    { "section": "Parties & master codes", "code": "notify_code", "label": "Notify code", "kind": "code", "lookup": "custsub", "writeKey": "notifyPartyPartyCode", "readFrom": "not1_code", "show": "default", "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "notify_name", "label": "Notify name", "kind": "text", "writeKey": "notifyPartyPartyName", "readFrom": "not1_name", "show": "optional", "maxlen": 100 },
+    { "section": "Parties & master codes", "code": "notify_address", "label": "Notify address", "kind": "text", "multiline": true, "writeKey": "notifyPartyPartyAddress", "readFrom": "not1_add1..5", "show": "optional", "maxlen": 250 },
+
+    { "section": "Parties & master codes", "code": "agent_code", "label": "Delivery agent code (on HBL)", "kind": "code", "lookup": "custsub", "writeKey": "agentPartyCode", "readFrom": "agn2_code", "show": "default", "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "agent_name", "label": "Delivery agent name", "kind": "text", "writeKey": "agentPartyName", "readFrom": "agnt_name", "show": "optional", "maxlen": 100 },
+    { "section": "Parties & master codes", "code": "agent_address", "label": "Delivery agent address", "kind": "text", "multiline": true, "writeKey": "agentPartyAddress", "readFrom": "agnt_add1..5", "show": "optional", "maxlen": 250 },
+
+    { "section": "Parties & master codes", "code": "liner_code", "label": "Liner agent code (space booking)", "kind": "code", "lookup": "liner", "writeKey": "linerAgentPartyCode", "readFrom": "iliner", "show": "default", "internal": true, "maxlen": 10 },
+    { "section": "Parties & master codes", "code": "ctrl_code", "label": "Controlling customer code", "kind": "code", "lookup": "custsub", "writeKey": "controllingCustomerPartyCode", "readFrom": "rcustomer", "show": "default", "internal": true, "maxlen": 8 },
+
+    { "section": "Routing & trade-lane codes", "code": "incoterm", "label": "Incoterm", "kind": "code", "lookup": "incoterm", "writeKey": "incoTermsCode", "readFrom": "routing", "show": "default", "maxlen": 15 },
+    { "section": "Routing & trade-lane codes", "code": "pol_code", "label": "Port of loading", "kind": "code", "lookup": "port", "writeKey": "portOfLoadingCode", "readFrom": "pol", "show": "default", "maxlen": 5 },
+    { "section": "Routing & trade-lane codes", "code": "pod_code", "label": "Port of discharge", "kind": "code", "lookup": "port", "writeKey": "portOfDischargeCode", "readFrom": "pod", "show": "default", "maxlen": 5 },
+    { "section": "Routing & trade-lane codes", "code": "service_code", "label": "Service type", "kind": "code", "lookup": "service", "writeKey": "serviceCode", "readFrom": "service", "show": "default", "maxlen": 10 },
+
+    { "section": "Cargo & containers", "code": "containers", "kind": "table", "writeKey": "bookingContainers", "readFrom": "blcont", "maxRows": 50,
+      "columns": [
+        { "code": "container_no", "label": "Container no.", "maxlen": 20 },
+        { "code": "cont_type", "label": "Type", "maxlen": 6 },
+        { "code": "seal_no", "label": "Seal no.", "maxlen": 30 },
+        { "code": "qty", "label": "Qty", "maxlen": 6 }
+      ] }
+  ],
+
+  "AIR": [
+    { "section": "Parties & master codes", "code": "shipper_code", "label": "Shipper code", "kind": "code", "lookup": "custsub", "writeKey": "shipperPartyCode", "readFrom": "shpr_code", "show": "default", "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "shipper_name", "label": "Shipper name", "kind": "text", "writeKey": "shipperPartyName", "readFrom": "shpr_name", "show": "optional", "maxlen": 100 },
+    { "section": "Parties & master codes", "code": "shipper_address", "label": "Shipper address", "kind": "text", "multiline": true, "writeKey": "shipperPartyAddress", "readFrom": "shpr_add1..5", "show": "optional", "maxlen": 250 },
+    { "section": "Parties & master codes", "code": "shipper_phone", "label": "Shipper phone", "kind": "text", "writeKey": "shipperPartyContactPhone", "readFrom": "sphone", "show": "optional", "maxlen": 30 },
+    { "section": "Parties & master codes", "code": "shipper_tax", "label": "Shipper tax / reg no.", "kind": "text", "writeKey": "shipperPartyTaxCode", "readFrom": "shpr_txncode", "show": "optional", "maxlen": 50 },
+
+    { "section": "Parties & master codes", "code": "consignee_code", "label": "Consignee code", "kind": "code", "lookup": "custsub", "writeKey": "consigneePartyCode", "readFrom": "cgne_code", "show": "default", "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "consignee_name", "label": "Consignee name", "kind": "text", "writeKey": "consigneePartyName", "readFrom": "cgne_name", "show": "optional", "maxlen": 100 },
+    { "section": "Parties & master codes", "code": "consignee_address", "label": "Consignee address", "kind": "text", "multiline": true, "writeKey": "consigneePartyAddress", "readFrom": "cgne_add1..5", "show": "optional", "maxlen": 250 },
+    { "section": "Parties & master codes", "code": "consignee_phone", "label": "Consignee phone", "kind": "text", "writeKey": "consigneePartyContactPhone", "readFrom": "cphone", "show": "optional", "maxlen": 30 },
+    { "section": "Parties & master codes", "code": "consignee_tax", "label": "Consignee tax / reg no.", "kind": "text", "writeKey": "consigneePartyTaxCode", "readFrom": "cgne_txncode", "show": "optional", "maxlen": 50 },
+
+    { "section": "Parties & master codes", "code": "notify_code", "label": "Notify code", "kind": "code", "lookup": "custsub", "writeKey": "notifyPartyPartyCode", "readFrom": "not1_code", "show": "default", "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "notify_name", "label": "Notify name", "kind": "text", "writeKey": "notifyPartyPartyName", "readFrom": "not1_name", "show": "optional", "maxlen": 100 },
+    { "section": "Parties & master codes", "code": "notify_address", "label": "Notify address", "kind": "text", "multiline": true, "writeKey": "notifyPartyPartyAddress", "readFrom": "not1_add1..5", "show": "optional", "maxlen": 250 },
+
+    { "section": "Parties & master codes", "code": "agent_code", "label": "Delivery agent code (on HAWB)", "kind": "code", "lookup": "custsub", "writeKey": "agentPartyCode", "readFrom": "agn2_code", "show": "default", "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "agent_name", "label": "Delivery agent name", "kind": "text", "writeKey": "agentPartyName", "readFrom": "agnt_name", "show": "optional", "maxlen": 100 },
+
+    { "section": "Parties & master codes", "code": "liner_code", "label": "Airline / liner code (space booking)", "kind": "code", "lookup": "liner", "writeKey": "linerAgentPartyCode", "readFrom": "lin1_code", "show": "default", "internal": true, "maxlen": 8 },
+    { "section": "Parties & master codes", "code": "ctrl_code", "label": "Controlling customer code", "kind": "code", "lookup": "custsub", "writeKey": "controllingCustomerPartyCode", "readFrom": "rcustomer", "show": "default", "internal": true, "maxlen": 8 },
+
+    { "section": "Routing & trade-lane codes", "code": "incoterm", "label": "Incoterm", "kind": "code", "lookup": "incoterm", "writeKey": "incoTermsCode", "readFrom": "routing", "show": "default", "maxlen": 15 },
+    { "section": "Routing & trade-lane codes", "code": "pol_code", "label": "Airport of departure", "kind": "code", "lookup": "port", "writeKey": "portOfLoadingCode", "readFrom": "pol", "show": "default", "maxlen": 5 },
+    { "section": "Routing & trade-lane codes", "code": "pod_code", "label": "Airport of destination", "kind": "code", "lookup": "port", "writeKey": "portOfDischargeCode", "readFrom": "pod", "show": "default", "maxlen": 5 },
+    { "section": "Routing & trade-lane codes", "code": "service_code", "label": "Service type", "kind": "code", "lookup": "service", "writeKey": "serviceCode", "readFrom": "service", "show": "default", "maxlen": 7 }
+  ]
+}
