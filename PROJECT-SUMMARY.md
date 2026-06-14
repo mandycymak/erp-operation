@@ -17,7 +17,34 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-14 — staff-internal ERP data-correction editor: fix bad source data, push only changed fields to `/booking/update` — RESUME HERE).**
+**Latest session (2026-06-14b — Edit-ERP-data UX rename + pen shortcut + contact fields; Air IATA flight legs + corrected cargo cols; Sea blitem/blcont field map; VPN connect-timeout fix. Committed `4b43832` — RESUME HERE).**
+Operator-feedback round on the ERP data editor, every mapping reconciled against live `fm3khkg` SQL + the Swivel `3rd-erpapi.json`.
+- **Rename + UX.** "Correct ERP data" -> **"Edit ERP data"** everywhere ("correct" read as negative); dropped the description blurb;
+  added a **pen (edit) shortcut** at the end of the drawer's first row (ETD/ETA/ATD | auto/manual) that opens the editor; the
+  editor header now shows the **service in bold** (e.g. "Sea Import") instead of the static title. Removed the container
+  booking-stage note.
+- **Party contacts.** Added editable **Contact name + Contact email** for shipper & consignee
+  (`shipper/consigneePartyContactName/Email`), under phone/tax.
+- **Air (verified live on HAWB `HKGAE6060004` / job `HKG-A-R62885`).** Carrier from **`rout_by_1`** (`carr` is empty). New
+  compact **"Flights / IATA legs"** block tucked under **Job No.** (small font): `flight1/flight2/flight3` with discharges
+  `to1`(display-only, =pod)/`deli`/`to3` - legs 2-3 push via **`flexData`** (`2nd/3rdLegFlightNumber` +
+  `2nd/3rdLegPortOfDischargeCode`, verified in the spec); leg 1 = `voyageFlightNumber`. **Chargeable** weight
+  (`ttl_cwt` -> `chargeableWeight`) **replaces Wt unit**; **qty=`t_rece_qty`, gross=`ttl_gwt`, cbm=`t_rece_cbm`**; marks/desc
+  seeded from **`awbdetl.mark2`/`desc2`** (header `crmarking`/`wdesc` are empty). Standard **4-chip routing row restored**
+  (Place of Receipt | Port of Loading | Port of Discharge | Final Destination) - the simple route view most shipments use.
+- **Sea (verified live on sono `HK012606010` / ref 24625).** Carrier from **`iliner`**; **liner agent from `blcont.lagent`**
+  (party code on the container line) **resolved to a company name via `custsub`** (e.g. A0002 -> APL CO PTE LTD); Final
+  Destination **`dest` -> `deli` (Place of Delivery) fallback** when blank; **commodity=`blitem.commodity`** (no commodity
+  column in `blhead`), **container counts 20'/40'/HQ/Other = `blitem.c20`/`c40`/`cq`/`c45`**, marks=`blitem.mark2`(+`mark3`),
+  desc=`blitem.good_desc1` else `desc2`(+`desc3`); **Wt unit defaults to KGS** when blank. All line-level fields seeded
+  server-side from `blitem`/`blcont` (blh=ref, first line), mirroring the Air `awbdetl` pattern.
+- **Plumbing.** `Build-ErpPatchPayload` gains **`flexData` nesting** (writeKey `flexData.<sub>`); `Handle-ErpEditSeed` gains
+  the Air `awbdetl` + Sea `blitem`/`blcont` detail-line seeding. **VPN fix:** bumped the four source-ERP connections'
+  **`Connect Timeout` 5 -> 15s** - the VPN's SSL pre-login handshake runs ~4s and was intermittently timing out the
+  erp-edit seed / master-search / detail / doc-seed (`serve-ops.ps1`).
+- Files: `erp-edit-fields.json` `erp-edit.html` `erp-edit.js` `ops.js` `serve-ops.ps1` `erp-doc-api.ps1`. **Committed `4b43832`.**
+
+**Previous session (2026-06-14 — staff-internal ERP data-correction editor: fix bad source data, push only changed fields to `/booking/update`).**
 The app *read* ERP data and trusted it; operators routinely spot bad source data they cannot fix from the ERP UI
 (most importantly **`DUMMY` party codes** and **`ZZZ`/`ZZZZZ` incoterm/port codes** that silently corrupt reports,
 but also wrong addresses, dates, carrier, container counts). New **"Correct ERP data"** pop-out, opened from the
@@ -59,9 +86,9 @@ guard, best-effort/strict). Staff-internal — **no customer-approval loop** (un
   `erp_edit_log` table added idempotently to `setup-ops.ps1`. Verified end-to-end: seed SELECT validity (Sea+Air,
   no invalid columns), payload shape (party nesting, bool/number/date/bookingReference/container array, ETD+time
   fold), and the two-mode screenshots.
-- Committed: `f2a1bf2`/`74e3e17`/`9aadbe1` (the first three editor rounds). **Uncommitted:** the HBL-grid 2-column
-  redesign, the routing/cargo/marks/container-count/vessel/flight rounds, and the trucker-removal / picEmail / note
-  cleanup round (`erp-edit-fields.json` `erp-edit.html` `erp-edit.js` `serve-ops.ps1` `erp-doc-api.ps1`).
+- Committed: `f2a1bf2`/`74e3e17`/`9aadbe1` (the first three editor rounds); the HBL-grid 2-column redesign, the
+  routing/cargo/marks/container-count/vessel/flight rounds, and the trucker-removal / picEmail / note cleanup round
+  were committed in **`4b43832`** (alongside the 2026-06-14b work above).
 
 **Previous session (2026-06-13 — booking-stage identity fix + UI declutter/theme/mobile + draft speed/UX + ERP-files browse & download).**
 - **Early-booking identity fix (the `job_no` collapse).** The listener keyed `shipment_alerts` on the raw ERP

@@ -240,6 +240,7 @@ False — ICMP is filtered; ignore it.
 | Symptom | Cause / fix |
 |---|---|
 | "semaphore timeout" / "transport-level" | VPN dropped or `Packet Size=512` removed. Reconnect VPN (see [§9](#9-vpn-the-swivel-tunnel)); confirm the route to the SQL host wins over Surfshark. |
+| "ERP lookup failed: … pre-login handshake … wait operation timed out" (opening Edit ERP data / detail drawer) | The VPN's SSL handshake was slower than the connect timeout. The source-ERP `Connect Timeout` is **15 s** (raised from 5 s; the handshake runs ~4 s). If it still times out the **tunnel itself is slow/down** — check the VPN (see [§9](#9-vpn-the-swivel-tunnel)). |
 | `Test-NetConnection 192.168.5.2` fails | Surfshark route black-hole — run the `swivel-vpn -Fix`. |
 | `Invalid object name 'dbo.doc_draft'` | ops DB predates the draft-document feature — re-run `setup-ops.ps1`. |
 | Draft create is slow / comes back snapshot-only | This was the `awbhead` column-metadata stall — fixed (the seeder no longer probes metadata). If it recurs, confirm the VPN and that `Get-ErpCols` is the metadata-free version. |

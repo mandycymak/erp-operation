@@ -176,18 +176,50 @@ Confirm in the ERP backend that the **Transport Bill Confirm** event and the **B
 
 ---
 
-## 10. Day-to-day playbook (quick CTAs)
+## 10. Edit ERP data — fixing bad source data
+
+Operators routinely spot **wrong data in the ERP** they can't fix from the ERP UI — a `DUMMY` party code, a
+`ZZZ`/`ZZZZZ` incoterm or port code, a wrong address, date, carrier, or container count. These silently corrupt
+reports downstream. **Edit ERP data** lets you correct them at source.
+
+**How to open it:** in the shipment drawer, click the **✎ pen** on the top line (next to ETD/ETA/ATD) or the
+**Edit ERP data** button. It opens in its own tab, laid out like the bill (Sea House B/L grid / Air Neutral Air
+Waybill), seeded with the **current** ERP values.
+
+**What you can fix:** the party boxes (shipper / consignee / notify / delivery agent — name, address, phone,
+tax, and now **contact name + email**); each master **code** is a chip in the box caption — click **`…`** to
+search the master for the correct code, or type it. Plus incoterm, the routing ports, **carrier**, service,
+dates, cargo (qty / weight / CBM / **marks** / **description**), the container list, and — for **Air** — the
+**Flights / IATA legs** (flight 1/2/3 and their destinations) shown compactly under Job No. **Sea** shows the
+familiar Place of Receipt | Port of Loading | Port of Discharge | Final Destination row and the
+20'/40'/HQ/Other container counts.
+
+**How it saves:** **Save changes to ERP** pushes **only the fields you actually changed** back to the ERP, and
+records a full before→after audit. Nothing else is touched.
+
+> ⚠️ **A few fields can't be pushed** (the ERP booking has no field for them): **trucker, customs broker,
+> warehouse**, the **No. of originals**, and the PIC *name* (correct the PIC via its ID/email instead). The
+> **carrier and the estimated dates save "best-effort"** — if the ERP rejects them, you'll see the reason and
+> it's logged. Everything else saves normally.
+
+**CTA:** When you see a `DUMMY`/`ZZZ` code or any wrong value on a card or in the drawer, open **Edit ERP data**,
+fix it, and **Save changes to ERP** — don't let bad source data flow into the reports.
+
+---
+
+## 11. Day-to-day playbook (quick CTAs)
 
 - **Start of day:** This-week / your station / your mode → work **Red** groups first.
 - **My Tasks badge lit:** clear **Draft reviews**, then reminders.
 - **A draft says "customer replied":** review the diff and message → Agree → Issue.
 - **An inbound booking arrives:** Assign it to start pre-arrival prep.
 - **A step done but light still amber/red:** **Tick & Confirm** it.
+- **You spot a DUMMY/ZZZ code or wrong source data:** open **Edit ERP data** (✎), fix it, Save to ERP.
 - **Old reds under All-dates:** chase overdue invoicing / delivery / detention — that's the cash leak.
 
 ---
 
-## 11. Good to know
+## 12. Good to know
 
 - **Dates are always ISO** `yyyy-mm-dd` — display, input, and storage. Type dates in that format.
 - **The screen reads only the small operational state**, never the live ERP, so it is fast even over the VPN.

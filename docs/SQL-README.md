@@ -81,15 +81,22 @@ goes to the source. Single-server configs omit them and are unchanged.
 > `ISSUED → AMEND_DRAFT → … → ISSUED`. The My-Tasks inbox surfaces `CUSTOMER_SUBMITTED` / `CUSTOMER_APPROVED`
 > (self-clearing once the operator acts).
 
-### ERP data correction (master-code editor)
+### Edit ERP data (master-code + field editor)
 
-Staff-internal editor (`erp-edit.html` / `erp-edit.js`, drawer panel "Correct ERP data") to fix wrong source
-data — a `DUMMY` party code, a `ZZZ` incoterm/port code, wrong container booking qty — and push **only the
-changed fields** to Swivel `/booking/update`. Dictionary `erp-edit-fields.json`; endpoints
-`/api-ops/erp-edit` (seed current value + resolved master name), `/api-ops/erp-master` (live master type-ahead),
-`/api-ops/erp-edit-save` (diff → minimal `/booking/update` → audit). Payload built by `Build-ErpPatchPayload`
-(party-prefixed write keys nest in `bookingParty`; container table → `bookingContainers`), pushed by
-`Invoke-ErpEditPush` (same read-merge-write existence guard + best-effort/strict as the agree flow).
+Staff-internal editor (`erp-edit.html` / `erp-edit.js`, drawer panel **"Edit ERP data"** + a ✎ pen shortcut on
+the drawer's first row) to fix wrong source data — a `DUMMY` party code, a `ZZZ` incoterm/port code, wrong
+container booking qty, addresses, dates, carrier — and push **only the changed fields** to Swivel
+`/booking/update`. Dictionary `erp-edit-fields.json`; endpoints `/api-ops/erp-edit` (seed current value +
+resolved master name), `/api-ops/erp-master` (live master type-ahead), `/api-ops/erp-edit-save`
+(diff → minimal `/booking/update` → audit). Payload built by `Build-ErpPatchPayload` (party-prefixed write keys
+nest in `bookingParty`; `flexData.<sub>` keys nest in `flexData` for the IATA leg fields; container table →
+`bookingContainers`), pushed by `Invoke-ErpEditPush` (same read-merge-write existence guard + best-effort/strict
+as the agree flow).
+
+> ℹ️ **Detail-line seeding.** Several fields live on the **line** table, not the header, and are seeded
+> server-side from there (`Handle-ErpEditSeed`, keyed `blh = ref`, first line): **Air** marks/description from
+> `awbdetl.mark2`/`desc2`; **Sea** commodity / container-size counts / marks / description from `blitem`, and the
+> liner agent from `blcont.lagent`. This mirrors the draft-seed pattern.
 
 | Table | Grain | Purpose |
 |---|---|---|
@@ -97,25 +104,35 @@ changed fields** to Swivel `/booking/update`. Dictionary `erp-edit-fields.json`;
 
 **Field map verified on live `fm3khkg` (2026-06-13).** read column → master lookup → `/booking/update` write key:
 
-| Field | Read (`blhead`/`awbhead`) | Master lookup | Write key |
+| Field | Read — Sea (`blhead`/`blcont`/`blitem`) · Air (`awbhead`/`awbdetl`) | Master lookup | Write key |
 |---|---|---|---|
 | Shipper / consignee / notify code | `shpr_code` / `cgne_code` / `not1_code` (n8) | `custsub.code2 → doc_e_name` | `shipperPartyCode` / `consigneePartyCode` / `notifyPartyPartyCode` |
+| Party name / address / phone / tax | `*_name` / `*_add1..5` / `sphone`·`cphone` / `*_txncode` | — | `…PartyName` / `…PartyAddress` / `…PartyContactPhone` / `…PartyTaxCode` |
+| **Party contact name / email** (shipper, consignee) | blank-seeded (no verified ERP column) — editable | — | `…PartyContactName` / `…PartyContactEmail` |
 | Delivery agent code (on HBL/HAWB) | `agn2_code` | `custsub` | `agentPartyCode` |
-| Liner agent code (space booking, internal) | `iliner` (Sea) / `lin1_code` (Air) | `linermstr.code → name` | `linerAgentPartyCode` |
+| **Liner agent** code (internal) | **Sea `blcont.lagent`** (party on the container line) → **`custsub`** · **Air `lin1_code`** → `linermstr` | `custsub` / `linermstr` | `linerAgentPartyCode` |
+| **Carrier** code / name (best-effort) | **Sea `iliner`** · **Air `rout_by_1`** (`carr` is usually blank) | — | `carrierCode` / `carrierName` |
 | Controlling customer code (internal) | `rcustomer` | `custsub` | `controllingCustomerPartyCode` |
-| Party name / address / phone / tax | `*_name` / `*_add1..5` / `sphone`·`cphone`·`nphone`·`aphone` / `*_txncode` | — | `…PartyName` / `…PartyAddress` / `…PartyContactPhone` / `…PartyTaxCode` |
 | Incoterm | `routing` (free text, e.g. `FOB`) | **none** — fixed Incoterms-2020 list | `incoTermsCode` |
-| POL / POD code | `pol` / `pod` (n5) | `portmstr.code → port_ldes1` | `portOfLoadingCode` / `portOfDischargeCode` |
+| Place of receipt / POL / POD | `rece` / `pol` / `pod` (Air `pod` = leg-1 discharge = `to1`) | `portmstr.code → port_ldes1` | `placeOfReceiptCode` / `portOfLoadingCode` / `portOfDischargeCode` |
+| **Final destination** | `dest`; **Sea falls back to `deli`** (Place of Delivery) when `dest` is blank | `portmstr` | `finalDestinationCode` |
 | Service type | `service` | `servmstr.service → desc1` | `serviceCode` |
-| Containers (Sea) | `blcont` (`container`,`cont_type`,`seal`,`load_qty`; link `blh = blhead.ref`) | — | `bookingContainers[]` (`containerNo`,`containerTypeCode`,`sealNo`,`quantity`) |
+| **Commodity** | **Sea `blitem.commodity`** (no commodity column on `blhead`) · **Air `awbhead.commodity`** (ntext) | — | `commodity` (maxlen 21) |
+| **Cargo qty / gross / chargeable / cbm / wt unit** | **Air** `t_rece_qty` / `ttl_gwt` / `ttl_cwt` / `t_rece_cbm` · **Sea** `t_book_*` totals, **wt unit defaults `KGS`** | — | `quantity` / `grossWeight` / `chargeableWeight` / `cbm` / `weightUnit` |
+| **Marks / description** | **Sea `blitem.mark2`(+`mark3`) / `good_desc1`→`desc2`(+`desc3`)** · **Air `awbdetl.mark2` / `desc2`** | — | `shipMarks` / `goodsDescription` |
+| **Air IATA flight legs** | leg 1 `flight1`+`to1` · leg 2 `flight2`+`deli` · leg 3 `flight3`+`to3` | `portmstr` (leg ports) | `voyageFlightNumber`+`portOfDischargeCode`; legs 2-3 → **`flexData.{2nd,3rd}LegFlightNumber` / `…PortOfDischargeCode`** |
+| **Container-size counts** (Sea) | `blitem.c20` / `c40` / `cq` (HQ) / `c45` (Other) | — | `container20` / `container40` / `containerHQ` / `containerOthers` |
+| Container particulars (Sea) | `blcont` (`container`,`cont_type`,`seal`,`load_qty`; link `blh = blhead.ref`) | — | `bookingContainers[]` (`containerNo`,`containerTypeCode`,`sealNo`,`quantity`) |
 
-> All write keys **verified 2026-06-14 against the Swivel OpenAPI spec** (`NewBooking.bookingParty` + top-level);
-> each is tunable in `erp-edit-fields.json` (`writeKey`) with no code change. A correction is only sent when the
-> operator actually edits that field; `bookingUpdateMode: best-effort` records any rejection. Carrier/vessel/
-> voyage and dates exist in the schema but are deliberately **not** editable here (master rejects them; demoerp
-> date-reject ticket open). The container item also carries `soNo` (the liner SO) — available for a later round.
-> All four `custsub`/`portmstr`/`servmstr`/`linermstr` masters exist in **both** the station DB (`fm3k<code>`)
-> and corporate `fm3kco`; the editor reads the **station** DB.
+> All write keys **verified against the Swivel OpenAPI spec** (`3rd-erpapi.json` — `NewBooking.bookingParty`,
+> top-level, and the `flexData` IATA-leg object); each is tunable in `erp-edit-fields.json` (`writeKey`) with no
+> code change. A correction is only sent when the operator actually edits that field; `bookingUpdateMode:
+> best-effort` records any rejection. **Carrier and the estimated dates push best-effort** (the carrier master
+> rejects raw ERP codes; demoerp still rejects date-touching updates — open Swivel ticket), captured verbatim in
+> `erp_edit_log`. **Trucker / customs broker / warehouse are dropped** — the booking API has no field for them;
+> **No. of originals and PIC *name* have no write key** (PIC is corrected via `picId`/`picEmail`). The four
+> `custsub`/`portmstr`/`servmstr`/`linermstr` masters exist in **both** the station DB (`fm3k<code>`) and
+> corporate `fm3kco`; the editor reads the **station** DB.
 
 ---
 
@@ -138,6 +155,11 @@ keys on the **stable** SO number (`sono`/`booking`) at booking stage when `blno`
 | Originals | `no_orig`; **guardrail:** `0` when `telex_rel` is set | |
 | Marks / description | `blitem.mark2(+mark3)` (ntext) / `good_desc1`→`desc2(+desc3)` | `good_desc1` is often blank |
 | Containers | `blcont` (container/seal/type/qty/unit/kgs/cbm) | |
+| **Carrier** (Edit ERP data) | `blhead.iliner` | `carr`/`carr_name` are usually blank |
+| **Liner agent** (Edit ERP data) | `blcont.lagent` → company name via `custsub` | party code on the container line (e.g. `A0002`→APL CO PTE LTD) |
+| **Final destination** (Edit ERP data) | `blhead.dest`, **else `blhead.deli`** (Place of Delivery) when blank | |
+| **Commodity** (Edit ERP data) | `blitem.commodity` | there is **no** commodity column on `blhead` |
+| **Container-size counts** (Edit ERP data) | `blitem.c20` / `c40` / `cq` (HQ) / `c45` (Other) | the booking-stage size summary (distinct from `blcont` particulars) |
 
 ---
 
@@ -146,8 +168,9 @@ keys on the **stable** SO number (`sono`/`booking`) at booking stage when `blno`
 `awbhead` is the air master (**465 columns**). Operator shipments are `awb_type IN ('H','S')` (H=house,
 S=direct; M=consol master, B=booking pipeline excluded). The line items are in `awbdetl` (FK `blh = awbhead.ref`).
 
-> ⚠️ **`carr` (carrier code) is usually blank** in these copies — derive the carrier from the **alpha prefix
-> of the flight number** (`SQ7861` → `SQ`).
+> ⚠️ **`carr` (carrier code) is usually blank** in these copies. On the bill, derive the carrier from the
+> **alpha prefix of the flight number** (`SQ7861` → `SQ`); the **Edit ERP data** editor reads the verified
+> **`rout_by_1`** (routed-by-first-carrier code, e.g. `CX`) instead.
 
 ### `awbhead` (header) — verified mappings
 
@@ -156,8 +179,9 @@ S=direct; M=consol master, B=booking pipeline excluded). The line items are in `
 | Airport of Departure | `pol_name` | |
 | Airport of Destination | `dest_name` | the **final** destination, **not** `pod_name` (discharge) |
 | Routing To1 / To2 / To3 | `to1` / `deli` / `to3` (codes) | **`deli` holds the middle leg** (e.g. `CHI`), not a delivery point |
-| By first carrier / onward | `carr` or alpha-prefix of `flight1` / `flight2` / `flight3` | |
+| By first carrier / onward | `rout_by_1` (verified) or alpha-prefix of `flight1` / `flight2` / `flight3` | |
 | Flight / date (1–3) | `flight1..3` + `f_date1..3` | one line per flight |
+| **IATA flight legs** (Edit ERP data) | leg 1 `flight1`+`to1` (=`pod`); leg 2 `flight2`+`deli`; leg 3 `flight3`+`to3` | legs 2-3 push via **`flexData.{2nd,3rd}LegFlightNumber` / `…PortOfDischargeCode`** |
 | Currency (freight) | `currency` | |
 | CHGS Code | `frt_terms` | the freight term `PP`/`CC` |
 | WT/VAL · Other (PPD/COLL X) | `frt_terms` → WT/VAL ; `oth_terms` → Other | `X` in PPD when `PP`, COLL when `CC` |
@@ -165,7 +189,7 @@ S=direct; M=consol master, B=booking pipeline excluded). The line items are in `
 | Amount of Insurance | `v_insurance` | blank/`0` prints `NIL` |
 | Agent's IATA Code | `iatacode` | |
 | No. of Pieces | `t_book_qty` → `t_rece_qty` | `t_book_qty` is often blank |
-| Gross / chargeable weight | `t_book_wgt` / `ttl_cwt` | |
+| Gross / chargeable weight | `ttl_gwt` / `ttl_cwt` | `t_book_wgt` and the per-leg `f*_wgt` are usually blank |
 | kg/lb | `wgt_unit` initial | `KGS`→`K`, `LBS`→`L` |
 | Handling Information | `handling` (ntext) → `special_remark` | |
 | Notify | `not1_name`+`not1_add1..5` | own box (under Consignee) |

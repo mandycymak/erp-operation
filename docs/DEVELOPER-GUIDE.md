@@ -51,7 +51,8 @@ actually built and proven; update it when you ship something.
 | `seed-station-map.ps1` / `publish-bookings.ps1` | the cross-station inbound feed (identity directory + publisher) |
 | `register-ops-tasks.ps1` | Task Scheduler registration |
 | `serve-ops.ps1` | the web service — auth, JSON API, the draft-document subsystem, static files |
-| `erp-doc-api.ps1` | the Swivel 3rd-party ERP API client (agree / issue: booking/update, file/upload, event/update) |
+| `erp-doc-api.ps1` | the Swivel 3rd-party ERP API client (agree / issue: booking/update, file/upload, event/update; `Build-ErpPatchPayload` / `Invoke-ErpEditPush` for the Edit-ERP-data push) |
+| `erp-edit.html` / `erp-edit.js` / `erp-edit-fields.json` | **Edit ERP data** editor (HBL/AWB-grid layout) + its field dictionary (`writeKey` per field) |
 | `index.html` / `ops.js` / `styles.css` | the operator UI |
 | `admin-ops.html` / `login.html` | admin (users + milestones) and login |
 | `doc-editor.html` / `doc-editor.js` | staff draft editor (diff, send, agree, issue, amend) |
@@ -80,8 +81,17 @@ actually built and proven; update it when you ship something.
 
 ### Reading the ERP (off the request path only)
 
-The draft seed and the detail drawer are the only paths that touch the ERP, and only at staff-click time —
-bounded (`Connect Timeout=5`, `CommandTimeout=8`, `Packet Size=512`), keyed seeks.
+The draft seed, the detail drawer, and the **Edit ERP data** seed/master-search are the only paths that touch
+the ERP, and only at staff-click time — bounded (`Connect Timeout=15`, `CommandTimeout=8`, `Packet Size=512`),
+keyed seeks. (`Connect Timeout` was raised 5→15s: the VPN's SSL pre-login handshake runs ~4 s and was
+intermittently timing out the open.)
+
+> ℹ️ **Edit ERP data subsystem.** `Handle-ErpEditSeed` seeds current values + resolved master names from the
+> header **and the line table** (Air `awbdetl`, Sea `blitem`/`blcont`, keyed `blh = ref`, first line);
+> `Save-ErpEdit` re-reads the live ERP for the authoritative *before*, diffs, and pushes **only changed fields**
+> via `Build-ErpPatchPayload` (party keys → `bookingParty`; `flexData.<sub>` → `flexData`; container table →
+> `bookingContainers`). Fields are added/retargeted in `erp-edit-fields.json` (`readFrom` / `writeKey`) — no
+> code change for a simple remap; a column on the **line** table needs a line read in `Handle-ErpEditSeed`.
 
 > ⚠️ **Never probe column metadata on a request path.** `INFORMATION_SCHEMA.COLUMNS` / `sys.columns` for the
 > read-only login on the **465-column** `awbhead` runs **40–70 s** (per-column permission checks) and can drop
