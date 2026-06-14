@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Correct ERP data</title>
+<title>Edit ERP data</title>
 <style>
   :root{ --bg:#f4f5f7; --card:#fff; --fg:#1c2330; --mut:#6b7280; --line:#d7dce4; --accent:#2563eb; --chg:#fff7d6; --chgline:#e3b400; --bad:#b42318; --ok:#0f7b3f; }
   @media (prefers-color-scheme: dark){
@@ -78,6 +78,16 @@
   input.refin.chg{ background:var(--chg); border-color:var(--chgline) }
   input[type=checkbox].chg{ outline:2px solid var(--chgline); outline-offset:1px }
   .svc-note{ font-size:11px; color:var(--mut); margin-top:7px; font-style:italic }
+  /* Air flight-routing legs (compact, under Job No.): flight no -> leg discharge chip, one small line per leg */
+  .fleg{ margin-top:6px; border-top:1px solid var(--line); padding-top:5px }
+  .fleg-cap{ font-size:9px; text-transform:uppercase; letter-spacing:.03em; color:var(--mut); font-weight:700; margin-bottom:3px }
+  .fleg-row{ display:flex; align-items:center; gap:5px; margin-bottom:3px; min-height:18px }
+  .fleg-n{ font-size:9px; font-weight:700; color:var(--mut); min-width:16px }
+  .fleg-fin{ width:62px; font:600 10px ui-monospace,Consolas,monospace; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:1px 4px; text-transform:uppercase }
+  .fleg-arr{ color:var(--mut); font-size:10px }
+  .fleg-hint{ font-size:9.5px; color:var(--mut); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:90px }
+  .fleg .codechip input{ width:42px; font-size:10px; padding:1px 3px }
+  .fleg .findbtn{ font-size:10px }
   /* editable reference / carrier inputs */
   .refedit{ font-size:12px; margin:1px 0; display:flex; align-items:center; gap:4px }
   .refedit .rl{ flex:0 0 86px }
@@ -110,8 +120,7 @@
 <body>
 <div class="wrap">
   <div class="bar">
-    <h1>Correct ERP data</h1>
-    <span class="sub" id="status"></span>
+    <h1 id="status">Edit ERP data</h1>
     <span class="spacer"></span>
     <button id="saveBtn" class="primary">Save changes to ERP</button>
     <button onclick="window.close()">Close</button>

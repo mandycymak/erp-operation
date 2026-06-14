@@ -25,12 +25,15 @@
   };
   const REFS = {
     Sea: ['bl_no', 'booking_no', 'po_no', 'job_disp', 'master_no', 'vessel_name', 'voyage_no'],
-    Air: ['bl_no', 'master_no', 'booking_no', 'po_no', 'job_disp', 'flight_no']
+    Air: ['bl_no', 'master_no', 'booking_no', 'po_no', 'job_disp']
   };
   const ROUTING = {
     Sea: [['receipt_code', 'Place of Receipt'], ['pol_code', 'Port of Loading'], ['pod_code', 'Port of Discharge'], ['dest_code', 'Final Destination']],
     Air: [['receipt_code', 'Place of Receipt'], ['pol_code', 'Port of Loading'], ['pod_code', 'Port of Discharge'], ['dest_code', 'Final Destination']]
   };
+  // Air IATA flight legs (flight number + that leg's discharge). Leg 1 = main flight/discharge; legs 2-3 push
+  // via flexData. Rendered beneath the routing row for Air only.
+  const FLIGHTLEGS = [['flight_no', 'to1'], ['flight2', 'deli'], ['flight3', 'to3']];
   // SERVICE DETAIL groups (4-col grid so the rows line up). Codes absent for the mode are skipped silently
   // (telex is Sea-only, direct is Air-only, eta is Sea-only).
   const SVC = [
@@ -38,8 +41,8 @@
     ['Shipping window', ['cargo_ready', 'cargo_receipt', 'etd', 'eta', 'flight_time']],
     ['Internal', ['division', 'team', 'pic_id', 'pic_email']]
   ];
-  const CARGO = ['commodity', 'cargo_qty', 'cargo_unit', 'cargo_wgt', 'cargo_wunit', 'cargo_cbm'];
-  const CARGOW = { commodity: '2 1 180px', cargo_qty: '0 0 66px', cargo_unit: '0 0 58px', cargo_wgt: '0 0 96px', cargo_wunit: '0 0 58px', cargo_cbm: '0 0 66px' };
+  const CARGO = ['commodity', 'cargo_qty', 'cargo_unit', 'cargo_wgt', 'cargo_wunit', 'cargo_cwt', 'cargo_cbm'];
+  const CARGOW = { commodity: '2 1 180px', cargo_qty: '0 0 66px', cargo_unit: '0 0 58px', cargo_wgt: '0 0 96px', cargo_wunit: '0 0 58px', cargo_cwt: '0 0 96px', cargo_cbm: '0 0 66px' };
   const CCOUNT = [['container20', "20'"], ['container40', "40'"], ['container_hq', 'HQ'], ['container_other', 'Other']];
 
   async function api(path, body) {
@@ -54,10 +57,10 @@
   async function load() {
     if (!job) { fail('No shipment specified.'); $('#sections').innerHTML = ''; return; }
     const d = await api('/api-ops/erp-edit?job=' + encodeURIComponent(job));
-    if (d.error) { $('#sections').innerHTML = ''; fail(d.error); $('#status').textContent = 'error'; return; }
+    if (d.error) { $('#sections').innerHTML = ''; fail(d.error); return; }
     SEED = d.fields || {}; DICT = arr(d.dict); RESOLVED = d.resolved || {}; MODE = (d.mode === 'Air') ? 'Air' : 'Sea';
     DEF = {}; DICT.forEach(x => DEF[x.code] = x);
-    $('#status').textContent = (d.mode || '') + ' ' + (d.bound || '');
+    $('#status').textContent = ((d.mode || '') + ' ' + (d.bound || '')).trim() || 'Edit ERP data';
     $('#sub').textContent = 'Job ' + job;
     render();
   }
@@ -114,12 +117,14 @@
       ta.addEventListener('input', () => { if (norm(ta._seed) !== norm(ta.value)) ta.classList.add('chg'); else ta.classList.remove('chg'); });
       box.appendChild(ta);
     }
-    const ex = [DEF[prefix + '_phone'], DEF[prefix + '_tax']].filter(Boolean);
-    if (ex.length) {
+    // contact rows: phone + tax, then contact name + email (each row a two-cell telrow)
+    [[prefix + '_phone', prefix + '_tax'], [prefix + '_contact', prefix + '_email']].forEach(codes => {
+      const cells = codes.map(c => DEF[c]).filter(Boolean);
+      if (!cells.length) return;
       const row = el('div', 'telrow');
-      ex.forEach(d => { const c = el('div', 'telcell'); c.appendChild(el('span', 'tl', esc(d.label))); c.appendChild(pInput(d)); row.appendChild(c); });
+      cells.forEach(d => { const c = el('div', 'telcell'); c.appendChild(el('span', 'tl', esc(d.label))); c.appendChild(pInput(d)); row.appendChild(c); });
       box.appendChild(row);
-    }
+    });
   }
   function chipCell(box, code, capText) {
     const def = DEF[code]; if (!def) return;
@@ -183,6 +188,29 @@
     CARGO.forEach(c => { const d = DEF[c]; if (!d) return; const f = fieldMini(d); if (CARGOW[c]) f.style.flex = CARGOW[c]; g.appendChild(f); });
     box.appendChild(g);
   }
+  // Air flight routing, compact: one small line per leg - flight number then that leg's discharge port chip.
+  // Tucked under the References (beneath Job No.) since multi-leg is infrequent. Leg 1 is editable
+  // (voyageFlightNumber + portOfDischargeCode); legs 2-3 push via flexData.
+  function flightLegsCompact(box) {
+    if (!FLIGHTLEGS.some(([f, d]) => DEF[f] || DEF[d])) return;
+    const wrap = el('div', 'fleg');
+    wrap.appendChild(el('div', 'fleg-cap', 'Flights / IATA legs'));
+    FLIGHTLEGS.forEach(([fcode, dcode], idx) => {
+      const fdef = DEF[fcode], ddef = DEF[dcode];
+      if (!fdef && !ddef) return;
+      const row = el('div', 'fleg-row');
+      row.appendChild(el('span', 'fleg-n', 'F' + (idx + 1)));
+      if (fdef) {
+        const i = el('input', 'fleg-fin'); i.type = 'text'; i.dataset.code = fdef.code; i.value = strv(SEED[fdef.code]);
+        i.placeholder = 'flight'; i.spellcheck = false; if (!fdef.writeKey) i.disabled = true; wireChange(i, fdef.code);
+        row.appendChild(i);
+      }
+      row.appendChild(el('span', 'fleg-arr', '→'));
+      if (ddef) { const hint = el('span', 'fleg-hint'); hint.textContent = RESOLVED[ddef.code] || ''; row.appendChild(codeChip(ddef, hint)); row.appendChild(hint); }
+      wrap.appendChild(row);
+    });
+    box.appendChild(wrap);
+  }
   function containerCountCell(box, capText) {
     box.appendChild(el('div', 'cap', esc(capText)));
     const g = el('div', 'svc-grid g4'); CCOUNT.forEach(([c]) => { if (DEF[c]) g.appendChild(fieldMini(DEF[c])); }); box.appendChild(g);
@@ -224,7 +252,6 @@
     const add = el('button', '', '+ Add row'); add.type = 'button'; add.style.cssText = 'font-size:12px;padding:4px 9px;margin-top:6px';
     add.onclick = () => tb.appendChild(contRow(def, {}));
     box.appendChild(add);
-    box.appendChild(el('div', 'svc-note', 'A row with only a Type + Qty (e.g. 20GP / 2, no container number) is fine for a booking-stage count.'));
   }
   function contRow(def, r) {
     const tr = el('tr');
@@ -273,14 +300,14 @@
     const left = el('div', 'col col-left'), right = el('div', 'col col-right');
     ['shipper', 'consignee', 'notify', 'agent'].forEach(p => { if (DEF[p + '_code'] || DEF[p + '_name']) { const b = gbox(); partyCell(b, p, (PARTY[MODE] || {})[p] || p); left.appendChild(b); } });
     const rs = el('div', 'grow');
-    const rb = gbox(50); refsCell(rb, MODE === 'Air' ? 'AWB / Ref. No.' : 'B/L No.', REFS[MODE]); rs.appendChild(rb);
+    const rb = gbox(50); refsCell(rb, MODE === 'Air' ? 'AWB / Ref. No.' : 'B/L No.', REFS[MODE]); if (MODE === 'Air') flightLegsCompact(rb); rs.appendChild(rb);
     const sb = gbox(50); stakeholdersCell(sb, 'Stakeholders'); rs.appendChild(sb);
     right.appendChild(rs);
     const svc = gbox(); serviceCell(svc, 'Service Detail'); right.appendChild(svc);
     const rem = gbox(); rem.classList.add('remarkbox'); singleField(rem, 'Internal Remark', 'int_remark'); right.appendChild(rem);
     upper.appendChild(left); upper.appendChild(right); bill.appendChild(upper);
 
-    // routing row (4 chips)
+    // routing row (chips)
     const rr = el('div', 'grow'); ROUTING[MODE].forEach(([code, cap]) => { const b = gbox(25); chipCell(b, code, cap); rr.appendChild(b); }); bill.appendChild(rr);
 
     // cargo information (one row)

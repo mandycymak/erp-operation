@@ -691,7 +691,13 @@ function renderShipment(job, data) {
   const body = $('#drawerBody'); body.innerHTML = '';
   const head = el('div', 'muted', 'ETD ' + (sh.etd || '—') + ' · ETA ' + (sh.eta || '—') + ' · ATD ' + (sh.atd || '—') +
     ' &nbsp;|&nbsp; auto ' + (roll.automation ? roll.automation.auto : 0) + ' · manual ' + (roll.automation ? roll.automation.manual : 0));
-  head.style.marginBottom = '8px'; body.appendChild(head);
+  head.style.marginBottom = '8px';
+  // pen = quick shortcut to the Edit ERP data editor (same as the panel button lower down)
+  const pen = el('span', 'penedit', '✎');
+  pen.title = 'Edit ERP data'; pen.style.cssText = 'cursor:pointer;margin-left:8px;color:var(--accent,#2563eb)';
+  pen.onclick = () => window.open('erp-edit.html?job=' + encodeURIComponent(job), '_blank');
+  head.appendChild(pen);
+  body.appendChild(head);
   // reference docs the operator + customer recognise (house/master bill, incoterm, PO, container, cargo-ready)
   const isAir = sh.mode === 'Air';
   const refBits = [];
@@ -1006,9 +1012,8 @@ function documentsPanel(job, sh) {
 // self-seeds the current ERP values + master-code lookups and pushes only the changed fields to /booking/update.
 function erpEditPanel(job, sh) {
   const wrap = el('div', 'arrange');
-  wrap.appendChild(el('h3', null, 'Correct ERP data'));
-  wrap.appendChild(el('div', 'mut', 'Fix wrong master codes (shipper/consignee/notify/agent, incoterm, POL/POD, service), party details, or container booking qty, and push the correction back to the ERP. Opens in a new tab.'));
-  const b = el('button', 'ghost', 'Correct ERP master data');
+  wrap.appendChild(el('h3', null, 'Edit ERP data'));
+  const b = el('button', 'ghost', 'Edit ERP data');
   b.style.cssText = 'font-size:12px;margin-top:6px';
   b.onclick = () => window.open('erp-edit.html?job=' + encodeURIComponent(job), '_blank');
   wrap.appendChild(b);

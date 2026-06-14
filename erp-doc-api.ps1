@@ -417,7 +417,7 @@ function Build-ErpPatchPayload($changed,$defs,$ident,$map,$all){
     boundTypeCode=$(if("$($ident.bound)" -eq 'Import'){'I'}else{'O'})
   }
   $defByCode=@{}; foreach($d in @($defs)){ $defByCode["$($d.code)"]=$d }
-  $party=[ordered]@{}; $sent=@()
+  $party=[ordered]@{}; $flex=[ordered]@{}; $sent=@()
   foreach($code in @($changed.Keys)){
     $d=$defByCode["$code"]; if(-not $d){ continue }
     $wk="$($d.writeKey)".Trim(); if(-not $wk){ continue }   # read-only field (no write key) - never pushed
@@ -477,12 +477,16 @@ function Build-ErpPatchPayload($changed,$defs,$ident,$map,$all){
       continue
     }
     $sv="$val"
+    # IATA multi-leg keys nest under flexData: writeKey 'flexData.<sub>' (e.g. flexData.2ndLegFlightNumber,
+    # flexData.2ndLegPortOfDischargeCode) -> $flex[<sub>] = value (string codes/flight numbers, spec-verified).
+    if($wk -match '^flexData\.(.+)$'){ $flex[$Matches[1]]=$sv; $sent+=,@{ field=$code; writeKey=$wk; value=$sv }; continue }
     # any bookingParty member write key contains 'Party' (shipperParty*/consigneeParty*/notifyPartyParty*/
     # agentParty*/linerAgentParty*/controllingCustomerParty* per the spec); top-level keys never do.
     if($wk -match 'Party'){ $party[$wk]=$sv } else { $p[$wk]=$sv }
     $sent+=,@{ field=$code; writeKey=$wk; value=$sv }
   }
   if($party.Count){ $p['bookingParty']=$party }
+  if($flex.Count){ $p['flexData']=$flex }
   @{ payload=$p; sent=@($sent) }
 }
 # Push the prebuilt patch payload. Same read-merge-write existence guard as the agree flow: /booking/get first,

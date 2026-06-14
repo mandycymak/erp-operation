@@ -586,7 +586,7 @@ function Handle-Shipment($cn,$qs){
 
 # ---------------- /api-ops/erp-detail — the ONE sanctioned ERP-on-request-path exception ----------------
 # Explicit, user-clicked deep-dive: a single keyed header SELECT (PK ref / indexed jobn) + a TOP-10 child read
-# on the station ERP, bounded by Connect Timeout=5 / CommandTimeout=8 so the single-threaded listener can't be
+# on the station ERP, bounded by Connect Timeout=15 / CommandTimeout=8 so the single-threaded listener can't be
 # held long. Display-only — nothing is written back (the next listener pass refreshes the pgsops snapshot).
 $SrcAuthClause= if($auth -eq 'sql'){"User ID=$user;Password=$password"}else{"Integrated Security=True"}
 $DbByStation=@{}; foreach($s in @($cfg.stations)){ if($s -and $s.code -and $s.database){ $DbByStation["$($s.code)".Trim().ToUpper()]="$($s.database)".Trim() } }
@@ -619,7 +619,7 @@ function Handle-ErpDetail($cn,$qs){
   $a=$al[0]; $db=$DbByStation["$($a.station)".Trim().ToUpper()]
   if(-not $db){ return @{error="station '$($a.station)' has no ERP database mapped in config stations[]"} }
   $isAir=("$($a.mode)" -eq 'Air')
-  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=5;Packet Size=512"
+  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=15;Packet Size=512"
   try {
     $srcCn.Open()
     $tbl= if($isAir){'awbhead'}else{'blhead'}
@@ -700,7 +700,7 @@ function Handle-ErpFileDownload($cn,$ctx,$qs){
 # ERP DATA CORRECTION (staff-internal). Show a shipment's current ERP master codes + values, let the operator
 # pick the correct code from the live master (custsub/linermstr/portmstr/servmstr) or type a correction, and
 # push ONLY the changed fields to /booking/update. Every save is audited in erp_edit_log (before->after).
-# Reads use the same bounded pattern as Handle-ErpDetail (Connect Timeout=5 / CommandTimeout=8 / Packet=512).
+# Reads use the same bounded pattern as Handle-ErpDetail (Connect Timeout=15 / CommandTimeout=8 / Packet=512).
 # The dictionary (erp-edit-fields.json) maps each field to its ERP read column + master lookup + write key.
 # ============================================================================================================
 $ErpEditFieldsPath=Join-Path $Root "erp-edit-fields.json"
@@ -788,9 +788,9 @@ function Handle-ErpEditSeed($cn,$qs){
   }
   # derived shipping-window source legs (etd/eta have readFrom='' so are not picked above): Import dep1/arr1,
   # Export dep2/arr2; Air ETD = f_date1 (no air ETA on this ERP). Resolved into etd/eta after the read.
-  if($isAir){ $cols+='f_date1' } else { $cols+='departure1','departure2','arrival1','arrival2','vessel_1','vessel_2','voyage_1','voyage_2' }
+  if($isAir){ $cols+='f_date1' } else { $cols+='departure1','departure2','arrival1','arrival2','vessel_1','vessel_2','voyage_1','voyage_2','deli' }
   $cols=@($cols | Select-Object -Unique)
-  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=5;Packet Size=512"
+  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=15;Packet Size=512"
   try{
     $srcCn.Open()
     $tbl= if($isAir){'awbhead'}else{'blhead'}
@@ -849,6 +849,48 @@ function Handle-ErpEditSeed($cn,$qs){
     if(-not $isAir -and $fields.Contains('voyage_no')){
       $vycol= if($isImport){'voyage_1'}else{'voyage_2'}; $fields['voyage_no']="$($b.$vycol)".Trim()
     }
+    # Air marks/description live on the detail line (awbdetl.mark2 / desc2), not the header (crmarking/wdesc are
+    # blank), so seed them from there - desc falls back to good_desc1 when desc2 is empty.
+    if($isAir){
+      try{
+        $adr=@(RunQ $srcCn "SELECT TOP 1 mark2, desc2, good_desc1 FROM dbo.awbdetl WHERE blh=@r ORDER BY ref" @{ r=$b.ref } 8)
+        if($adr.Count){
+          if($fields.Contains('ship_marks')){ $fields['ship_marks']="$($adr[0].mark2)".Trim() }
+          if($fields.Contains('goods_desc')){ $gd="$($adr[0].desc2)".Trim(); if(-not $gd){ $gd="$($adr[0].good_desc1)".Trim() }; $fields['goods_desc']=$gd }
+        }
+      }catch{}
+    }
+    # Sea commodity / liner agent / container-size counts / marks / description live on the detail line (blitem),
+    # not the header - seed them from there (blh=ref, first line). Mirrors the Air awbdetl block.
+    if(-not $isAir){
+      try{
+        $bir=@(RunQ $srcCn "SELECT TOP 1 commodity, c20, c40, cq, c45, mark2, mark3, good_desc1, desc2, desc3 FROM dbo.blitem WHERE blh=@r ORDER BY ref" @{ r=$b.ref } 8)
+        if($bir.Count){
+          $bi=$bir[0]
+          if($fields.Contains('commodity')){ $fields['commodity']="$($bi.commodity)".Trim() }
+          if($fields.Contains('container20')){ $fields['container20']=ErpNumStr $bi.c20 }
+          if($fields.Contains('container40')){ $fields['container40']=ErpNumStr $bi.c40 }
+          if($fields.Contains('container_hq')){ $fields['container_hq']=ErpNumStr $bi.cq }
+          if($fields.Contains('container_other')){ $fields['container_other']=ErpNumStr $bi.c45 }
+          if($fields.Contains('ship_marks')){ $fields['ship_marks']=(@("$($bi.mark2)".Trim(),"$($bi.mark3)".Trim())|Where-Object{ $_ }) -join "`n" }
+          if($fields.Contains('goods_desc')){ $gd="$($bi.good_desc1)".Trim(); if(-not $gd){ $gd=(@("$($bi.desc2)".Trim(),"$($bi.desc3)".Trim())|Where-Object{ $_ }) -join "`n" }; $fields['goods_desc']=$gd }
+        }
+      }catch{}
+      # Liner agent: the booking party code on the container line (blcont.lagent), resolved to a company via custsub
+      if($fields.Contains('liner_code')){
+        $lc=''
+        try{ $lcr=@(RunQ $srcCn "SELECT TOP 1 lagent FROM dbo.blcont WHERE blh=@r AND NULLIF(lagent,'') IS NOT NULL ORDER BY ref" @{ r=$b.ref } 8); if($lcr.Count){ $lc="$($lcr[0].lagent)".Trim() } }catch{}
+        $fields['liner_code']=$lc
+        if($lc){ $nm=ErpMaster-Name $srcCn $db 'custsub' $lc; if($nm){ $resolved['liner_code']=$nm } }
+      }
+      # Final Destination: dest is the field, but fall back to Place of Delivery (deli) when dest is blank
+      if($fields.Contains('dest_code') -and -not "$($fields['dest_code'])".Trim()){
+        $dv="$($b.deli)".Trim()
+        if($dv){ $fields['dest_code']=$dv; $nm=ErpMaster-Name $srcCn $db 'port' $dv; if($nm){ $resolved['dest_code']=$nm } }
+      }
+      # Weight unit defaults to KGS when the ERP leaves it blank
+      if($fields.Contains('cargo_wunit') -and -not "$($fields['cargo_wunit'])".Trim()){ $fields['cargo_wunit']='KGS' }
+    }
     @{ jobNo=$job; mode="$($a.mode)"; bound="$($a.bound)"; dict=@($defs); fields=$fields; resolved=$resolved }
   } catch {
     @{ error="ERP lookup failed: $($_.Exception.Message)" }
@@ -871,7 +913,7 @@ function Handle-ErpMasterSearch($cn,$qs){
   $db=$DbByStation["$($a.station)".Trim().ToUpper()]
   if(-not $db){ return @{error="station '$($a.station)' has no ERP database mapped"} }
   $like='%'+($q -replace '[%_\[\]]','')+'%'   # strip LIKE metachars (still parameterized) so it's a plain contains-search
-  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=5;Packet Size=512"
+  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=15;Packet Size=512"
   try{
     $srcCn.Open()
     $rows=@()
@@ -1197,13 +1239,13 @@ function Get-OwnOfficeAgent($srcCn,$db){
   $own
 }
 # Best-effort ERP enrichment at DRAFT-CREATION time only (staff click; never on a customer request path).
-# Same bounded pattern as Handle-ErpDetail: keyed seek, Connect Timeout=5, CommandTimeout=8, Packet Size=512.
+# Same bounded pattern as Handle-ErpDetail: keyed seek, Connect Timeout=15, CommandTimeout=8, Packet Size=512.
 # Returns '' on success or a note string; failure leaves the affected boxes on their snapshot/blank values.
 function Doc-ErpSeed($a,$f){
   $db=$DbByStation["$($a.station)".Trim().ToUpper()]; if(-not $db){ return "no ERP database mapped for station $($a.station)" }
   $key="$($a.erp_ref)".Trim(); if(-not $key){ return 'no erp_ref on the snapshot' }
   $isAir=("$($a.mode)" -eq 'Air')
-  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=5;Packet Size=512"
+  $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=15;Packet Size=512"
   try{
     $srcCn.Open()
     if($isAir){
