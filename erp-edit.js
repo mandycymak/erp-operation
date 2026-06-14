@@ -1,9 +1,9 @@
-// erp-edit.js - staff-internal ERP data correction editor, laid out like a House Bill.
-// Opened from the worklist drawer as erp-edit.html?job=<job_no>. Each party is a bill box: the master code is a
-// short editable chip (SHIPPER (A0001)) you can click to search/fix; name/address edit in the box; tel/tax sit
-// with the party but are flagged "not printed". Liner agent + controlling customer go in a sidebar (internal,
-// never on the bill). Containers use a table. Only the changed fields are sent to /booking/update. The client
-// sends the FULL seeded field set overlaid with edits, so a field never touched is never seen as cleared.
+// erp-edit.js - staff-internal ERP data correction editor, laid out like the House Bill / Air Waybill.
+// Opened from the worklist drawer as erp-edit.html?job=<job_no>. Boxes sit in their bill positions; each master
+// code is a short chip IN the caption - SHIPPER ( DUMMY ) - that you click (🔍) to search/fix, or type. Party
+// name/address/tel/tax edit in the box. The B/L-No box lists the reference numbers; the Export-References box
+// holds controlling-customer + liner-agent (internal, not printed); the Originals box shows telex release.
+// Only the changed fields are sent to /booking/update; the client sends the FULL seeded set overlaid with edits.
 'use strict';
 (function () {
   const $ = s => document.querySelector(s);
@@ -14,14 +14,25 @@
   const norm = v => (typeof v === 'string' || v == null) ? strv(v) : JSON.stringify(v);
   const job = (new URLSearchParams(location.search).get('job') || '').trim();
 
-  let SEED = {}, DICT = [], RESOLVED = {};
-
-  // party grouping (the Parties section codes are <party>_<role>)
-  const PARTIES = ['shipper', 'consignee', 'notify', 'agent', 'liner', 'ctrl'];
+  let SEED = {}, DICT = [], RESOLVED = {}, DEF = {}, MODE = 'Sea';
   const PLABEL = { shipper: 'Shipper', consignee: 'Consignee', notify: 'Notify party', agent: 'Delivery agent', liner: 'Liner agent', ctrl: 'Controlling customer' };
-  const partyOf = code => { for (const p of PARTIES) { if (code === p + '_code' || code.indexOf(p + '_') === 0) return p; } return code; };
-  const roleOf = (code, p) => code.slice(p.length + 1);
-  const byRole = fields => { const o = {}; fields.forEach(d => { o[roleOf(d.code, partyOf(d.code))] = d; }); return o; };
+
+  // bill-grid templates (w = columns out of 12). Cells reference field codes from the dictionary.
+  const GRID = {
+    Sea: [
+      [{ box: 'party', code: 'shipper', cap: 'Shipper', w: 6 }, { box: 'refs', cap: 'B/L No.', codes: ['bl_no', 'booking_no', 'po_no', 'job_disp', 'master_no'], w: 3 }, { box: 'originals', cap: 'No. of Original B(s)/L', w: 3 }],
+      [{ box: 'party', code: 'consignee', cap: 'Consignee', w: 6 }, { box: 'internal', cap: 'Export References', w: 6 }],
+      [{ box: 'party', code: 'notify', cap: 'Notify Party', w: 6 }, { box: 'party', code: 'agent', cap: 'Delivery Agent', w: 6 }],
+      [{ box: 'chip', code: 'pol_code', cap: 'Port of Loading', w: 3 }, { box: 'chip', code: 'pod_code', cap: 'Port of Discharge', w: 3 }, { box: 'chip', code: 'incoterm', cap: 'Incoterm', w: 3 }, { box: 'chip', code: 'service_code', cap: 'Service Type', w: 3 }],
+      [{ box: 'containers', code: 'containers', cap: 'Container Particulars', w: 12 }]
+    ],
+    Air: [
+      [{ box: 'party', code: 'shipper', cap: "Shipper's Name and Address", w: 6 }, { box: 'refs', cap: 'AWB / Ref. No.', codes: ['bl_no', 'master_no', 'booking_no', 'po_no', 'job_disp'], w: 3 }, { box: 'chip', code: 'service_code', cap: 'Service Type', w: 3 }],
+      [{ box: 'party', code: 'consignee', cap: "Consignee's Name and Address", w: 6 }, { box: 'internal', cap: 'Accounting / Internal', w: 6 }],
+      [{ box: 'party', code: 'notify', cap: 'Notify Party', w: 6 }, { box: 'party', code: 'agent', cap: 'Delivery Agent', w: 6 }],
+      [{ box: 'chip', code: 'pol_code', cap: 'Airport of Departure', w: 4 }, { box: 'chip', code: 'pod_code', cap: 'Airport of Destination', w: 4 }, { box: 'chip', code: 'incoterm', cap: 'Incoterm (Routing)', w: 4 }]
+    ]
+  };
 
   async function api(path, body) {
     const opts = { cache: 'no-store', headers: { 'X-Ops-User': localStorage.getItem('opsUser') || '(open)' } };
@@ -36,7 +47,8 @@
     if (!job) { fail('No shipment specified.'); $('#sections').innerHTML = ''; return; }
     const d = await api('/api-ops/erp-edit?job=' + encodeURIComponent(job));
     if (d.error) { $('#sections').innerHTML = ''; fail(d.error); $('#status').textContent = 'error'; return; }
-    SEED = d.fields || {}; DICT = arr(d.dict); RESOLVED = d.resolved || {};
+    SEED = d.fields || {}; DICT = arr(d.dict); RESOLVED = d.resolved || {}; MODE = (d.mode === 'Air') ? 'Air' : 'Sea';
+    DEF = {}; DICT.forEach(x => DEF[x.code] = x);
     $('#status').textContent = (d.mode || '') + ' ' + (d.bound || '');
     $('#sub').textContent = 'Job ' + job;
     render();
@@ -48,93 +60,90 @@
       if (after) after();
     });
   }
-  function textInput(def, multiline) {
-    const i = multiline ? el('textarea') : (() => { const x = el('input'); x.type = 'text'; return x; })();
+  // the short editable master-code chip "( CODE ) 🔍"; hintEl shows the resolved master name and clears on typing
+  function codeChip(def, hintEl) {
+    const wrap = el('span', 'codechip lookup');
+    wrap.appendChild(document.createTextNode('('));
+    const inp = el('input'); inp.type = 'text'; inp.dataset.code = def.code; inp.value = strv(SEED[def.code]); inp.spellcheck = false;
+    if (!def.writeKey) inp.disabled = true;
+    wireChange(inp, def.code, () => { if (hintEl) hintEl.textContent = ''; });
+    wrap.appendChild(inp);
+    wrap.appendChild(document.createTextNode(')'));
+    if (def.writeKey && def.lookup) { const fb = el('button', 'findbtn', '🔍'); fb.type = 'button'; fb.title = 'Search the master'; fb.onclick = () => openLookup(def, wrap, inp, hintEl); wrap.appendChild(fb); }
+    return wrap;
+  }
+  function pInput(def, multiline) {
+    const i = multiline ? el('textarea', 'pin') : (() => { const x = el('input', 'pin'); x.type = 'text'; return x; })();
     i.dataset.code = def.code; i.value = strv(SEED[def.code]); i.placeholder = def.label; i.spellcheck = false;
     if (!def.writeKey) i.disabled = true;
     wireChange(i, def.code);
     return i;
   }
-  // the short editable master-code chip + magnifier that opens a search popup
-  function codeChip(def, hintEl) {
-    const wrap = el('span', 'codechip lookup');
-    const inp = el('input'); inp.type = 'text'; inp.dataset.code = def.code; inp.value = strv(SEED[def.code]); inp.spellcheck = false;
-    if (!def.writeKey) inp.disabled = true;
-    wireChange(inp, def.code, () => { if (hintEl) hintEl.textContent = ''; });   // typing a code clears the old resolved name
-    wrap.appendChild(inp);
-    if (def.writeKey && def.lookup) { const fb = el('button', 'findbtn', '🔍'); fb.type = 'button'; fb.title = 'Search the master'; fb.onclick = () => openLookup(def, wrap, inp, hintEl); wrap.appendChild(fb); }
-    return wrap;
-  }
-  function rhint(code) { const h = el('div', 'rhint'); h.textContent = RESOLVED[code] ? ('→ ' + RESOLVED[code]) : ''; return h; }
 
-  function partyBox(p, info) {
-    const box = el('div', 'pbox');
-    const f = byRole(info.fields);
-    const lab = el('div', 'plabel'); lab.appendChild(document.createTextNode(PLABEL[p]));
-    let hint = null;
-    if (f.code) { hint = rhint(f.code.code); lab.appendChild(codeChip(f.code, hint)); }
-    box.appendChild(lab);
-    if (hint) box.appendChild(hint);
-    if (f.name) { const d = el('div', 'pname'); d.appendChild(textInput(f.name)); box.appendChild(d); }
-    if (f.address) { const d = el('div', 'paddr'); d.appendChild(textInput(f.address, true)); box.appendChild(d); }
-    const extras = [f.phone, f.tax].filter(Boolean);
-    if (extras.length) box.appendChild(extraBlock(extras));
-    return box;
+  // --- cell renderers ---
+  function partyCell(box, prefix, capText) {
+    const codeDef = DEF[prefix + '_code'];
+    const hint = el('div', 'rhint');
+    if (codeDef) hint.textContent = RESOLVED[codeDef.code] ? ('master: ' + RESOLVED[codeDef.code]) : '';
+    const cap = el('div', 'cap'); cap.appendChild(document.createTextNode(capText));
+    if (codeDef) cap.appendChild(codeChip(codeDef, hint));
+    box.appendChild(cap); box.appendChild(hint);
+    if (DEF[prefix + '_name']) box.appendChild(pInput(DEF[prefix + '_name']));
+    if (DEF[prefix + '_address']) box.appendChild(pInput(DEF[prefix + '_address'], true));
+    const ex = [DEF[prefix + '_phone'], DEF[prefix + '_tax']].filter(Boolean);
+    if (ex.length) {
+      const row = el('div', 'telrow np');
+      ex.forEach(d => { const c = el('div', 'telcell'); c.appendChild(el('span', 'tl', esc(d.label) + ' (not printed)')); c.appendChild(pInput(d)); row.appendChild(c); });
+      box.appendChild(row);
+    }
   }
-  function extraBlock(defs) {
-    const wrap = el('div', 'extra');
-    const h = el('div', 'xh'); h.appendChild(document.createTextNode('Additional')); h.appendChild(el('span', 'tag', 'not printed')); wrap.appendChild(h);
-    const row = el('div', 'xrow');
-    defs.forEach(d => { const c = el('div', 'xcell'); c.appendChild(el('label', null, esc(d.label))); c.appendChild(textInput(d)); row.appendChild(c); });
-    wrap.appendChild(row);
-    return wrap;
+  function chipCell(box, code, capText) {
+    const def = DEF[code]; if (!def) return;
+    const val = el('div', 'boxval'); val.textContent = RESOLVED[code] || (def.lookup === 'incoterm' ? '' : '');
+    const cap = el('div', 'cap'); cap.appendChild(document.createTextNode(capText)); cap.appendChild(codeChip(def, val));
+    box.appendChild(cap); box.appendChild(val);
   }
-  function internalBox(p, info) {
-    const box = el('div', 'ibox');
-    const f = byRole(info.fields);
-    const lab = el('div', 'plabel'); lab.appendChild(document.createTextNode(PLABEL[p]));
-    let hint = null;
-    if (f.code) { hint = rhint(f.code.code); lab.appendChild(codeChip(f.code, hint)); }
-    box.appendChild(lab);
-    if (hint) box.appendChild(hint);
-    return box;
+  function refsCell(box, capText, codes) {
+    box.appendChild(el('div', 'cap', esc(capText)));
+    let any = false;
+    codes.forEach(c => { const d = DEF[c]; if (!d) return; const v = strv(SEED[c]).trim(); if (!v) return; any = true; const line = el('div', 'refline'); line.innerHTML = '<span class="rl">' + esc(d.label) + ':</span> ' + esc(v); box.appendChild(line); });
+    if (!any) box.appendChild(el('div', 'refline muted', '-'));
   }
-  function refStrip(defs) {
-    const card = el('div', 'refcard'); card.appendChild(el('h3', null, 'Bill references'));
-    const grid = el('div', 'refgrid');
-    defs.forEach(d => {
-      const chip = el('div', 'refchip');
-      chip.appendChild(el('label', null, esc(d.label)));
-      const rc = el('div', 'rc lookup');
-      const inp = el('input'); inp.type = 'text'; inp.dataset.code = d.code; inp.value = strv(SEED[d.code]); inp.spellcheck = false;
-      if (!d.writeKey) inp.disabled = true;
-      const hint = rhint(d.code);
-      wireChange(inp, d.code, () => { hint.textContent = ''; });
-      rc.appendChild(inp);
-      if (d.writeKey && d.lookup) { const fb = el('button', 'findbtn', '🔍'); fb.type = 'button'; fb.title = 'Search the master'; fb.onclick = () => openLookup(d, rc, inp, hint); rc.appendChild(fb); }
-      chip.appendChild(rc); chip.appendChild(hint); grid.appendChild(chip);
+  function originalsCell(box, capText) {
+    box.appendChild(el('div', 'cap', esc(capText)));
+    const telex = /^(true|1|y)/i.test(strv(SEED['telex_release']));
+    const no = strv(SEED['num_originals']).trim();
+    box.appendChild(el('div', 'refline', (telex ? '☑' : '☐') + ' Telex release'));
+    box.appendChild(el('div', 'refline', '<span class="rl">Originals:</span> ' + esc(telex ? '0 (telex)' : (no || '-'))));
+  }
+  function internalCell(box, capText) {
+    const cap = el('div', 'cap'); cap.appendChild(document.createTextNode(capText)); cap.appendChild(el('span', 'tag', 'not printed'));
+    box.appendChild(cap);
+    const inner = el('div', 'np');
+    ['ctrl', 'liner'].forEach(p => {
+      const d = DEF[p + '_code']; if (!d) return;
+      const mini = el('div', 'minip');
+      const lab = el('div', 'minilab'); lab.appendChild(document.createTextNode(PLABEL[p]));
+      const nm = el('div', 'rhint'); nm.textContent = RESOLVED[d.code] ? ('→ ' + RESOLVED[d.code]) : '';
+      lab.appendChild(codeChip(d, nm));
+      mini.appendChild(lab); mini.appendChild(nm);
+      inner.appendChild(mini);
     });
-    card.appendChild(grid);
-    return card;
+    box.appendChild(inner);
   }
-  function cargoCard(def) {
-    const card = el('div', 'cargocard'); card.appendChild(el('h3', null, 'Containers'));
-    card.appendChild(containerTable(def));
-    return card;
-  }
-  function containerTable(def) {
-    const wrap = el('div');
+  function containersCell(box, code, capText) {
+    const def = DEF[code]; box.appendChild(el('div', 'cap', esc(capText)));
+    if (!def) return;
     const tab = el('table', 'ctab'); tab._def = def;
     const hr = el('tr'); def.columns.forEach(c => hr.appendChild(el('th', null, esc(c.label)))); hr.appendChild(el('th', null, ''));
     const th = el('thead'); th.appendChild(hr); tab.appendChild(th);
     const tb = el('tbody'); tab.appendChild(tb);
-    const rows = arr(SEED[def.code]);
+    const rows = arr(SEED[code]);
     (rows.length ? rows : [{}]).forEach(r => tb.appendChild(contRow(def, r)));
-    wrap.appendChild(tab);
+    box.appendChild(tab);
     const add = el('button', '', '+ Add row'); add.type = 'button'; add.style.cssText = 'font-size:12px;padding:4px 9px;margin-top:6px';
     add.onclick = () => tb.appendChild(contRow(def, {}));
-    wrap.appendChild(add);
-    return wrap;
+    box.appendChild(add);
   }
   function contRow(def, r) {
     const tr = el('tr');
@@ -144,25 +153,25 @@
   }
 
   function openLookup(def, anchorEl, inp, hintEl) {
-    const ex = anchorEl.querySelector('.lookbox'); if (ex) { ex.remove(); return; }   // toggle
+    const ex = anchorEl.querySelector('.lookbox'); if (ex) { ex.remove(); return; }
     const box = el('div', 'lookbox');
     const q = el('input', 'lq'); q.type = 'text'; q.placeholder = 'code or name...'; q.spellcheck = false; box.appendChild(q);
     const list = el('div'); box.appendChild(list);
     anchorEl.appendChild(box); q.focus();
     let t = null;
     const run = async () => {
-      list.innerHTML = '<div class="li note">searching...</div>';
+      list.innerHTML = '<div class="li">searching...</div>';
       const d = await api('/api-ops/erp-master?job=' + encodeURIComponent(job) + '&kind=' + encodeURIComponent(def.lookup) + '&q=' + encodeURIComponent(q.value.trim()));
       list.innerHTML = '';
-      if (d.error) { list.innerHTML = '<div class="li note">' + esc(d.error) + '</div>'; return; }
+      if (d.error) { list.innerHTML = '<div class="li">' + esc(d.error) + '</div>'; return; }
       const res = arr(d.results);
-      if (!res.length) { list.innerHTML = '<div class="li note">no matches</div>'; return; }
+      if (!res.length) { list.innerHTML = '<div class="li">no matches</div>'; return; }
       res.forEach(r => {
         const li = el('div', 'li', '<b>' + esc(r.code) + '</b> ' + esc(r.name || ''));
         li.onclick = () => {
           inp.value = r.code;
           if (norm(SEED[def.code]) !== norm(r.code)) inp.classList.add('chg'); else inp.classList.remove('chg');
-          if (hintEl) hintEl.textContent = r.name ? ('→ ' + r.name) : '';
+          if (hintEl) hintEl.textContent = r.name ? ((hintEl.className.indexOf('boxval') >= 0 ? '' : '→ ') + r.name) : '';
           box.remove();
         };
         list.appendChild(li);
@@ -175,29 +184,41 @@
 
   function render() {
     const root = $('#sections'); root.innerHTML = '';
-    const parties = {}, routing = [], cargo = [];
-    DICT.forEach(d => {
-      const s = d.section || '';
-      if (s.indexOf('Cargo') >= 0) cargo.push(d);
-      else if (s.indexOf('Routing') >= 0) routing.push(d);
-      else { const p = partyOf(d.code); (parties[p] || (parties[p] = { internal: !!d.internal, fields: [] })).fields.push(d); }
+    root.appendChild(el('div', 'billtitle', MODE === 'Air' ? 'HOUSE AIR WAYBILL - ERP DATA' : 'HOUSE BILL OF LADING - ERP DATA'));
+    const bill = el('div', 'gbill');
+    (GRID[MODE] || GRID.Sea).forEach(rowSpec => {
+      const row = el('div', 'grow');
+      rowSpec.forEach(cell => {
+        const box = el('div', 'gbox'); const pct = (cell.w / 12 * 100); box.style.flex = '0 0 ' + pct + '%'; box.style.maxWidth = pct + '%';
+        if (cell.box === 'party') partyCell(box, cell.code, cell.cap);
+        else if (cell.box === 'chip') chipCell(box, cell.code, cell.cap);
+        else if (cell.box === 'refs') refsCell(box, cell.cap, cell.codes);
+        else if (cell.box === 'originals') originalsCell(box, cell.cap);
+        else if (cell.box === 'internal') internalCell(box, cell.cap);
+        else if (cell.box === 'containers') containersCell(box, cell.code, cell.cap);
+        row.appendChild(box);
+      });
+      bill.appendChild(row);
     });
-    const billwrap = el('div', 'billwrap');
-    const bill = el('div', 'bill'); const side = el('div', 'side');
-    ['shipper', 'consignee', 'notify', 'agent'].forEach(p => { if (parties[p]) bill.appendChild(partyBox(p, parties[p])); });
-    if (routing.length) bill.appendChild(refStrip(routing));
-    cargo.forEach(d => bill.appendChild(cargoCard(d)));
-    let anyInternal = false;
-    side.appendChild(el('div', 'sidehead', 'Internal - not printed on the bill'));
-    ['liner', 'ctrl'].forEach(p => { if (parties[p]) { anyInternal = true; side.appendChild(internalBox(p, parties[p])); } });
-    side.appendChild(el('div', 'sidenote', 'These identify the shipment for reporting and accounting. They are corrected here but never appear on the customer’s House Bill.'));
-    billwrap.appendChild(bill);
-    if (anyInternal) billwrap.appendChild(side);
-    root.appendChild(billwrap);
+    root.appendChild(bill);
+    root.appendChild(extraSections());
+  }
+
+  // Space beneath the bill for additional, non-bill sections. Billing is planned but not yet wired (the ERP
+  // charge tables + Swivel billing endpoint are not yet mapped), so it shows as a disabled preview for now.
+  function extraSections() {
+    const wrap = el('div', 'extra-sect');
+    const add = el('button', '', '＋ Add section'); add.type = 'button';
+    const card = el('div', 'seccard'); card.style.display = 'none';
+    card.innerHTML = '<b>Billing &amp; charges</b> — planned. Charge lines (code · description · amount · currency) will be ' +
+      'editable here once the ERP charge tables and the Swivel billing endpoint are mapped. Not available yet.';
+    add.onclick = () => { card.style.display = card.style.display === 'none' ? 'block' : 'none'; };
+    wrap.appendChild(add); wrap.appendChild(card);
+    return wrap;
   }
 
   function collect() {
-    const out = JSON.parse(JSON.stringify(SEED || {}));   // keep untouched/hidden fields at their seeded value
+    const out = JSON.parse(JSON.stringify(SEED || {}));   // keep untouched/display fields at their seeded value
     document.querySelectorAll('#sections input[data-code], #sections textarea[data-code]').forEach(i => { out[i.dataset.code] = i.value; });
     document.querySelectorAll('#sections table.ctab').forEach(tab => {
       const def = tab._def; const rows = [];
@@ -226,7 +247,7 @@
     let html = '<div class="' + okClass + '">' + esc(head) + '</div>';
     if (arr(erp.steps).length || erp.error) html += '<div class="steps">' + esc(arr(erp.steps).join('\n') + (erp.error ? ('\n' + erp.error) : '')) + '</div>';
     $('#msg').innerHTML = html;
-    await load();   // re-seed: the new values become the baseline, resolved names refresh
+    await load();
   }
 
   $('#saveBtn').onclick = save;
