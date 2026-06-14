@@ -11,62 +11,94 @@
   }
   *{ box-sizing:border-box }
   body{ font:14px/1.45 -apple-system,Segoe UI,Roboto,Arial,sans-serif; margin:0; background:var(--bg); color:var(--fg) }
-  .wrap{ max-width:860px; margin:0 auto; padding:16px }
-  .bar{ display:flex; align-items:center; gap:10px; padding:6px 0 12px; flex-wrap:wrap }
+  .wrap{ max-width:1040px; margin:0 auto; padding:16px }
+  .bar{ display:flex; align-items:center; gap:10px; padding:6px 0 10px; flex-wrap:wrap }
   .bar h1{ font-size:18px; margin:0 }
   .sub{ color:var(--mut); font-size:13px }
   .spacer{ flex:1 }
   button{ font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; padding:6px 12px }
   button.primary{ background:var(--accent); border-color:var(--accent); color:#fff }
-  button.ghost{ font-size:12px; padding:4px 9px }
+  button.toggle.on{ background:var(--accent); border-color:var(--accent); color:#fff }
   button:disabled{ opacity:.55; cursor:default }
-  .card{ background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:12px }
-  .sect h2{ font-size:14px; margin:0 0 4px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut) }
-  .row{ display:flex; align-items:flex-start; gap:10px; padding:6px 0; border-top:1px solid var(--line) }
-  .row:first-of-type{ border-top:0 }
-  .row label{ flex:0 0 200px; padding-top:6px; color:var(--fg) }
-  .row .ctl{ flex:1; min-width:0 }
-  .row .tag{ font-size:11px; color:var(--mut); border:1px solid var(--line); border-radius:10px; padding:0 7px; margin-left:6px }
-  .row.internal label::after{ content:''; }
-  input[type=text], textarea, select{ width:100%; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px }
-  textarea{ min-height:54px; resize:vertical }
-  .codewrap{ display:flex; gap:6px; align-items:center }
-  .codewrap input{ flex:1 }
-  .hint{ font-size:12px; color:var(--mut); margin-top:3px; min-height:14px }
-  .row.changed input, .row.changed textarea{ background:var(--chg); border-color:var(--chgline) }
-  .lookup{ position:relative }
-  .lookbox{ position:absolute; z-index:30; left:0; right:0; background:var(--card); border:1px solid var(--line); border-radius:6px; margin-top:3px; max-height:240px; overflow:auto; box-shadow:0 6px 20px rgba(0,0,0,.18) }
-  .lookbox .li{ padding:6px 9px; cursor:pointer; border-top:1px solid var(--line); font-size:13px }
-  .lookbox .li:first-child{ border-top:0 }
-  .lookbox .li:hover{ background:var(--bg) }
-  .lookbox .li b{ font-family:ui-monospace,Consolas,monospace }
-  .addfield{ margin-top:8px }
-  .addfield select{ width:auto; min-width:220px }
-  table.ctab{ width:100%; border-collapse:collapse; font-size:13px }
-  table.ctab th{ text-align:left; color:var(--mut); font-weight:600; padding:4px 6px; border-bottom:1px solid var(--line) }
-  table.ctab td{ padding:3px 6px; border-bottom:1px solid var(--line) }
-  table.ctab input{ padding:4px 6px }
+  .note{ font-size:12px; color:var(--mut) }
   #msg .err{ background:rgba(180,35,24,.12); border:1px solid var(--bad); color:var(--bad); border-radius:6px; padding:8px 10px; margin-bottom:10px }
   #msg .ok{ background:rgba(15,123,63,.12); border:1px solid var(--ok); color:var(--ok); border-radius:6px; padding:8px 10px; margin-bottom:10px }
   .steps{ font-size:12px; color:var(--mut); margin-top:6px; white-space:pre-wrap }
-  .note{ font-size:12px; color:var(--mut) }
+
+  /* bill-style layout */
+  .billwrap{ display:flex; gap:14px; align-items:flex-start }
+  .bill{ flex:1 1 auto; min-width:0; background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden }
+  .side{ flex:0 0 270px }
+  @media (max-width:820px){ .billwrap{ flex-direction:column } .side{ flex-basis:auto; width:100% } }
+
+  .pbox{ border-bottom:1px solid var(--line); padding:10px 12px; position:relative }
+  .pbox:last-child{ border-bottom:0 }
+  .plabel{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); font-weight:700; display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px }
+  .codechip{ display:inline-flex; align-items:center; gap:2px; background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:1px 4px 1px 9px }
+  .codechip input{ border:0; background:transparent; width:78px; font:600 12px ui-monospace,Consolas,monospace; color:var(--accent); padding:2px 0; text-transform:none }
+  .codechip input:disabled{ color:var(--mut) }
+  .findbtn{ border:0; background:transparent; cursor:pointer; font-size:12px; padding:0 3px; color:var(--mut) }
+  .rhint{ font-size:12px; color:var(--mut); margin:0 0 6px; min-height:14px }
+  .pname input, .paddr textarea, .extra input, .refchip input, .ibox .codechip input{ width:100%; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 8px }
+  .pname{ margin-bottom:5px }
+  .paddr textarea{ width:100%; min-height:46px; resize:vertical; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 8px }
+  .chg{ background:var(--chg) !important; border-color:var(--chgline) !important }
+
+  .extra{ margin-top:8px; border-top:1px dashed var(--line); padding-top:6px }
+  .extra .xh{ font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); margin-bottom:4px; display:flex; align-items:center; gap:6px }
+  .extra .tag{ font-size:10px; color:var(--mut); border:1px solid var(--line); border-radius:9px; padding:0 6px }
+  .extra .xrow{ display:flex; gap:8px; flex-wrap:wrap }
+  .extra .xcell{ flex:1 1 140px }
+  .extra .xcell label{ font-size:11px; color:var(--mut); display:block; margin-bottom:2px }
+
+  .refcard{ padding:10px 12px; border-bottom:1px solid var(--line) }
+  .refcard h3{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:0 0 7px }
+  .refgrid{ display:flex; gap:12px; flex-wrap:wrap }
+  .refchip{ flex:0 0 auto }
+  .refchip label{ font-size:11px; color:var(--mut); display:block; margin-bottom:2px }
+  .refchip .rc{ display:flex; gap:4px; align-items:center; position:relative }
+  .refchip input{ width:120px }
+  .refchip .rhint{ margin:2px 0 0; font-size:11px }
+
+  .cargocard{ padding:10px 12px }
+  .cargocard h3{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:0 0 7px }
+  table.ctab{ width:100%; border-collapse:collapse; font-size:13px }
+  table.ctab th{ text-align:left; color:var(--mut); font-weight:600; padding:4px 6px; border-bottom:1px solid var(--line) }
+  table.ctab td{ padding:3px 6px; border-bottom:1px solid var(--line) }
+  table.ctab input{ width:100%; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:4px 6px }
+
+  .side .sidehead{ font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); font-weight:700; margin:2px 0 7px }
+  .ibox{ background:var(--card); border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin-bottom:8px; position:relative }
+  .ibox .plabel{ margin-bottom:5px }
+  .ibox .rhint{ margin-top:4px }
+  .sidenote{ font-size:11px; color:var(--mut); line-height:1.45 }
+
+  .lookup{ position:relative }
+  .lookbox{ position:absolute; z-index:40; left:0; top:100%; min-width:230px; background:var(--card); border:1px solid var(--line); border-radius:6px; margin-top:3px; max-height:240px; overflow:auto; box-shadow:0 6px 20px rgba(0,0,0,.20) }
+  .lookbox .lq{ width:100%; border:0; border-bottom:1px solid var(--line); border-radius:6px 6px 0 0; padding:6px 8px; background:var(--card); color:var(--fg); font:inherit }
+  .lookbox .li{ padding:6px 9px; cursor:pointer; border-top:1px solid var(--line); font-size:13px }
+  .lookbox .li:hover{ background:var(--bg) }
+  .lookbox .li b{ font-family:ui-monospace,Consolas,monospace }
+
+  body.hidenp .extra, body.hidenp .side{ display:none !important }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="bar">
     <h1>Correct ERP data</h1>
-    <span class="badge sub" id="status"></span>
+    <span class="sub" id="status"></span>
     <span class="spacer"></span>
+    <button id="hideBtn" class="toggle" title="Hide the fields that are not printed on the House Bill">Hide non-printed</button>
     <button id="saveBtn" class="primary">Save changes to ERP</button>
     <button onclick="window.close()">Close</button>
   </div>
   <div class="sub" id="sub"></div>
-  <p class="note">Staff-internal correction tool. Pick the correct master code or type a correction; only the
-    fields you change are sent to the ERP. Liner agent and controlling customer are <b>internal</b> (for
-    reporting) and are not shown on the customer's bill.</p>
+  <p class="note">Laid out like the House Bill. Click a code chip (e.g. <b>SHIPPER (A0001)</b>) to search or fix the
+    master code; edit the name/address in the box. Tel / tax and the internal parties (liner agent, controlling
+    customer) are kept with their party but are <b>not printed</b> on the bill. Only changed fields are sent to the ERP.</p>
   <div id="msg"></div>
-  <div id="sections"><div class="card">Loading shipment from the ERP...</div></div>
+  <div id="sections"><div class="bill" style="padding:14px">Loading shipment from the ERP...</div></div>
 </div>
 <script src="/erp-edit.js"></script>
 </body>
