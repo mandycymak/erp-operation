@@ -17,7 +17,53 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-13 — booking-stage identity fix + UI declutter/theme/mobile + draft speed/UX + ERP-files browse & download — RESUME HERE).**
+**Latest session (2026-06-14 — staff-internal ERP data-correction editor: fix bad source data, push only changed fields to `/booking/update` — RESUME HERE).**
+The app *read* ERP data and trusted it; operators routinely spot bad source data they cannot fix from the ERP UI
+(most importantly **`DUMMY` party codes** and **`ZZZ`/`ZZZZZ` incoterm/port codes** that silently corrupt reports,
+but also wrong addresses, dates, carrier, container counts). New **"Correct ERP data"** pop-out, opened from the
+worklist drawer (`erpEditPanel` → `erp-edit.html?job=<job_no>`). It seeds each field's current ERP value, lets the
+operator fix it (master lookup or free type), and pushes **only the changed fields** to Swivel `/booking/update`,
+with a full audit row in the new **`erp_edit_log`** table. New files: `erp-edit.html` / `erp-edit.js` /
+`erp-edit-fields.json` (field dictionary). Reuses the draft-HBL ERP machinery (mock mode, read-merge-write existence
+guard, best-effort/strict). Staff-internal — **no customer-approval loop** (unlike the draft-HBL agree flow).
+- **Laid out like the bill (Sea HBL / Air AWB), verified by headless-Edge screenshots both modes.** Two-column
+  upper region: parties stack on the **left** (shipper / consignee / notify / delivery agent, each a combined box —
+  **line 1 = name, the rest = address**); the **right** holds References + Stakeholders, the **SERVICE DETAIL**
+  4-column grid, and an **Internal Remark** box. Below: a routing row (Place of Receipt | Port of Loading | Port of
+  Discharge | Final Destination), a one-line **Cargo Information** row, **Marks | Description** side by side, and the
+  container table. Each master code is a chip **in the caption** — `SHIPPER ( DUMMY )` — click **`...`** to search the
+  master or type it; resolved name shows as **`NAME (CODE) - city, country`** (custsub `city`/`country`).
+- **Field map verified on live `fm3khkg`; ALL write keys verified against the Swivel OpenAPI spec**
+  (`3rd-erpapi.json`, fetched as raw JSON, parsed with node — PS `ConvertFrom-Json` chokes on its dup case-only keys).
+  Editable & pushable: the 6 party codes + name/address/phone/tax (`bookingParty.*`), `incoTermsCode`, `serviceCode`,
+  `placeOfReceiptCode`/`portOfLoadingCode`/`portOfDischargeCode`/`finalDestinationCode`, `carrierCode`/`carrierName`,
+  PO (→ `bookingReference[]` `{refName:'PO'}`), **ETD/ETA + flight time folded into one `departureDateEstimated`
+  datetime** (`<date>T<hh:mm>` — the API has no separate time field), `cargoReady/ReceiptDateEstimated`,
+  `telexRelease`/`isDirect`/`dangerousGood` (real JSON booleans), `divisionCode`/`team`/`picId`/`picEmail`,
+  `commodity` + `quantity`/`quantityUnit`/`grossWeight`/`weightUnit`/`cbm` (real numbers), `shipMarks`/
+  `goodsDescription`, `remark`, `bookingContainers[]` (a **type+qty row is valid with no container number** — for
+  booking-stage counts), and the four sea aggregates `container20`/`container40`/`containerHQ`/`containerOthers`.
+- **Read columns derived bound-aware** where the ERP splits by leg: ETD/ETA = `departure2/arrival2` (Export) /
+  `departure1/arrival1` (Import), Air ETD = `f_date1`; vessel/voyage = `vessel_2/voyage_2` (Export) /
+  `vessel_1/voyage_1` (Import) with the code resolved to a name via `veslmstr.short_name`. Numbers strip trailing
+  zeros, bits → `true`/`false`, datetimes → ISO.
+- **Hard API limits (surfaced, not faked):** **trucker / customs broker / warehouse have NO field in
+  `/booking/update`** (only 8 party types exist) → dropped from the UI; **No. of originals** and **PIC name** have no
+  write key → removed (PIC corrected via `picId`/`picEmail`). **Carrier + the estimated dates push best-effort** (the
+  carrier master rejects raw ERP codes; demoerp still rejects date-touching updates — open Swivel ticket) and any
+  rejection is captured verbatim in `erp_edit_log`.
+- Server: `Handle-ErpEditSeed` / `Handle-ErpMasterSearch` (live `TOP 20` LIKE over custsub/portmstr/servmstr/
+  linermstr + fixed Incoterms-2020 list) / `Save-ErpEdit` (re-reads the live ERP for the authoritative *before*,
+  diffs via `Doc-Changed`, blocks read-only edits) + routes `/api-ops/erp-edit`, `/api-ops/erp-master`,
+  `/api-ops/erp-edit-save` (`serve-ops.ps1`). `Build-ErpPatchPayload` + `Invoke-ErpEditPush` (`erp-doc-api.ps1`).
+  `erp_edit_log` table added idempotently to `setup-ops.ps1`. Verified end-to-end: seed SELECT validity (Sea+Air,
+  no invalid columns), payload shape (party nesting, bool/number/date/bookingReference/container array, ETD+time
+  fold), and the two-mode screenshots.
+- Committed: `f2a1bf2`/`74e3e17`/`9aadbe1` (the first three editor rounds). **Uncommitted:** the HBL-grid 2-column
+  redesign, the routing/cargo/marks/container-count/vessel/flight rounds, and the trucker-removal / picEmail / note
+  cleanup round (`erp-edit-fields.json` `erp-edit.html` `erp-edit.js` `serve-ops.ps1` `erp-doc-api.ps1`).
+
+**Previous session (2026-06-13 — booking-stage identity fix + UI declutter/theme/mobile + draft speed/UX + ERP-files browse & download).**
 - **Early-booking identity fix (the `job_no` collapse).** The listener keyed `shipment_alerts` on the raw ERP
   `jobn`, which is blank at booking stage AND **non-unique once issued** (one job number can cover many house
   bills — `SEHKG220800007` = **200** HBLs), so distinct shipments collapsed onto one card (HKG Sea stored only
@@ -376,6 +422,10 @@ user pasted). Only `*.example.json` is tracked.
 | `serve-ops.ps1` (feed) | `/api-ops/inbound` (reads only the feed by `dest_station=stationCode`) + `/api-ops/inbound-assign` (local assign → threads a `FEED:` note into the assignee's My-Tasks); `stationCode` in config payload | ✅ |
 | `ops.js`/`index.html` (feed) | **📥 Inbound bookings (pre-arrival)** panel (Import bound only): light-grouped cards (source station, shipper, controlling customer, agent, POL→POD, ETD/cargo-ready) with **Assign** → roster picker | ✅ |
 | `register-ops-tasks.ps1` | Task Scheduler: `publish-bookings` per station (Sea 3×/day, Air 2h, **staggered**) + weekly `seed-station-map` | ✅ |
+| `erp-edit.html`/`erp-edit.js`/`erp-edit-fields.json` | **Staff-internal ERP data-correction editor** (pop-out from the worklist drawer). HBL/AWB-grid layout; fixes bad source data (DUMMY/ZZZ codes, addresses, dates, carrier, container counts) and pushes **only changed fields** to Swivel `/booking/update`. Field dictionary mirrors `doc-fields.json`; every write key verified against the OpenAPI spec | ✅ verified live + screenshots |
+| `serve-ops.ps1` (erp-edit) | `Handle-ErpEditSeed` (bound-aware ETD/ETA + vessel/voyage derivation, master-name resolve), `Handle-ErpMasterSearch` (live custsub/port/service/liner + Incoterms list), `Save-ErpEdit` (authoritative re-read, diff, audit) + routes `/api-ops/erp-edit`, `/erp-master`, `/erp-edit-save` | ✅ |
+| `erp-doc-api.ps1` (erp-edit) | `Build-ErpPatchPayload` (only-changed; `bookingParty` nesting; bool/number/date/`bookingReference`/container-array handling; ETD+flight-time fold into `departureDateEstimated`) + `Invoke-ErpEditPush` (mock + live read-merge-write existence guard, best-effort) | ✅ |
+| `setup-ops.ps1` (erp-edit) | +`erp_edit_log` audit table (job_no, before→after `changed_json`, erp_status/steps/error), idempotent | ✅ |
 
 **Cross-station inbound booking feed (key finding 5) — built (publish/subscribe fan-in).** An origin station's
 scheduled `publish-bookings.ps1` writes its cross-station bookings into the central `pgsops.inbound_booking_feed`

@@ -754,13 +754,19 @@ function ErpMaster-Name($srcCn,$db,$kind,$code){
   $code="$code".Trim(); if(-not $code){ return '' }
   try{
     switch($kind){
-      'custsub' { $r=@(RunQ $srcCn "SELECT TOP 1 doc_e_name,mal_e_name FROM dbo.custsub WHERE code2=@c AND ISNULL(isdel,0)=0" @{ c=$code } 8); if($r.Count){ $n="$($r[0].doc_e_name)".Trim(); if(-not $n){ $n="$($r[0].mal_e_name)".Trim() }; return $n } }
+      'custsub' { $r=@(RunQ $srcCn "SELECT TOP 1 doc_e_name,mal_e_name,city,country FROM dbo.custsub WHERE code2=@c AND ISNULL(isdel,0)=0" @{ c=$code } 8); if($r.Count){ $n="$($r[0].doc_e_name)".Trim(); if(-not $n){ $n="$($r[0].mal_e_name)".Trim() }; $loc=(@("$($r[0].city)".Trim(),"$($r[0].country)".Trim())|Where-Object{ $_ }) -join ', '; if($loc){ return "$n - $loc" }; return $n } }
       'liner'   { $r=@(RunQ $srcCn "SELECT TOP 1 name FROM dbo.linermstr WHERE code=@c" @{ c=$code } 8); if($r.Count){ return "$($r[0].name)".Trim() } }
       'port'    { $r=@(RunQ $srcCn "SELECT TOP 1 port_ldes1 FROM dbo.portmstr WHERE code=@c" @{ c=$code } 8); if($r.Count){ return "$($r[0].port_ldes1)".Trim() } }
       'service' { $r=@(RunQ $srcCn "SELECT TOP 1 desc1 FROM dbo.servmstr WHERE service=@c" @{ c=$code } 8); if($r.Count){ return "$($r[0].desc1)".Trim() } }
     }
   }catch{}
   ''
+}
+# Numeric column -> clean string (drop trailing .000 so "150.000"->"150", "2.500"->"2.5"); blank for null.
+function ErpNumStr($v){
+  if($null -eq $v -or $v -is [DBNull]){ return '' }
+  $s="$v".Trim(); if($s -match '^-?\d+(\.\d+)?$'){ $s=$s -replace '(\.\d*?)0+$','$1'; $s=$s -replace '\.$','' }
+  $s
 }
 # Seed the editor: current ERP value + resolved master name for every dict field on this shipment.
 function Handle-ErpEditSeed($cn,$qs){
@@ -780,6 +786,9 @@ function Handle-ErpEditSeed($cn,$qs){
     if($rf -match '^(.+?)(\d+)\.\.(\d+)$'){ $pre=$Matches[1]; ([int]$Matches[2])..([int]$Matches[3]) | ForEach-Object { $cols+=($pre+"$_") } }
     else { $cols+=$rf }
   }
+  # derived shipping-window source legs (etd/eta have readFrom='' so are not picked above): Import dep1/arr1,
+  # Export dep2/arr2; Air ETD = f_date1 (no air ETA on this ERP). Resolved into etd/eta after the read.
+  if($isAir){ $cols+='f_date1' } else { $cols+='departure1','departure2','arrival1','arrival2','vessel_1','vessel_2','voyage_1','voyage_2' }
   $cols=@($cols | Select-Object -Unique)
   $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=5;Packet Size=512"
   try{
@@ -795,8 +804,8 @@ function Handle-ErpEditSeed($cn,$qs){
     foreach($d in $defs){
       $code="$($d.code)"
       if("$($d.kind)" -eq 'table'){
-        $crows=@(); try{ $crows=@(RunQ $srcCn "SELECT container,cont_type,seal,load_qty FROM dbo.blcont WHERE blh=@r ORDER BY ref" @{ r=$b.ref } 8) }catch{}
-        $clist=@(); foreach($cr in $crows){ $clist+=,[ordered]@{ container_no="$($cr.container)".Trim(); cont_type="$($cr.cont_type)".Trim(); seal_no="$($cr.seal)".Trim(); qty=$(if($null -ne $cr.load_qty){ "$($cr.load_qty)".Trim() }else{ '' }) } }
+        $crows=@(); try{ $crows=@(RunQ $srcCn "SELECT container,cont_type,seal,load_qty,pkgs_unit,load_wgt,load_cbm FROM dbo.blcont WHERE blh=@r ORDER BY ref" @{ r=$b.ref } 8) }catch{}
+        $clist=@(); foreach($cr in $crows){ $clist+=,[ordered]@{ container_no="$($cr.container)".Trim(); cont_type="$($cr.cont_type)".Trim(); seal_no="$($cr.seal)".Trim(); qty=(ErpNumStr $cr.load_qty); qty_unit="$($cr.pkgs_unit)".Trim(); weight=(ErpNumStr $cr.load_wgt); cbm=(ErpNumStr $cr.load_cbm) } }
         $fields[$code]=@($clist)
         continue
       }
@@ -805,6 +814,14 @@ function Handle-ErpEditSeed($cn,$qs){
         $pre=$Matches[1]; $s=[int]$Matches[2]; $e=[int]$Matches[3]
         $parts=@(); $s..$e | ForEach-Object { $v="$($b.($pre+"$_"))".Trim(); if($v -and ($parts -notcontains $v)){ $parts+=$v } }
         $fields[$code]=($parts -join "`n")
+      } elseif(-not $rf){
+        $fields[$code]=''                                   # derived (etd/eta) - set after the loop
+      } elseif("$($d.kind)" -eq 'bool'){
+        $bv=$false; try{ $bv=[bool]$b.$rf }catch{}; $fields[$code]= if($bv){'true'}else{'false'}
+      } elseif("$($d.kind)" -eq 'date'){
+        $dv=$b.$rf; $fields[$code]= if($dv -is [datetime]){ $dv.ToString('yyyy-MM-dd') }else{ '' }
+      } elseif("$($d.kind)" -eq 'number'){
+        $fields[$code]=ErpNumStr $b.$rf
       } else {
         $fields[$code]="$($b.$rf)".Trim()
       }
@@ -812,6 +829,25 @@ function Handle-ErpEditSeed($cn,$qs){
         $lk="$($d.lookup)".Trim(); $cv="$($fields[$code])".Trim()
         if($cv -and $lk -ne 'incoterm'){ $nm=ErpMaster-Name $srcCn $db $lk $cv; if($nm){ $resolved[$code]=$nm } }
       }
+    }
+    # bound-aware shipping window (read-only display): the leg the operator plans against
+    $isImport=("$($a.bound)" -eq 'Import')
+    if($fields.Contains('etd')){
+      $col= if($isAir){'f_date1'}elseif($isImport){'departure1'}else{'departure2'}
+      $dv=$null; try{ $dv=$b.$col }catch{}; $fields['etd']= if($dv -is [datetime]){ $dv.ToString('yyyy-MM-dd') }else{ '' }
+    }
+    if($fields.Contains('eta')){
+      $col= if($isImport){'arrival1'}else{'arrival2'}
+      $dv=$null; try{ $dv=$b.$col }catch{}; $fields['eta']= if($dv -is [datetime]){ $dv.ToString('yyyy-MM-dd') }else{ '' }
+    }
+    # vessel / voyage (sea, bound-aware: Export vessel_2/voyage_2, Import vessel_1/voyage_1; vessel code -> veslmstr name)
+    if(-not $isAir -and $fields.Contains('vessel_name')){
+      $vcol= if($isImport){'vessel_1'}else{'vessel_2'}; $vcode="$($b.$vcol)".Trim(); $vname=$vcode
+      if($vcode){ try{ $vr=@(RunQ $srcCn "SELECT TOP 1 short_name FROM dbo.veslmstr WHERE code=@c" @{ c=$vcode } 8); if($vr.Count){ $sn="$($vr[0].short_name)".Trim(); if($sn){ $vname=$sn } } }catch{} }
+      $fields['vessel_name']=$vname
+    }
+    if(-not $isAir -and $fields.Contains('voyage_no')){
+      $vycol= if($isImport){'voyage_1'}else{'voyage_2'}; $fields['voyage_no']="$($b.$vycol)".Trim()
     }
     @{ jobNo=$job; mode="$($a.mode)"; bound="$($a.bound)"; dict=@($defs); fields=$fields; resolved=$resolved }
   } catch {
@@ -840,13 +876,18 @@ function Handle-ErpMasterSearch($cn,$qs){
     $srcCn.Open()
     $rows=@()
     switch($kind){
-      'custsub' { $rows=@(RunQ $srcCn "SELECT TOP 20 code2 code, doc_e_name name FROM dbo.custsub WHERE ISNULL(isdel,0)=0 AND NULLIF(code2,'') IS NOT NULL AND (code2 LIKE @q OR doc_e_name LIKE @q) ORDER BY code2" @{ q=$like } 8) }
+      'custsub' { $rows=@(RunQ $srcCn "SELECT TOP 20 code2 code, doc_e_name name, city, country FROM dbo.custsub WHERE ISNULL(isdel,0)=0 AND NULLIF(code2,'') IS NOT NULL AND (code2 LIKE @q OR doc_e_name LIKE @q) ORDER BY code2" @{ q=$like } 8) }
       'liner'   { $rows=@(RunQ $srcCn "SELECT TOP 20 code, name FROM dbo.linermstr WHERE NULLIF(code,'') IS NOT NULL AND (code LIKE @q OR name LIKE @q) ORDER BY code" @{ q=$like } 8) }
       'port'    { $mod= if($isAir){'AIR'}else{'SEA'}; $rows=@(RunQ $srcCn "SELECT TOP 20 code, port_ldes1 name FROM dbo.portmstr WHERE NULLIF(code,'') IS NOT NULL AND (NULLIF(module,'') IS NULL OR module=@m) AND (code LIKE @q OR port_ldes1 LIKE @q) ORDER BY code" @{ q=$like; m=$mod } 8) }
       'service' { $rows=@(RunQ $srcCn "SELECT TOP 20 service code, desc1 name FROM dbo.servmstr WHERE NULLIF(service,'') IS NOT NULL AND (service LIKE @q OR desc1 LIKE @q) ORDER BY service" @{ q=$like } 8) }
       default   { return @{error="unknown lookup kind '$kind'"} }
     }
-    @{ kind=$kind; results=@($rows | ForEach-Object { [pscustomobject]@{ code="$($_.code)".Trim(); name="$($_.name)".Trim() } }) }
+    @{ kind=$kind; results=@($rows | ForEach-Object {
+        $o=[ordered]@{ code="$($_.code)".Trim(); name="$($_.name)".Trim() }
+        if($_.PSObject.Properties['city'] -or $_.PSObject.Properties['country']){
+          $loc=(@("$($_.city)".Trim(),"$($_.country)".Trim())|Where-Object{ $_ }) -join ', '; if($loc){ $o['loc']=$loc }
+        }
+        [pscustomobject]$o }) }
   } catch {
     @{ error="master lookup failed: $($_.Exception.Message)" }
   } finally { try{ $srcCn.Close() }catch{} }
@@ -878,7 +919,7 @@ function Save-ErpEdit($cn,$ctx,$me){
   $changed=[ordered]@{}; foreach($c in $changedCodes){ $changed[$c]=$clean.$c }
   $bookingNo= if("$($a.sono)".Trim()){ "$($a.sono)".Trim() }else{ $job }
   $ident=@{ bookingNo=$bookingNo; module=$modeKey; bound="$($a.bound)" }
-  $built=Build-ErpPatchPayload $changed $defs $ident (Get-ErpApiMap)
+  $built=Build-ErpPatchPayload $changed $defs $ident (Get-ErpApiMap) $clean
   $erp=Invoke-ErpEditPush $built.payload $bookingNo $modeKey $me
   $changeRecs=@(); foreach($c in $changedCodes){ $changeRecs+=,@{ field=$c; writeKey="$($defByCode[$c].writeKey)"; before=(Doc-ValStr $current[$c]); after=(Doc-ValStr $clean.$c) } }
   $status= if($erp.mock){'mock'} elseif($erp.error){'error'} elseif($erp.rejected){'rejected'} else {'saved'}

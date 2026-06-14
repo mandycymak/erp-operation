@@ -409,7 +409,7 @@ function RowV($r,$k){
 }
 # $changed: ordered hashtable code -> cleaned value (ONLY the changed fields).  $defs: the SEA|AIR dict array.
 # $ident: @{ bookingNo; module ('SEA'|'AIR'); bound ('Import'|'Export') }.  Returns @{ payload; sent=@({field,writeKey,value}) }.
-function Build-ErpPatchPayload($changed,$defs,$ident,$map){
+function Build-ErpPatchPayload($changed,$defs,$ident,$map,$all){
   $p=[ordered]@{
     partyGroupCode="$($map.partyGroupCode)".Trim()
     bookingNo="$($ident.bookingNo)".Trim()
@@ -426,15 +426,54 @@ function Build-ErpPatchPayload($changed,$defs,$ident,$map){
       $bc=@()
       foreach($r in @($val)){
         if($null -eq $r -or $r -is [string]){ continue }
-        $cno=(RowV $r 'container_no').Trim(); if(-not $cno){ continue }
-        $item=[ordered]@{ containerNo=$cno }
-        $sl=(RowV $r 'seal_no').Trim();   if($sl){ $item['sealNo']=$sl }
-        $tp=(RowV $r 'cont_type').Trim(); if($tp){ $item['containerTypeCode']=$tp }
-        $q=0; if([int]::TryParse((RowV $r 'qty').Trim(),[ref]$q) -and $q -gt 0){ $item['quantity']=$q }
+        $cno=(RowV $r 'container_no').Trim(); $tp=(RowV $r 'cont_type').Trim()
+        if(-not $cno -and -not $tp){ continue }   # need a container no. OR a type (booking-stage count row)
+        $item=[ordered]@{}
+        if($cno){ $item['containerNo']=$cno }
+        if($tp){ $item['containerTypeCode']=$tp }
+        $sl=(RowV $r 'seal_no').Trim(); if($sl){ $item['sealNo']=$sl }
+        $q=0;  if([int]::TryParse((RowV $r 'qty').Trim(),[ref]$q) -and $q -gt 0){ $item['quantity']=$q }
+        $u=(RowV $r 'qty_unit').Trim(); if($u){ $item['quantityUnit']=$u }
+        $w=0.0;  if([double]::TryParse((RowV $r 'weight').Trim(),[ref]$w) -and $w -gt 0){ $item['weight']=$w }
+        $cb=0.0; if([double]::TryParse((RowV $r 'cbm').Trim(),[ref]$cb) -and $cb -gt 0){ $item['cbm']=$cb }
         $bc+=,$item
       }
       $p[$wk]=@($bc)
       $sent+=,@{ field=$code; writeKey=$wk; value="$(@($bc).Count) container row(s)" }
+      continue
+    }
+    # ETD + flight time fold into one departureDateEstimated datetime (the API has no separate time field):
+    # "<yyyy-mm-dd>T<hh:mm>". Computed once from the full field set (etd + flight_time), whichever changed.
+    if($wk -eq 'departureDateEstimated'){
+      if($p.Contains('departureDateEstimated')){ continue }
+      $dt=''; $tm=''
+      if($all){ if($all.PSObject.Properties['etd']){ $dt="$($all.etd)".Trim() }; if($all.PSObject.Properties['flight_time']){ $tm="$($all.flight_time)".Trim() } }
+      if(-not $dt){ $dt="$val".Trim() }
+      $dval= if($dt -and $tm){ "$dt`T$tm" } else { $dt }
+      $p['departureDateEstimated']=$dval
+      $sent+=,@{ field=$code; writeKey=$wk; value=$dval }
+      continue
+    }
+    # bool keys (telexRelease/isDirect/dangerousGood) must be a real JSON boolean, not the string "true"
+    if("$($d.kind)" -eq 'bool'){
+      $bv=("$val".Trim().ToLower() -in @('true','1','y','yes'))
+      if($wk -match 'Party'){ $party[$wk]=$bv } else { $p[$wk]=$bv }
+      $sent+=,@{ field=$code; writeKey=$wk; value="$bv" }
+      continue
+    }
+    # number keys (quantity/grossWeight/cbm) must be a real JSON number; integer stays int, else decimal
+    if("$($d.kind)" -eq 'number'){
+      $sv="$val".Trim(); $num=$null
+      if($sv){ $dd=0.0; if([double]::TryParse($sv,[ref]$dd)){ $num= if($dd -eq [math]::Floor($dd)){ [int64]$dd }else{ $dd } } }
+      if($wk -match 'Party'){ $party[$wk]=$num } else { $p[$wk]=$num }
+      $sent+=,@{ field=$code; writeKey=$wk; value="$num" }
+      continue
+    }
+    # PO and similar -> a bookingReference array entry { refName, refDescription }
+    if($wk -match '^bookingReference#'){
+      $refName=$wk.Substring('bookingReference#'.Length)
+      $p['bookingReference']=@([ordered]@{ refName=$refName; refDescription="$val" })
+      $sent+=,@{ field=$code; writeKey=$wk; value="$val" }
       continue
     }
     $sv="$val"

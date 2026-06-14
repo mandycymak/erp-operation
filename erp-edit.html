@@ -18,7 +18,6 @@
   .spacer{ flex:1 }
   button{ font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; padding:6px 12px }
   button.primary{ background:var(--accent); border-color:var(--accent); color:#fff }
-  button.toggle.on{ background:var(--accent); border-color:var(--accent); color:#fff }
   button:disabled{ opacity:.55; cursor:default }
   .note{ font-size:12px; color:var(--mut) }
   #msg .err{ background:rgba(180,35,24,.12); border:1px solid var(--bad); color:var(--bad); border-radius:6px; padding:8px 10px; margin-bottom:10px }
@@ -32,7 +31,16 @@
   .gbox{ border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:7px 10px; min-width:0; box-sizing:border-box }
   .grow:last-child > .gbox{ border-bottom:0 }
   .gbox:last-child{ border-right:0 }
-  @media (max-width:720px){ .grow{ flex-wrap:wrap } .gbox{ flex-basis:100% !important; max-width:100% !important; border-right:0 } }
+  /* two-column upper region: parties stack on the left, refs/stakeholders + service + remark on the right */
+  .upper{ display:flex }
+  .upper > .col{ flex:1 1 50%; min-width:0; display:flex; flex-direction:column }
+  .upper > .col-left{ border-right:1px solid var(--line) }
+  .upper .gbox{ border-right:0 }
+  .upper .col-right .grow > .gbox:first-child{ border-right:1px solid var(--line) }
+  .upper .col > .gbox:last-child{ border-bottom:0 }
+  .gbox.remarkbox{ display:flex; flex-direction:column; flex:1 }
+  textarea.pin.fill{ flex:1; min-height:60px }
+  @media (max-width:720px){ .grow{ flex-wrap:wrap } .gbox{ flex-basis:100% !important; max-width:100% !important; border-right:0 } .upper{ flex-direction:column } .upper > .col-left{ border-right:0 } }
 
   .cap{ font-size:10px; text-transform:uppercase; letter-spacing:.03em; color:var(--mut); font-weight:700; display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-bottom:3px }
   .cap .tag{ font-size:9.5px; color:var(--mut); border:1px solid var(--line); border-radius:8px; padding:0 5px; font-weight:600 }
@@ -48,6 +56,34 @@
 
   .pin{ width:100%; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:5px; padding:4px 7px; margin-bottom:4px }
   textarea.pin{ min-height:42px; resize:vertical }
+  textarea.partybox{ min-height:30px }
+
+  /* SERVICE DETAIL box: small labelled controls grouped into shipping-window / service / internal */
+  .svc-sub{ font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); font-weight:700; border-bottom:1px solid var(--line); margin:7px 0 3px; padding-bottom:2px }
+  .svc-grid{ display:flex; flex-wrap:wrap; gap:5px 12px }
+  .svc-grid.g4{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px 10px; align-items:start }
+  .svc-grid.cargo-row{ align-items:end }
+  .svc-f{ display:flex; flex-direction:column; gap:1px; min-width:92px; flex:1 1 92px }
+  .svc-grid.g4 > .svc-f{ min-width:0 }
+  .svc-f input[type=checkbox]{ width:15px; height:15px; align-self:flex-start; margin-top:3px }
+  .svc-f.svc-bool{ flex-direction:row; align-items:center; gap:6px; flex:0 0 auto; min-width:0 }
+  .svc-l{ font-size:9.5px; text-transform:uppercase; letter-spacing:.02em; color:var(--mut); font-weight:700 }
+  .svc-in{ width:100%; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:5px; padding:3px 6px }
+  .svc-v{ font-size:13px; color:var(--fg); min-height:16px }
+  .svc-bool input{ width:15px; height:15px }
+  .svc-code{ flex:1 1 130px; gap:2px }
+  .svc-code .codechip{ font-size:11px }
+  .svc-hint{ font-size:11px; color:var(--mut); min-height:13px }
+  input.svc-in.chg{ background:var(--chg); border-color:var(--chgline) }
+  input.refin.chg{ background:var(--chg); border-color:var(--chgline) }
+  input[type=checkbox].chg{ outline:2px solid var(--chgline); outline-offset:1px }
+  .svc-note{ font-size:11px; color:var(--mut); margin-top:7px; font-style:italic }
+  /* editable reference / carrier inputs */
+  .refedit{ font-size:12px; margin:1px 0; display:flex; align-items:center; gap:4px }
+  .refedit .rl{ flex:0 0 86px }
+  .refin{ font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:5px; padding:2px 6px; flex:1; min-width:60px }
+  .refin.code{ flex:0 0 74px; min-width:0; font:700 11px ui-monospace,Consolas,monospace; color:var(--accent); text-align:center }
+  .carrow{ display:flex; gap:5px; margin-top:1px }
   .telrow{ display:flex; gap:6px; margin-top:1px }
   .telcell{ flex:1 } .telcell .tl{ font-size:10px; color:var(--mut); display:block; margin-bottom:1px }
   .minip{ margin-bottom:7px } .minip:last-child{ margin-bottom:0 }
@@ -69,8 +105,6 @@
   .lookbox .li{ padding:6px 9px; cursor:pointer; border-top:1px solid var(--line); font-size:13px }
   .lookbox .li:hover{ background:var(--bg) }
   .lookbox .li b{ font-family:ui-monospace,Consolas,monospace }
-
-  body.hidenp .np{ display:none !important }
 </style>
 </head>
 <body>
@@ -79,14 +113,10 @@
     <h1>Correct ERP data</h1>
     <span class="sub" id="status"></span>
     <span class="spacer"></span>
-    <button id="hideBtn" class="toggle" title="Hide the fields that are not printed on the bill">Hide non-printed</button>
     <button id="saveBtn" class="primary">Save changes to ERP</button>
     <button onclick="window.close()">Close</button>
   </div>
   <div class="sub" id="sub"></div>
-  <p class="note">Laid out like the bill. The master code sits in the caption as a chip - e.g. <b>SHIPPER ( DUMMY )</b>;
-    click <b>🔍</b> to search/fix it, or type it. Tel / tax sit under each party. Controlling customer and liner
-    agent are kept in the references box but are <b>not printed</b>. Only changed fields are sent to the ERP.</p>
   <div id="msg"></div>
   <div id="sections"><div class="gbill" style="padding:14px">Loading shipment from the ERP...</div></div>
 </div>

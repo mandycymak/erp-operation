@@ -1,7 +1,8 @@
 {
-  "_comment": "ERP master-code correction editor dictionary. Mirrors doc-fields.json's shape. One entry per correctable field, grouped by 'section'. The server (Handle-ErpEditSeed) reads each field's current value from the ERP column named in 'readFrom' (suffix '..5' = join add1..add5 into one block); for a 'code' field it also resolves the code's current master NAME (custsub/linermstr/portmstr/servmstr) and returns it in the seed 'resolved' map so the editor can show 'code -> name'. On save, ONLY changed fields are pushed to Swivel /booking/update, mapped by 'writeKey'. A field with no 'writeKey' is read-only.",
-  "_fieldmap_verified": "2026-06-13 on live fm3khkg (HKG pilot): party codes shpr_code/cgne_code/not1_code/agn2_code(delivery agent)/rcustomer(controlling cust)/iliner(liner) are nvarchar(8/10); incoterm = blhead.routing & awbhead.routing (free text, e.g. FOB) with NO master table (incoterm lookup is the fixed Incoterms-2020 list, served by /api-ops/erp-master?kind=incoterm); service = blhead.service/awbhead.service -> servmstr.service/desc1; pol/pod -> portmstr.code/port_ldes1; custsub key = code2 -> doc_e_name; linermstr key = code -> name. Per-party phone = sphone/cphone/nphone/aphone; per-party tax = *_txncode.",
-  "_writekeys_confirmed": "ALL write keys verified 2026-06-14 against the Swivel OpenAPI spec (3rd-erpapi.json), NewBooking.bookingParty + top-level. bookingParty keys: shipperPartyCode/Name/Address/ContactPhone/TaxCode, consigneePartyCode/Name/Address/ContactPhone/TaxCode, notifyPartyPartyCode/Name/Address (double 'Party' is the real key), agentPartyCode/Name/Address, linerAgentPartyCode, controllingCustomerPartyCode. Top-level: incoTermsCode, serviceCode, portOfLoadingCode, portOfDischargeCode, bookingContainers[] (containerNo/sealNo/containerTypeCode/quantity; the item also has soNo = liner SO, available for a future round). Carrier/vessel/voyage and dates exist in the schema but are deliberately not editable here.",
+  "_comment": "ERP master-code + booking correction editor dictionary. Mirrors doc-fields.json's shape. One entry per correctable field, grouped by 'section'. The server (Handle-ErpEditSeed) reads each field's current value from the ERP column in 'readFrom' (suffix '..5' = join add1..add5; readFrom '' = derived/blank-seeded e.g. etd/eta/commodity-on-sea). For a 'code' field it resolves the current master NAME (custsub/linermstr/portmstr/servmstr) into the seed 'resolved' map so the editor shows 'code -> name (city, country)'. On save, ONLY changed fields are pushed to Swivel /booking/update by 'writeKey'. No writeKey => read-only.",
+  "_kinds": "code=master code + lookup; text=free text; number=numeric (pushed as a JSON number); bool=tick (pushed as a real JSON boolean); date=ISO yyyy-mm-dd (pushed as the booking estimated-date key, API maps to the routing leg); ref=read-only display; table=container rows. writeKey 'bookingReference#PO' => pushed as bookingReference:[{refName:'PO',refDescription:value}].",
+  "_fieldmap_verified": "2026-06-14 on live fm3khkg (HKG pilot). Routing codes rece/pol/pod/dest (+_name); cargo totals t_book_qty/pkgs_unit/t_book_wgt/wgt_unit/t_book_cbm; air commodity=commodity(ntext), sea has NO commodity column (blank-seeded). Marks/desc seeded from sea cp_mark/jobdesc, air crmarking/wdesc (mostly empty in this snapshot - still editable). Carrier=carr/carr_name. PO=spotid(sea)/po_no(air). Containers blcont: container,cont_type,seal,load_qty,pkgs_unit,load_wgt,load_cbm. Trucker(trucker)/broker(broker)/warehouse(wh_code) are read-only (no booking-API field exists). No-of-originals=no_orig read-only (only telexRelease is writable).",
+  "_writekeys_confirmed": "Verified 2026-06-14 against Swivel 3rd-erpapi.json. bookingParty: shipper/consignee/notify(notifyPartyParty)/agent/linerAgent/controllingCustomer ...Code/Name/Address/ContactPhone/TaxCode. Top-level: incoTermsCode, serviceCode, placeOfReceiptCode, portOfLoadingCode, portOfDischargeCode, finalDestinationCode, carrierCode, carrierName, telexRelease(bool), isDirect(bool), dangerousGood(bool), divisionCode, picId, team, cargoReadyDateEstimated, cargoReceiptDateEstimated, departureDateEstimated(ETD), arrivalDateEstimated(ETA), commodity(maxlen 21), quantity(number), quantityUnit, grossWeight(number), weightUnit, cbm(number), shipMarks, goodsDescription, bookingReference[]{refName,refDescription}, bookingContainers[]{containerNo,soNo,sealNo,containerTypeCode,quantity,quantityUnit,weight,weightUnit,cbm}. Carrier + the estimated dates push best-effort (carrier master / date validation may reject - logged in erp_edit_log).",
 
   "SEA": [
     { "section": "Parties & master codes", "code": "shipper_code", "label": "Shipper code", "kind": "code", "lookup": "custsub", "writeKey": "shipperPartyCode", "readFrom": "shpr_code", "show": "default", "maxlen": 8 },
@@ -24,28 +25,62 @@
     { "section": "Parties & master codes", "code": "agent_name", "label": "Delivery agent name", "kind": "text", "writeKey": "agentPartyName", "readFrom": "agnt_name", "show": "optional", "maxlen": 100 },
     { "section": "Parties & master codes", "code": "agent_address", "label": "Delivery agent address", "kind": "text", "multiline": true, "writeKey": "agentPartyAddress", "readFrom": "agnt_add1..5", "show": "optional", "maxlen": 250 },
 
-    { "section": "Parties & master codes", "code": "liner_code", "label": "Liner agent code (space booking)", "kind": "code", "lookup": "liner", "writeKey": "linerAgentPartyCode", "readFrom": "iliner", "show": "default", "internal": true, "maxlen": 10 },
-    { "section": "Parties & master codes", "code": "ctrl_code", "label": "Controlling customer code", "kind": "code", "lookup": "custsub", "writeKey": "controllingCustomerPartyCode", "readFrom": "rcustomer", "show": "default", "internal": true, "maxlen": 8 },
+    { "section": "Stakeholders", "code": "liner_code", "label": "Liner agent (space booking)", "kind": "code", "lookup": "liner", "writeKey": "linerAgentPartyCode", "readFrom": "iliner", "show": "default", "internal": true, "maxlen": 10 },
+    { "section": "Stakeholders", "code": "ctrl_code", "label": "Controlling customer", "kind": "code", "lookup": "custsub", "writeKey": "controllingCustomerPartyCode", "readFrom": "rcustomer", "show": "default", "internal": true, "maxlen": 8 },
+    { "section": "Stakeholders", "code": "carrier_code", "label": "Carrier code", "kind": "text", "writeKey": "carrierCode", "readFrom": "carr", "show": "default", "maxlen": 10 },
+    { "section": "Stakeholders", "code": "carrier_name", "label": "Carrier name", "kind": "text", "writeKey": "carrierName", "readFrom": "carr_name", "show": "default", "maxlen": 60 },
 
-    { "section": "Routing & trade-lane codes", "code": "incoterm", "label": "Incoterm", "kind": "code", "lookup": "incoterm", "writeKey": "incoTermsCode", "readFrom": "routing", "show": "default", "maxlen": 15 },
+    { "section": "Routing & trade-lane codes", "code": "receipt_code", "label": "Place of receipt", "kind": "code", "lookup": "port", "writeKey": "placeOfReceiptCode", "readFrom": "rece", "show": "default", "maxlen": 6 },
     { "section": "Routing & trade-lane codes", "code": "pol_code", "label": "Port of loading", "kind": "code", "lookup": "port", "writeKey": "portOfLoadingCode", "readFrom": "pol", "show": "default", "maxlen": 5 },
     { "section": "Routing & trade-lane codes", "code": "pod_code", "label": "Port of discharge", "kind": "code", "lookup": "port", "writeKey": "portOfDischargeCode", "readFrom": "pod", "show": "default", "maxlen": 5 },
-    { "section": "Routing & trade-lane codes", "code": "service_code", "label": "Service type", "kind": "code", "lookup": "service", "writeKey": "serviceCode", "readFrom": "service", "show": "default", "maxlen": 10 },
+    { "section": "Routing & trade-lane codes", "code": "dest_code", "label": "Final destination", "kind": "code", "lookup": "port", "writeKey": "finalDestinationCode", "readFrom": "dest", "show": "default", "maxlen": 6 },
+
+    { "section": "Service detail", "code": "incoterm", "label": "Incoterm", "kind": "code", "lookup": "incoterm", "writeKey": "incoTermsCode", "readFrom": "routing", "show": "default", "maxlen": 15 },
+    { "section": "Service detail", "code": "service_code", "label": "Service type", "kind": "code", "lookup": "service", "writeKey": "serviceCode", "readFrom": "service", "show": "default", "maxlen": 10 },
+    { "section": "Service detail", "code": "telex_release", "label": "Telex release", "kind": "bool", "writeKey": "telexRelease", "readFrom": "telex_rel", "show": "default" },
+    { "section": "Service detail", "code": "dg", "label": "Dangerous goods", "kind": "bool", "writeKey": "dangerousGood", "readFrom": "dangerous", "show": "default" },
+    { "section": "Service detail", "code": "cargo_ready", "label": "Cargo ready", "kind": "date", "writeKey": "cargoReadyDateEstimated", "readFrom": "cargoready", "show": "default" },
+    { "section": "Service detail", "code": "cargo_receipt", "label": "Cargo received", "kind": "date", "writeKey": "cargoReceiptDateEstimated", "readFrom": "cargorece", "show": "default" },
+    { "section": "Service detail", "code": "etd", "label": "ETD (departure)", "kind": "date", "writeKey": "departureDateEstimated", "readFrom": "", "show": "default" },
+    { "section": "Service detail", "code": "eta", "label": "ETA (arrival)", "kind": "date", "writeKey": "arrivalDateEstimated", "readFrom": "", "show": "default" },
+    { "section": "Service detail", "code": "division", "label": "Division", "kind": "text", "writeKey": "divisionCode", "readFrom": "division", "show": "default", "maxlen": 20 },
+    { "section": "Service detail", "code": "team", "label": "Team", "kind": "text", "writeKey": "team", "readFrom": "team", "show": "default", "maxlen": 20 },
+    { "section": "Service detail", "code": "pic_id", "label": "PIC (operator)", "kind": "text", "writeKey": "picId", "readFrom": "picuser", "show": "default", "maxlen": 20 },
+    { "section": "Service detail", "code": "pic_email", "label": "PIC email", "kind": "text", "writeKey": "picEmail", "readFrom": "", "show": "default", "maxlen": 80 },
+
+    { "section": "Cargo information", "code": "commodity", "label": "Commodity", "kind": "text", "writeKey": "commodity", "readFrom": "", "show": "default", "maxlen": 21 },
+    { "section": "Cargo information", "code": "cargo_qty", "label": "Qty", "kind": "number", "writeKey": "quantity", "readFrom": "t_book_qty", "show": "default" },
+    { "section": "Cargo information", "code": "cargo_unit", "label": "Unit", "kind": "text", "writeKey": "quantityUnit", "readFrom": "pkgs_unit", "show": "default", "maxlen": 10 },
+    { "section": "Cargo information", "code": "cargo_wgt", "label": "Gross weight", "kind": "number", "writeKey": "grossWeight", "readFrom": "t_book_wgt", "show": "default" },
+    { "section": "Cargo information", "code": "cargo_wunit", "label": "Wt unit", "kind": "text", "writeKey": "weightUnit", "readFrom": "wgt_unit", "show": "default", "maxlen": 6 },
+    { "section": "Cargo information", "code": "cargo_cbm", "label": "CBM", "kind": "number", "writeKey": "cbm", "readFrom": "t_book_cbm", "show": "default" },
+    { "section": "Cargo information", "code": "ship_marks", "label": "Marks & numbers", "kind": "text", "multiline": true, "writeKey": "shipMarks", "readFrom": "cp_mark", "show": "default", "maxlen": 2000 },
+    { "section": "Cargo information", "code": "goods_desc", "label": "Description of goods", "kind": "text", "multiline": true, "writeKey": "goodsDescription", "readFrom": "jobdesc", "show": "default", "maxlen": 2000 },
 
     { "section": "References", "code": "bl_no", "label": "House B/L", "kind": "ref", "readFrom": "blno" },
     { "section": "References", "code": "booking_no", "label": "Booking / SO", "kind": "ref", "readFrom": "sono" },
-    { "section": "References", "code": "po_no", "label": "PO / cust ref", "kind": "ref", "readFrom": "spotid" },
+    { "section": "References", "code": "po_no", "label": "PO / cust ref", "kind": "text", "writeKey": "bookingReference#PO", "readFrom": "spotid", "show": "default", "maxlen": 40 },
     { "section": "References", "code": "job_disp", "label": "Job no.", "kind": "ref", "readFrom": "jobn" },
     { "section": "References", "code": "master_no", "label": "Master B/L", "kind": "ref", "readFrom": "mobl" },
-    { "section": "References", "code": "num_originals", "label": "No. of originals", "kind": "ref", "readFrom": "no_orig" },
-    { "section": "References", "code": "telex_release", "label": "Telex release", "kind": "bool", "readFrom": "telex_rel" },
+    { "section": "References", "code": "vessel_name", "label": "Vessel", "kind": "text", "writeKey": "vesselName", "readFrom": "", "show": "default", "maxlen": 60 },
+    { "section": "References", "code": "voyage_no", "label": "Voyage", "kind": "text", "writeKey": "voyageFlightNumber", "readFrom": "", "show": "default", "maxlen": 20 },
+
+    { "section": "Remark", "code": "int_remark", "label": "Internal remark", "kind": "text", "multiline": true, "writeKey": "remark", "readFrom": "remark", "show": "default", "maxlen": 2000 },
+
+    { "section": "Container count", "code": "container20", "label": "20'", "kind": "number", "writeKey": "container20", "readFrom": "", "show": "default" },
+    { "section": "Container count", "code": "container40", "label": "40'", "kind": "number", "writeKey": "container40", "readFrom": "", "show": "default" },
+    { "section": "Container count", "code": "container_hq", "label": "HQ", "kind": "number", "writeKey": "containerHQ", "readFrom": "", "show": "default" },
+    { "section": "Container count", "code": "container_other", "label": "Other", "kind": "number", "writeKey": "containerOthers", "readFrom": "", "show": "default" },
 
     { "section": "Cargo & containers", "code": "containers", "kind": "table", "writeKey": "bookingContainers", "readFrom": "blcont", "maxRows": 50,
       "columns": [
         { "code": "container_no", "label": "Container no.", "maxlen": 20 },
-        { "code": "cont_type", "label": "Type", "maxlen": 6 },
+        { "code": "cont_type", "label": "Type", "maxlen": 8 },
         { "code": "seal_no", "label": "Seal no.", "maxlen": 30 },
-        { "code": "qty", "label": "Qty", "maxlen": 6 }
+        { "code": "qty", "label": "Qty", "maxlen": 6 },
+        { "code": "qty_unit", "label": "Unit", "maxlen": 10 },
+        { "code": "weight", "label": "Weight", "maxlen": 12 },
+        { "code": "cbm", "label": "CBM", "maxlen": 10 }
       ] }
   ],
 
@@ -69,18 +104,45 @@
     { "section": "Parties & master codes", "code": "agent_code", "label": "Delivery agent code (on HAWB)", "kind": "code", "lookup": "custsub", "writeKey": "agentPartyCode", "readFrom": "agn2_code", "show": "default", "maxlen": 8 },
     { "section": "Parties & master codes", "code": "agent_name", "label": "Delivery agent name", "kind": "text", "writeKey": "agentPartyName", "readFrom": "agnt_name", "show": "optional", "maxlen": 100 },
 
-    { "section": "Parties & master codes", "code": "liner_code", "label": "Airline / liner code (space booking)", "kind": "code", "lookup": "liner", "writeKey": "linerAgentPartyCode", "readFrom": "lin1_code", "show": "default", "internal": true, "maxlen": 8 },
-    { "section": "Parties & master codes", "code": "ctrl_code", "label": "Controlling customer code", "kind": "code", "lookup": "custsub", "writeKey": "controllingCustomerPartyCode", "readFrom": "rcustomer", "show": "default", "internal": true, "maxlen": 8 },
+    { "section": "Stakeholders", "code": "liner_code", "label": "Airline / liner (space booking)", "kind": "code", "lookup": "liner", "writeKey": "linerAgentPartyCode", "readFrom": "lin1_code", "show": "default", "internal": true, "maxlen": 8 },
+    { "section": "Stakeholders", "code": "ctrl_code", "label": "Controlling customer", "kind": "code", "lookup": "custsub", "writeKey": "controllingCustomerPartyCode", "readFrom": "rcustomer", "show": "default", "internal": true, "maxlen": 8 },
+    { "section": "Stakeholders", "code": "carrier_code", "label": "Carrier code", "kind": "text", "writeKey": "carrierCode", "readFrom": "carr", "show": "default", "maxlen": 10 },
+    { "section": "Stakeholders", "code": "carrier_name", "label": "Carrier name", "kind": "text", "writeKey": "carrierName", "readFrom": "carr_name", "show": "default", "maxlen": 60 },
 
-    { "section": "Routing & trade-lane codes", "code": "incoterm", "label": "Incoterm", "kind": "code", "lookup": "incoterm", "writeKey": "incoTermsCode", "readFrom": "routing", "show": "default", "maxlen": 15 },
+    { "section": "Routing & trade-lane codes", "code": "receipt_code", "label": "Place of receipt", "kind": "code", "lookup": "port", "writeKey": "placeOfReceiptCode", "readFrom": "rece", "show": "default", "maxlen": 6 },
     { "section": "Routing & trade-lane codes", "code": "pol_code", "label": "Airport of departure", "kind": "code", "lookup": "port", "writeKey": "portOfLoadingCode", "readFrom": "pol", "show": "default", "maxlen": 5 },
     { "section": "Routing & trade-lane codes", "code": "pod_code", "label": "Airport of destination", "kind": "code", "lookup": "port", "writeKey": "portOfDischargeCode", "readFrom": "pod", "show": "default", "maxlen": 5 },
-    { "section": "Routing & trade-lane codes", "code": "service_code", "label": "Service type", "kind": "code", "lookup": "service", "writeKey": "serviceCode", "readFrom": "service", "show": "default", "maxlen": 7 },
+    { "section": "Routing & trade-lane codes", "code": "dest_code", "label": "Final destination", "kind": "code", "lookup": "port", "writeKey": "finalDestinationCode", "readFrom": "dest", "show": "default", "maxlen": 6 },
+
+    { "section": "Service detail", "code": "incoterm", "label": "Incoterm", "kind": "code", "lookup": "incoterm", "writeKey": "incoTermsCode", "readFrom": "routing", "show": "default", "maxlen": 15 },
+    { "section": "Service detail", "code": "service_code", "label": "Service type", "kind": "code", "lookup": "service", "writeKey": "serviceCode", "readFrom": "service", "show": "default", "maxlen": 7 },
+    { "section": "Service detail", "code": "direct", "label": "Direct", "kind": "bool", "writeKey": "isDirect", "readFrom": "direct_flag", "show": "default" },
+    { "section": "Service detail", "code": "dg", "label": "Dangerous goods", "kind": "bool", "writeKey": "dangerousGood", "readFrom": "dangerous", "show": "default" },
+    { "section": "Service detail", "code": "cargo_ready", "label": "Cargo ready", "kind": "date", "writeKey": "cargoReadyDateEstimated", "readFrom": "cargoready", "show": "default" },
+    { "section": "Service detail", "code": "cargo_receipt", "label": "Cargo received", "kind": "date", "writeKey": "cargoReceiptDateEstimated", "readFrom": "cargorece", "show": "default" },
+    { "section": "Service detail", "code": "etd", "label": "ETD (flight)", "kind": "date", "writeKey": "departureDateEstimated", "readFrom": "", "show": "default" },
+    { "section": "Service detail", "code": "flight_time", "label": "Flight time", "kind": "text", "writeKey": "departureDateEstimated", "readFrom": "f_time1", "show": "default", "maxlen": 8 },
+    { "section": "Service detail", "code": "division", "label": "Division", "kind": "text", "writeKey": "divisionCode", "readFrom": "division", "show": "default", "maxlen": 20 },
+    { "section": "Service detail", "code": "team", "label": "Team", "kind": "text", "writeKey": "team", "readFrom": "team", "show": "default", "maxlen": 20 },
+    { "section": "Service detail", "code": "pic_id", "label": "PIC (operator)", "kind": "text", "writeKey": "picId", "readFrom": "picuser", "show": "default", "maxlen": 20 },
+    { "section": "Service detail", "code": "pic_email", "label": "PIC email", "kind": "text", "writeKey": "picEmail", "readFrom": "", "show": "default", "maxlen": 80 },
+
+    { "section": "Cargo information", "code": "commodity", "label": "Commodity", "kind": "text", "writeKey": "commodity", "readFrom": "commodity", "show": "default", "maxlen": 21 },
+    { "section": "Cargo information", "code": "cargo_qty", "label": "Qty", "kind": "number", "writeKey": "quantity", "readFrom": "t_book_qty", "show": "default" },
+    { "section": "Cargo information", "code": "cargo_unit", "label": "Unit", "kind": "text", "writeKey": "quantityUnit", "readFrom": "pkgs_unit", "show": "default", "maxlen": 10 },
+    { "section": "Cargo information", "code": "cargo_wgt", "label": "Gross weight", "kind": "number", "writeKey": "grossWeight", "readFrom": "t_book_wgt", "show": "default" },
+    { "section": "Cargo information", "code": "cargo_wunit", "label": "Wt unit", "kind": "text", "writeKey": "weightUnit", "readFrom": "wgt_unit", "show": "default", "maxlen": 6 },
+    { "section": "Cargo information", "code": "cargo_cbm", "label": "CBM", "kind": "number", "writeKey": "cbm", "readFrom": "t_book_cbm", "show": "default" },
+    { "section": "Cargo information", "code": "ship_marks", "label": "Marks & numbers", "kind": "text", "multiline": true, "writeKey": "shipMarks", "readFrom": "crmarking", "show": "default", "maxlen": 2000 },
+    { "section": "Cargo information", "code": "goods_desc", "label": "Description of goods", "kind": "text", "multiline": true, "writeKey": "goodsDescription", "readFrom": "wdesc", "show": "default", "maxlen": 2000 },
 
     { "section": "References", "code": "bl_no", "label": "HAWB no.", "kind": "ref", "readFrom": "hawb" },
     { "section": "References", "code": "master_no", "label": "MAWB no.", "kind": "ref", "readFrom": "mawb" },
     { "section": "References", "code": "booking_no", "label": "Booking", "kind": "ref", "readFrom": "booking" },
-    { "section": "References", "code": "po_no", "label": "PO / cust ref", "kind": "ref", "readFrom": "po_no" },
-    { "section": "References", "code": "job_disp", "label": "Job no.", "kind": "ref", "readFrom": "jobn" }
+    { "section": "References", "code": "po_no", "label": "PO / cust ref", "kind": "text", "writeKey": "bookingReference#PO", "readFrom": "po_no", "show": "default", "maxlen": 40 },
+    { "section": "References", "code": "job_disp", "label": "Job no.", "kind": "ref", "readFrom": "jobn" },
+    { "section": "References", "code": "flight_no", "label": "Flight", "kind": "text", "writeKey": "voyageFlightNumber", "readFrom": "flight1", "show": "default", "maxlen": 20 },
+
+    { "section": "Remark", "code": "int_remark", "label": "Internal remark", "kind": "text", "multiline": true, "writeKey": "remark", "readFrom": "remark", "show": "default", "maxlen": 2000 }
   ]
 }
