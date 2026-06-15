@@ -17,7 +17,40 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-15b — clear a milestone by uploading the missing document to the ERP + admin "Documents" tab to maintain the doctype↔milestone map. Committed `6a87a0a`. RESUME HERE).**
+**Latest session (2026-06-15c — ERP-API routing identity made per-station (not hard-coded) + Save-data-to-ERP works live + login by email + SWIVEL L!NK OAuth seam. RESUME HERE).**
+Two threads: getting the ERP `/booking/update` + file calls to route to the right office, and reworking sign-in.
+- **ERP routing identity, resolved per station (never hard-coded).** Every Swivel call now carries the right
+  `partyGroupCode` (the company/customer group = **`DEV`** on demoerp; now editable in the admin **ERP API** tab,
+  stored in `erp-api-map.json` via `Set-ErpApiMap`) **and** the right **`forwarderCode` / `bookingParty.forwarderPartyCode`**
+  = the office **owncode** ("where the data goes"). Owncodes are **distinct per office** (verified by SQL on
+  `fm3kco.site`: HKG=`S0001`, SHA=`S0002`, SIN=`S0005`, BKK=`S0009`) — the old static `S0001` silently misrouted
+  every non-HKG station, and the ERP **422s a wrong forwarder code**. New `Resolve-ForwarderCode($station)` →
+  `Get-StationOwnCode` (cached `fm3kco.site` dbname→owncode, map fallback) feeds `/booking/get`, `/booking/update`
+  (`forwarderPartyCode` is **always** injected — required by `NewBooking.bookingParty`), `/file/upload`,
+  `/file/enquiry`, `/file/download`, and `/document/generate`.
+- **Save-data-to-ERP proven LIVE (demoerp `HK012606010`).** The old payload-invariant blocker ("Departure date
+  not active yet, Invalid carrier code") is **GONE** → `bookingUpdateMode` flipped back to **`strict`**.
+  `/booking/update` now **read-merges** the schedule fields (`serviceCode`, `commodity`, POL/POD code+name) from
+  the live `/booking/get` so an edit to one field no longer trips the ERP's `(500) "No such POL in job schedule"`.
+  Document **upload** re-verified live (file lands + appears in `/file/enquiry`). `erp-doc-api.ps1` / `serve-ops.ps1`.
+- **Sign-in is now by EMAIL** (username stays the internal identity — notes/@-mentions/sessions/`erpUsers`
+  unchanged; username still works at login as a fallback so no one is locked out). `email` is required + unique.
+  New `Get-OpsUserByEmail` + a `New-OpsSession` seam shared by every sign-in path. Per-user **`authProvider`**
+  (`local` | `swivel` | `both`). admin-ops.html Users tab: email required, a **Sign-in** column + selector.
+- **SWIVEL L!NK OAuth code-flow seam (scaffolded; env-gated, inert until configured).** `/api-ops/link-oauth-login`
+  redeems the one-time `code` server-side at **`SWIVEL_OAUTH_PROFILE_URL`** (no client_id/secret — the code
+  self-authenticates; for uat add the `SWIVEL_OAUTH_XSYSTEM` → `x-system` header), verifies the echoed `state`,
+  **federates on `profile.email`**, auto-provisions a default-role user if none, then mints our own session.
+  Frontend `linkBoot()` (`ops.js`) reads `?mode&site#code&state` from the L!NK iframe URL, redeems, scrubs the
+  fragment. Profile endpoint = **`https://auth.swivelsoftware.asia/api/oauth/profile`** (the auth host, not the
+  ERP host). Verified locally end-to-end with a mock profile server (gating, state-mismatch 401, email match,
+  auto-provision). `swivelLink` config block; `/api-ops/config` exposes `linkEnabled`.
+- Two logins set up in `users.json`: `mandy` (admin) email → `mandy.mak@swivelsoftware.com`; new `support`
+  (manager, HKG) email `support@swivelsoftware.com`.
+- Files: `serve-ops.ps1` `erp-doc-api.ps1` `erp-api-map.json` `admin-ops.html` `login.html` `ops.js`
+  `users.example.json` `ops.config.example.json`. ERP-routing round committed `e4800b2`.
+
+**Previous session (2026-06-15b — clear a milestone by uploading the missing document to the ERP + admin "Documents" tab to maintain the doctype↔milestone map. Committed `6a87a0a`).**
 Operator-feedback round on milestone clearing: instead of only a manual Tick, an operator can now **upload the missing document straight to the ERP** and have the alert go green.
 - **Upload-to-clear (the feature).** From the worklist drawer's **ERP files** panel: pick a document type + file → base64 in the browser → `POST /api-ops/erp-file-upload` (`Handle-ErpFileUpload`) → live Swivel **`/file/upload`** via the new standalone **`Invoke-ErpFileUpload`** (extracted from `Invoke-ErpDocIssue`; issue flow refactored to reuse it). **Nothing stored locally; the successful upload IS the proof** — on success `Close-MilestonesFor` flips the matching milestone(s) done (same checklist/rollup write-path as the manual Tick, via the extracted `Update-ChecklistRollup`). We do **not** wait for a re-seed (the evaluator reads `dbo.PIC`, a different store/code-space than `/file/upload`). `erp-doc-api.ps1` / `serve-ops.ps1` / `ops.js` / `styles.css`.
 - **Derived, not hard-coded.** The doctype→milestone link is built by **`Get-MilestoneDoctypeMap`** (cached `$script:MsDoctypeMap`) from **`milestone_evidence_map`**, reset on any admin milestone/evidence edit — so admin changes flow through with no restart and no per-request parse. `Handle-ErpFiles` returns `clearableDoctypes` (the types that would clear an alert on that shipment) to populate the upload dropdown.
@@ -456,9 +489,9 @@ user pasted). Only `*.example.json` is tracked.
 | `ops-eval.ps1` | Pure evaluator: `New-ShipContext` (sea) + **`New-AirContext`** (air); `Eval-Milestones` filters defs by bound **and mode**; planned-due anchor is mode-aware | ✅ |
 | `eval-shipment.ps1` | Read-only one-shot card for one shipment (two-server aware) | ✅ |
 | `seed-alerts.ps1` | Listener stand-in. **`-Mode Sea|Air`**: reads `blhead`/`blcont` or `awbhead`, batches PIC + consignee/shipper contacts, computes arrival bucket + cargo profile + conveyance, pulls **house/master bill, incoterm, container/liner-SO, cargo-ready, role codes + POL/POD**, resolves company **names** via a single chunked `custsub.code2` clustered seek (never the heavy party views) → `company_dim`, resolves **vessel code→name** via a chunked `veslmstr.code` seek (bound-aware: sea Export reads `vessel_2/voyage_2`, Import `vessel_1/voyage_1`), upserts `shipment_alerts`. **`Filter-Cols`** intersects wanted columns with the station's `INFORMATION_SCHEMA` so schema-variant offices (e.g. HAM `blhead` lacks `picuser`) seed without failing | ✅ |
-| `serve-ops.ps1` | Web service: worklist (arrival-grouped, `&station=` filter), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close, **`/api-ops/companies` (name type-ahead), `/api-ops/ports` (POL/POD lists)**. Config payload returns `stationCode` + `stations[]`. **Real auth** (`users.json` present → login/sessions/scope; absent → open/demo mode) + admin-gated `/api-ops/admin/*`: **`users`** CRUD and **`milestones`** CRUD (`GET/POST /admin/milestones` + `/admin/milestone-delete`, MERGE on `milestone_def`, validated, `admin-audit.log`) and **`evidence`** CRUD (`GET/POST /admin/evidence` + `/admin/evidence-delete` over `milestone_evidence_map` pic_doctype rows). **Upload-to-clear**: `/api-ops/erp-file-upload` (`Handle-ErpFileUpload`) pushes a missing doc to the ERP `/file/upload` and `Close-MilestonesFor` flips the matching milestone green (doctype→milestone via cached `Get-MilestoneDoctypeMap`). Config/JSON read via `[IO.File]::ReadAllText` (UTF-8 safe). Reads only `pgsops` | ✅ |
-| `admin-ops.html` | Admin-only page, **three tabs**: **Users** (table + add/edit, **live search** over login/name/email/station/team/ERP-name for ~500 users), **Milestones & alerts** (table + editor: name/mode/bound/seq/phase/active + **alert timing** baseline/fixed/none — what drives operator Green/Amber/Red), and **Documents** (CRUD over `milestone_evidence_map` pic_doctype rows: **document type = the ERP Document Type code**, clears-which-milestone, module, active — keeps the worklist upload dropdown matched to the ERP). Non-admins 403 | ✅ |
-| `login.html` / `users.example.json` | Login page + user-record template (logins are gitignored `users.json`) | ✅ |
+| `serve-ops.ps1` | Web service: worklist (arrival-grouped, `&station=` filter), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close, **`/api-ops/companies` (name type-ahead), `/api-ops/ports` (POL/POD lists)**. Config payload returns `stationCode` + `stations[]` + `linkEnabled`. **Auth: login by EMAIL** (`Get-OpsUserByEmail` + the `New-OpsSession` seam; username fallback; `users.json` present → login/sessions/scope, absent → open/demo) + **SWIVEL L!NK** OAuth seam (`/api-ops/link-oauth-login`, env-gated, federates on email, auto-provision). Per-station ERP routing via `Resolve-ForwarderCode`→`Get-StationOwnCode` (`fm3kco.site` owncode). Admin-gated `/api-ops/admin/*`: **`users`** (now incl. `authProvider`), **`milestones`**, **`evidence`**, and **`erp-settings`** (`Set-ErpApiMap` — partyGroupCode/forwarderCode). **Upload-to-clear**: `/api-ops/erp-file-upload`. Config/JSON read via `[IO.File]::ReadAllText` (UTF-8 safe). Reads only `pgsops` | ✅ |
+| `admin-ops.html` | Admin-only page, **four tabs**: **Users** (add/edit + live search; email is the required sign-in key, a **Sign-in** column + `authProvider` selector, "User name" = internal id), **Milestones & alerts** (CRUD over `milestone_def` + alert timing), **Documents** (CRUD over `milestone_evidence_map` pic_doctype rows = ERP Document Type codes), and **ERP API** (`partyGroupCode` + fallback `forwarderCode`, via `/api-ops/admin/erp-settings`). Non-admins 403 | ✅ |
+| `login.html` / `users.example.json` | Login page (**Email + password**) + user-record template incl. `authProvider`; logins are the gitignored `users.json` | ✅ |
 | `restart-ops-network.bat` / `restart-ops-local.bat` | One-double-click **restart** of the web service (8079 network / 8078 local): stop-then-start, **port-scoped**, kill excludes `$PID` | ✅ |
 | `seed-ports.ps1` | Seeds the POL/POD port list for the filter dropdowns | ✅ |
 | `index.html`/`ops.js`/`styles.css` | UI: 🚢Sea/✈Air toggle, Import/Export toggle, **station picker**, **filter bar** (text `yyyy-mm-dd` date window default = current week, **company name** type-ahead across any role, POL/POD), **vessel/flight-grouped** collapsible worklist, mini-cards (house bill, container/liner-SO, incoterm, cust-ref), shipment drawer w/ milestones + **🔔 Remind-me** + **Arrangements** panel, custom in-page dialogs (no native `prompt`), My-Tasks | ✅ |

@@ -194,12 +194,14 @@ dates, cargo (qty / weight / CBM / **marks** / **description**), the container l
 familiar Place of Receipt | Port of Loading | Port of Discharge | Final Destination row and the
 20'/40'/HQ/Other container counts.
 
-**How it saves:** **Save changes to ERP** pushes **only the fields you actually changed** back to the ERP, and
-records a full before→after audit. Nothing else is touched.
+**How it saves:** **Save changes to ERP** pushes **only the fields you actually changed** back to the ERP (the
+right company + office identity are added automatically for your station), and records a full before→after audit.
+Nothing else is touched. The save is **live and confirmed** — a real ERP rejection now stops the save and shows
+you the reason.
 
 > ⚠️ **A few fields can't be pushed** (the ERP booking has no field for them): **trucker, customs broker,
 > warehouse**, the **No. of originals**, and the PIC *name* (correct the PIC via its ID/email instead). The
-> **carrier and the estimated dates save "best-effort"** — if the ERP rejects them, you'll see the reason and
+> **carrier still saves "best-effort"** (the ERP rejects raw carrier codes) — if rejected you'll see the reason and
 > it's logged. Everything else saves normally.
 
 **CTA:** When you see a `DUMMY`/`ZZZ` code or any wrong value on a card or in the drawer, open **Edit ERP data**,
@@ -221,6 +223,8 @@ fix it, and **Save changes to ERP** — don't let bad source data flow into the 
 
 ## 12. Good to know
 
+- **Signing in is by email** (your work email + password). If your company uses **SWIVEL L!NK**, open the Control
+  Tower from L!NK and you're signed in automatically — same account, matched on your email; no separate password.
 - **Dates are always ISO** `yyyy-mm-dd` — display, input, and storage. Type dates in that format.
 - **The screen reads only the small operational state**, never the live ERP, so it is fast even over the VPN.
   Heavy ERP work (routing, contacts, the draft seed) happens off the request path.

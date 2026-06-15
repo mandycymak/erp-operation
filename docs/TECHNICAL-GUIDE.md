@@ -144,18 +144,46 @@ foreach ($code in $stations.Keys) {
 
 ## 6. Managing user accounts & roles
 
-Sign in as an **admin** and open the **Admin** link (admins only). `admin-ops.html` has two tabs:
+Sign in as an **admin** and open the **Admin** link (admins only). `admin-ops.html` has **four tabs**:
 
-- **Users** — add/edit logins, with a live search over login/name/email/station/team/ERP-name (built for
-  ~500 users). Passwords are stored hashed (`SHA256("salt:password")`); new users are hashed automatically.
+- **Users** — add/edit logins, with a live search over name/email/station/team/ERP-name (built for ~500 users).
+  **Email is the required, unique sign-in key**; a **Sign-in** column shows each user's method. Passwords are
+  stored hashed (`SHA256("salt:password")`); new users are hashed automatically.
 - **Milestones & alerts** — CRUD over `milestone_def`: name, mode/bound/seq/phase, active, and the **alert
   timing** (`baseline` / fixed offset / `none`) that drives every operator's Green/Amber/Red. Edits apply at
   a shipment's **next evaluation run**, not retroactively.
+- **Documents** — CRUD over the `milestone_evidence_map` doctype rows (the **ERP Document Type codes** that, when
+  uploaded against a shipment, clear a milestone). Keep these matched to the ERP master.
+- **ERP API** — the non-secret ERP identity codes in `erp-api-map.json`: **`partyGroupCode`** (the company code,
+  e.g. `DEV`) and the fallback **`forwarderCode`** (office owncode). The bearer token is **not** here. See §7.
 
 **Auth model.** With `users.json` present the app runs in **real-auth mode** (login page, sessions, row-level
-scope). Without it, open/demo mode. Each credential carries `stations[]`, `access[]` (`Sea-Export`…),
-`teams[]`, `admin`, and the **ERP usernames** it owns (the login name is the app identity; ERP `pic_user`
-values are free text). Admin/manager see everything.
+scope). Without it, open/demo mode. Users **sign in by email + password** (a username also works as a fallback so
+no one is locked out during the switch). The **`username` stays the internal identity** (notes, @-mentions,
+sessions, scope, and the ERP-username bridge are unchanged) — email is only the credential. Each record carries
+`stations[]`, `access[]` (`Sea-Export`…), `teams[]`, `admin`, **`authProvider`** (`local` | `swivel` | `both`),
+and the **ERP usernames** it owns (free-text ERP `pic_user` values). Admin/manager see everything.
+
+> 🔑 **A `swivel` user has no local password** — it signs in only via SWIVEL L!NK (below). A `local` user can be
+> matched by L!NK too (federation is by email), so `both` is the common case once L!NK is live.
+
+### 6a. SWIVEL L!NK sign-on (OAuth code flow)
+
+The app can be embedded in **SWIVEL L!NK** as an iframe; L!NK signs the user in via OAuth **code flow**, federated
+on **email**. It is **inert until configured** — the redeem URL must be set:
+
+```
+SWIVEL_OAUTH_PROFILE_URL=https://auth.swivelsoftware.asia/api/oauth/profile   # env (or config swivelLink.profileUrl)
+SWIVEL_OAUTH_XSYSTEM=360uat                                                    # only for a uat-stage L!NK (x-system header)
+```
+
+or the `swivelLink` config block (`profileUrl`, `xSystem`, `autoProvision`, `defaultRole`). When enabled,
+`/api-ops/config` reports `linkEnabled:true`. Flow: L!NK opens
+`index.html?mode={light|dark}&site={CODE}#code={CODE}&state={STATE}`; the page reads the one-time `code`/`state`
+from the URL **fragment**, POSTs them to `/api-ops/link-oauth-login`, which redeems the code **server-side**
+(**no client_id/secret — the code self-authenticates**), verifies the echoed `state`, matches `profile.email` to a
+user (**auto-provisions** a `defaultRole` user when none, if `autoProvision`), and mints the app's own session.
+Register this app's redirect origin with Swivel; nothing else is needed to go live.
 
 ---
 
@@ -164,10 +192,18 @@ values are free text). Admin/manager see everything.
 The draft HBL/HAWB **Issue** posts to the **Swivel 3rd-party ERP API**. Two config locations:
 
 - **`erp-api-map.json` (tracked, non-secret)** — deployment codes that must match the ERP masters:
-  `partyGroupCode`, `forwarderCode`, `serviceCodeDefault`, `commodityFallback`, the `event`
+  **`partyGroupCode`** (the company code, e.g. `DEV` — also editable in the admin **ERP API** tab),
+  **`forwarderCode`** (the *fallback* office owncode), `serviceCodeDefault`, `commodityFallback`, the `event`
   (`transportBill` / "Transport Bill Confirm"), `documentTypeCode` (**`BL_REVIEW`** for HBL + HAWB), and
   `bookingUpdateMode` (`strict` / `best-effort`).
 - **`ops.config.json` → `erpApi` (gitignored, SECRET)** — `baseUrl` + the **bearer token** from Swivel.
+
+> 🧭 **`forwarderCode` is the office owncode — "where the data goes" — and is resolved PER STATION, not
+> hard-coded.** `Resolve-ForwarderCode($station)` → `Get-StationOwnCode` reads `fm3kco.site` (dbname → owncode,
+> e.g. HKG=`S0001`, SHA=`S0002`, SIN=`S0005`, BKK=`S0009`) and feeds it to `/booking/get`, `/booking/update`
+> (`bookingParty.forwarderPartyCode`, always sent — required by the schema), `/file/upload`, `/file/enquiry`,
+> `/file/download` and `/document/generate`. The `erp-api-map.json` `forwarderCode` is only the fallback. The ERP
+> **422s a wrong forwarder code**, so a single static code would misroute every non-HQ station.
 
 ```json
 "erpApi": {
@@ -194,9 +230,11 @@ The draft HBL/HAWB **Issue** posts to the **Swivel 3rd-party ERP API**. Two conf
 > print layout) and uploads it. Set `pdfEngine` in the config to override the browser path; if no browser is
 > found, the issue still posts the event without an attachment.
 
-**Known Swivel items** (`bookingUpdateMode: best-effort` is set because demoerp's `/booking/update` currently
-rejects every payload with "Departure date not active yet, Invalid carrier code" — payload-invariant; flip to
-`strict` once Swivel fixes it).
+> ✅ **`/booking/update` works live (demoerp `HK012606010`).** The old payload-invariant rejection ("Departure date
+> not active yet, Invalid carrier code") is gone, so `bookingUpdateMode` is back to **`strict`**. Two requirements
+> baked in: `partyGroupCode` + `bookingParty.forwarderPartyCode` (owncode) must be present, and the call
+> **read-merges** the schedule fields (`serviceCode`, `commodity`, POL/POD code+name) from the live `/booking/get`
+> — sending only the changed field otherwise triggers `(500) "No such POL in job schedule"`.
 
 ---
 

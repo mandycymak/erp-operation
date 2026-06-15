@@ -38,6 +38,16 @@ function Today-Date { if($AsOfDate){ [datetime]::ParseExact($AsOfDate,'yyyy-MM-d
 # EVERYONE's "My work" until a real user takes over (pic_user or last_updated_by becomes a real user).
 $SysUsers   =@(@($cfg.systemUsers)        | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
 $SysPrefixes=@(@($cfg.systemUserPrefixes) | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+# SWIVEL L!NK (OAuth code flow) - the seam for embedding this app in SWIVEL L!NK. ENABLED only when the redeem
+# (profile) URL is set: env SWIVEL_OAUTH_PROFILE_URL, else config swivelLink.profileUrl. There is NO
+# client_id/secret - the one-time code authenticates itself; xSystem (env SWIVEL_OAUTH_XSYSTEM) is sent as the
+# x-system header only for a uat-stage L!NK. autoProvision (default true) creates a default-role user on first
+# L!NK sign-in when the profile email matches nobody. Inert (endpoint returns "not enabled") until configured.
+$LinkProfileUrl=EnvOrConfig "SWIVEL_OAUTH_PROFILE_URL" $cfg.swivelLink.profileUrl
+$LinkXSystem   =EnvOrConfig "SWIVEL_OAUTH_XSYSTEM"     $cfg.swivelLink.xSystem
+$LinkEnabled   =[bool]("$LinkProfileUrl".Trim())
+$LinkAutoProvision = if($null -ne $cfg.swivelLink.autoProvision){ [bool]$cfg.swivelLink.autoProvision } else { $true }
+$LinkDefaultRole = if("$($cfg.swivelLink.defaultRole)".Trim()){ "$($cfg.swivelLink.defaultRole)".Trim().ToLower() } else { 'operator' }
 $Root=$PSScriptRoot
 $ListDir=Join-Path $Root "ops-lists"; if(-not (Test-Path $ListDir)){ New-Item -ItemType Directory -Path $ListDir|Out-Null }
 $NotesPath=Join-Path $ListDir "job-notes.json"
@@ -72,6 +82,12 @@ function Me-User($ctx){   # open-mode identity source (header / ?as= / '(open)')
   '(open)'
 }
 function Get-OpsUser($name){ $script:Users | Where-Object { $_.username -eq $name } | Select-Object -First 1 }
+# Email is the LOGIN / federation key (local password login AND SWIVEL L!NK both match on it). Case-insensitive;
+# username stays the internal identity (sessions/notes/@-mentions/scope are unchanged). Returns $null if absent.
+function Get-OpsUserByEmail($email){
+  $e="$email".Trim().ToLower(); if(-not $e){ return $null }
+  $script:Users | Where-Object { "$($_.email)".Trim().ToLower() -eq $e } | Select-Object -First 1
+}
 function Get-OpsSession($ctx){
   if(-not $script:AuthOn){ $u=Me-User $ctx; return @{ username=$u; displayName=$u; role='admin'; admin=$true; open=$true } }
   $c=$ctx.Request.Cookies['ops_sid']; if(-not $c){ return $null }
@@ -79,15 +95,64 @@ function Get-OpsSession($ctx){
   if($s.expires -lt (Get-Date)){ $Sessions.Remove($c.Value); return $null }
   $s.expires=(Get-Date).AddHours(12); return $s            # 12h sliding window
 }
-function Handle-OpsLogin($ctx){
-  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
-  $u=Get-OpsUser "$($j.username)".Trim()
-  if(-not $u -or -not $u.pwdHash -or (Hash-Pwd $u.salt $j.password) -ne $u.pwdHash){ Send-Json $ctx @{ error="Invalid username or password" } 401; return }
+# THE SESSION SEAM: build a session + set the cookie for an authenticated user record, whatever proved identity
+# (local password or SWIVEL L!NK OAuth). Sessions key on the internal username; returns the public payload.
+function New-OpsSession($ctx,$u){
   $dn= if("$($u.displayName)".Trim()){ "$($u.displayName)".Trim() } else { $u.username }
   $sid=[Guid]::NewGuid().ToString("N")
   $Sessions[$sid]=@{ username=$u.username; role="$($u.role)"; admin=[bool]$u.admin; displayName=$dn; expires=(Get-Date).AddHours(12) }
   $ctx.Response.Headers["Set-Cookie"]=(Session-Cookie $sid)
-  Send-Json $ctx @{ username=$u.username; displayName=$dn; role="$($u.role)"; admin=[bool]$u.admin }
+  @{ username=$u.username; displayName=$dn; role="$($u.role)"; admin=[bool]$u.admin }
+}
+function Handle-OpsLogin($ctx){
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  # Email is the login key; accept the legacy 'username' field too so existing logins keep working, and fall back
+  # to a username match when the identifier isn't an email on file (no lockout during the email-login switch).
+  $id= if("$($j.email)".Trim()){ "$($j.email)".Trim() } else { "$($j.username)".Trim() }
+  $u=Get-OpsUserByEmail $id; if(-not $u){ $u=Get-OpsUser $id }
+  if(-not $u -or -not $u.pwdHash -or (Hash-Pwd $u.salt $j.password) -ne $u.pwdHash){ Send-Json $ctx @{ error="Invalid email or password" } 401; return }
+  Send-Json $ctx (New-OpsSession $ctx $u)
+}
+# SWIVEL L!NK OAuth code-flow sign-in (the federation seam). L!NK opens this app in an iframe with a one-time
+# #code&state in the URL fragment; the frontend POSTs them here. We redeem the code SERVER-SIDE at the profile
+# URL (no client_id/secret - the code self-authenticates), verify the echoed state, match profile.email to a user
+# (auto-provisioning a default-role user when enabled), then mint our OWN session. Inert (501) until configured.
+function Handle-LinkOAuthLogin($ctx){
+  if(-not $script:AuthOn){ Send-Json $ctx @{ error="L!NK sign-in needs auth mode (users.json present)" } 400; return }
+  if(-not $LinkEnabled){ Send-Json $ctx @{ error="SWIVEL L!NK sign-in is not enabled on this instance" } 501; return }
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  $code="$($j.code)".Trim(); $state="$($j.state)".Trim()
+  if(-not $code -or -not $state){ Send-Json $ctx @{ error="Missing OAuth code or state" } 400; return }
+  $resp=$null   # redeem server-to-server: POST { code } -> { profile{email,displayName,userName,...}, state }
+  try{
+    $hdrs=@{}; if("$LinkXSystem".Trim()){ $hdrs['x-system']="$LinkXSystem".Trim() }
+    $resp=Invoke-RestMethod -Method Post -Uri "$LinkProfileUrl".Trim() -Headers $hdrs -ContentType 'application/json; charset=utf-8' -Body (@{ code=$code }|ConvertTo-Json -Compress) -TimeoutSec 30
+  }catch{ Send-Json $ctx @{ error="Invalid or expired L!NK sign-in" } 401; return }
+  if("$($resp.state)".Trim() -ne $state){ Send-Json $ctx @{ error="Invalid or expired L!NK sign-in" } 401; return }   # state echo MUST match (code-binding guard)
+  $prof=$resp.profile
+  $email="$($prof.email)".Trim(); if(-not $email){ $email="$($prof.userName)".Trim() }
+  if(-not $email){ Send-Json $ctx @{ error="L!NK profile has no email to match" } 401; return }
+  $u=Get-OpsUserByEmail $email
+  if(-not $u){
+    if(-not $LinkAutoProvision){ Send-Json $ctx @{ error="No account for $email - ask an admin to add you" } 403; return }
+    $u=Provision-LinkUser $email "$($prof.displayName)"
+    if(-not $u){ Send-Json $ctx @{ error="Could not provision a L!NK account" } 500; return }
+    Audit $u.username "L!NK auto-provisioned for $email (role=$LinkDefaultRole)"
+  }
+  Audit $u.username "L!NK sign-in ($email)"
+  Send-Json $ctx (New-OpsSession $ctx $u)
+}
+# Create a minimal user record for a first-time L!NK sign-in (no local password). Username derived from the email
+# local-part (sanitized + deduped); role = configured default; authProvider 'swivel'. Persisted via Save-Users.
+function Provision-LinkUser($email,$displayName){
+  $local=(("$email" -split '@')[0]) -replace '[^A-Za-z0-9_.-]',''; if(-not $local){ $local='user' }
+  $un=$local.ToLower(); $n=1
+  while($script:Users | Where-Object { $_.username -eq $un }){ $n++; $un="$local$n".ToLower() }
+  $dn= if("$displayName".Trim()){ "$displayName".Trim() } else { $local }
+  $rec=[pscustomobject][ordered]@{ username=$un; displayName=$dn; email="$email".Trim(); salt=''; pwdHash=''; role=$LinkDefaultRole; admin=$false; authProvider='swivel'; teams=@(); stations=@(); primaryStation=''; access=@(); erpUsers=@() }
+  $users=[System.Collections.ArrayList]@($script:Users); [void]$users.Add($rec)
+  $script:Users=@($users); Save-Users
+  $rec
 }
 function Me-PayloadOps($sess){
   if(-not $script:AuthOn){ return @{ user=$sess.username; username=$sess.username; authOn=$false; today=(Today-Str) } }
@@ -1924,7 +1989,7 @@ function Handle-PublicDocAttachDelete($ctx){
 }
 
 $StationList=@(@($cfg.stations)|Where-Object{ $_ -and $_.code }|ForEach-Object{ [pscustomobject]@{ code="$($_.code)".Trim(); name="$($_.name)".Trim() } })
-function Config-Payload { @{ appName=$AppName; instanceName=$InstanceName; appSubtitle=$AppSubtitle; stationCode=$StationCode; stations=$StationList } }
+function Config-Payload { @{ appName=$AppName; instanceName=$InstanceName; appSubtitle=$AppSubtitle; stationCode=$StationCode; stations=$StationList; linkEnabled=$LinkEnabled } }
 
 # ---------------- admin: user management (admin-gated; writes users.json; lifted from serve-dashboard) ----------------
 $AuditPath = Join-Path $Root "admin-audit.log"
@@ -1952,7 +2017,11 @@ function Handle-OpsAdmin($ctx,$sess,$path){
         $role="$($j.role)".Trim().ToLower()
         if($role -notin 'admin','manager','operator'){ Send-Json $ctx @{ error="Role must be admin, manager or operator" } 400; return }
         $em="$($j.email)".Trim()
-        if($em -and ($script:Users | Where-Object { $_.username -ne $un -and "$($_.email)".Trim().ToLower() -eq $em.ToLower() })){ Send-Json $ctx @{ error="Email already assigned to another user" } 400; return }
+        # email is the login / SWIVEL L!NK federation key -> required, well-formed, and unique
+        if(-not $em){ Send-Json $ctx @{ error="Email is required (it is the login / L!NK sign-in key)" } 400; return }
+        if($em -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$'){ Send-Json $ctx @{ error="Enter a valid email address" } 400; return }
+        if($script:Users | Where-Object { $_.username -ne $un -and "$($_.email)".Trim().ToLower() -eq $em.ToLower() }){ Send-Json $ctx @{ error="Email already assigned to another user" } 400; return }
+        $authProvider="$($j.authProvider)".Trim().ToLower(); if($authProvider -notin 'local','swivel','both'){ $authProvider='local' }
         $isAdmin=[bool]$j.admin
         if($un -eq $sess.username -and -not $isAdmin){ Send-Json $ctx @{ error="You cannot remove your own admin rights" } 400; return }
         $stations=@(Tag-List $j.stations); $validSts=@($StationList | ForEach-Object { $_.code })
@@ -1968,14 +2037,15 @@ function Handle-OpsAdmin($ctx,$sess,$path){
         $idx=-1; for($i=0;$i -lt $users.Count;$i++){ if($users[$i].username -eq $un){ $idx=$i; break } }
         if($idx -ge 0){
           $rec=$users[$idx]
-          $new=[ordered]@{ username=$un; displayName=$dn; email=$em; salt=$rec.salt; pwdHash=$rec.pwdHash; role=$role; admin=$isAdmin; teams=$teams; stations=$stations; primaryStation=$prim; access=$access; erpUsers=$erpUsers }
+          $new=[ordered]@{ username=$un; displayName=$dn; email=$em; salt=$rec.salt; pwdHash=$rec.pwdHash; role=$role; admin=$isAdmin; authProvider=$authProvider; teams=$teams; stations=$stations; primaryStation=$prim; access=$access; erpUsers=$erpUsers }
           if($j.password){ $salt=New-Salt; $new.salt=$salt; $new.pwdHash=(Hash-Pwd $salt $j.password) }
           $users[$idx]=[pscustomobject]$new
           Audit $sess.username "update user $un (role=$role, admin=$isAdmin, stations=$($stations -join '/'), primary=$prim, access=$($access -join '/'), erp=$($erpUsers -join '/')$(if($j.password){', password reset'}))"
         } else {
-          if(-not $j.password){ Send-Json $ctx @{ error="A password is required for a new user" } 400; return }
-          $salt=New-Salt; $hash=(Hash-Pwd $salt $j.password)
-          $new=[ordered]@{ username=$un; displayName=$dn; email=$em; salt=$salt; pwdHash=$hash; role=$role; admin=$isAdmin; teams=$teams; stations=$stations; primaryStation=$prim; access=$access; erpUsers=$erpUsers }
+          # a 'swivel' (L!NK-only) user signs in via OAuth, so no local password is needed; everyone else needs one
+          if(-not $j.password -and $authProvider -ne 'swivel'){ Send-Json $ctx @{ error="A password is required for a new user (or set Sign-in to SWIVEL L!NK)" } 400; return }
+          $salt=''; $hash=''; if($j.password){ $salt=New-Salt; $hash=(Hash-Pwd $salt $j.password) }
+          $new=[ordered]@{ username=$un; displayName=$dn; email=$em; salt=$salt; pwdHash=$hash; role=$role; admin=$isAdmin; authProvider=$authProvider; teams=$teams; stations=$stations; primaryStation=$prim; access=$access; erpUsers=$erpUsers }
           [void]$users.Add([pscustomobject]$new)
           Audit $sess.username "create user $un (role=$role, admin=$isAdmin, stations=$($stations -join '/'), primary=$prim, access=$($access -join '/'), erp=$($erpUsers -join '/'))"
         }
@@ -1984,6 +2054,7 @@ function Handle-OpsAdmin($ctx,$sess,$path){
       } else {
         Send-Json $ctx @{ users=@($script:Users | ForEach-Object { @{
           username="$($_.username)"; displayName="$($_.displayName)"; email="$($_.email)"; role="$($_.role)"; admin=[bool]$_.admin
+          authProvider=$(if("$($_.authProvider)".Trim()){"$($_.authProvider)".Trim().ToLower()}else{'local'})
           teams=@(Tag-List $_.teams); stations=@(Tag-List $_.stations); primaryStation="$($_.primaryStation)"
           access=@(Tag-List $_.access); erpUsers=@(Tag-List $_.erpUsers); hasPwd=[bool]"$($_.pwdHash)" } }) }
       }
@@ -2134,8 +2205,11 @@ Write-Host "Serving from $Root  |  ops DB [$opsDb] on $opsServer" -ForegroundCol
 while($listener.IsListening){
   $ctx=$listener.GetContext(); $path=$ctx.Request.Url.AbsolutePath
   try{
-    # SQL-free PUBLIC endpoints first (no session needed): login / logout / config
+    # SQL-free PUBLIC endpoints first (no session needed): login / link-oauth-login / logout / config
     if($path -eq "/api-ops/login"){ Handle-OpsLogin $ctx }
+    elseif($path -eq "/api-ops/link-oauth-login"){
+      if($ctx.Request.HttpMethod -ne 'POST'){ Send-Json $ctx @{ error='POST required' } 405 } else { Handle-LinkOAuthLogin $ctx }
+    }
     elseif($path -eq "/api-ops/logout"){
       $c=$ctx.Request.Cookies['ops_sid']; if($c -and $Sessions[$c.Value]){ $Sessions.Remove($c.Value) }
       $ctx.Response.Headers["Set-Cookie"]="ops_sid=; Path=/; Max-Age=0"

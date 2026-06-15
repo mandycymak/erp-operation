@@ -14,16 +14,23 @@ and the follow-up / @-mention collaboration subsystem).
 | File | Read it for |
 |---|---|
 | **`BLUEPRINT.md`** | **The authoritative, approved design** — all 6 tables, the milestone matrix, the listener engine, the KPI queries, and the person-focused worklist. Start here. |
-| `CLAUDE.md` | Project context for Claude Code: hard constraints (gotchas), the reuse map, planned repo layout, and the unblocking build order. Auto-loaded in a Claude Code session. |
+| **`PROJECT-SUMMARY.md`** | **What is actually built and proven** (the session log / status snapshot). Read this when resuming. |
+| `docs/BUSINESS-GUIDE.md` | End-user guide — worklist, drawer, Tick & Confirm, drafts, Edit ERP data, inbound feed. |
+| `docs/TECHNICAL-GUIDE.md` | Install / run / config / users & roles / ERP integration / SWIVEL L!NK / VPN / troubleshooting. |
+| `docs/DEVELOPER-GUIDE.md` | Coding standards + back-/front-end conventions for extending the app. |
+| `docs/SQL-README.md` | The `pgsops` schema + the verified ERP source field map. |
+| `CLAUDE.md` | Project context for Claude Code: hard constraints (gotchas), the reuse map, repo layout. Auto-loaded in a Claude Code session. |
 
 ## Status
 
-**Greenfield — design complete, implementation not started.** This repo currently holds documentation only. The
-first build step is `setup-ops.ps1` (the `pgsops` schema); the main project risk is mapping the milestone/event
-fields and log tables (PIC / print_log / sendlog / EDI) to their **real** ERP columns — see the "Open items" at
-the foot of `BLUEPRINT.md`.
+**Working app — built and proven against real ERP data** on two test environments (live `fm3k*` group + demoerp).
+Air + Sea, Export + Import: arrival-driven worklist with traffic-light milestones, multi-station, cross-station
+inbound feed, the draft HBL/HAWB customer-agreement loop, **Edit ERP data → live `/booking/update`**, and
+**upload-a-document-to-clear-a-milestone**. Sign-in is **by email**, with a seam for **SWIVEL L!NK** OAuth
+sign-on. The scheduled `listener-engine.ps1` is still deferred (`seed-alerts.ps1` stands in for it). See
+`PROJECT-SUMMARY.md` for the running status and `docs/` for the guides.
 
-## Architecture (once built)
+## Architecture
 
 ```
 station ERP DBs (READ-ONLY) --listener-engine.ps1 (Air 2h / Sea 3x day)--> pgsops (shipment_alerts, milestone_*, detention_watch)

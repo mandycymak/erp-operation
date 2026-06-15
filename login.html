@@ -26,8 +26,8 @@
   <form class="logincard" id="loginForm">
     <h1 id="brandingTitle">Control Tower</h1>
     <div class="sub">Sign in to continue</div>
-    <label for="u">Username</label>
-    <input id="u" autocomplete="username" autofocus>
+    <label for="u">Email</label>
+    <input id="u" type="email" autocomplete="username" placeholder="you@example.com" autofocus>
     <label for="p">Password</label>
     <input id="p" type="password" autocomplete="current-password">
     <button type="submit" id="btn">Sign in</button>
@@ -47,7 +47,7 @@ f.addEventListener("submit", async function (e) {
   e.preventDefault(); err.textContent = ""; btn.disabled = true; btn.textContent = "Signing in…";
   try {
     var r = await fetch("/api-ops/login", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: document.getElementById("u").value, password: document.getElementById("p").value }) });
+      body: JSON.stringify({ email: document.getElementById("u").value, password: document.getElementById("p").value }) });
     if (r.ok) { location.href = "index.html"; return; }
     var d = {}; try { d = await r.json(); } catch (e2) {}
     err.textContent = d.error || "Sign in failed";

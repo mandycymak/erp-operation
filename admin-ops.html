@@ -75,19 +75,22 @@
   </div>
   <table class="usr" id="usrTable">
     <thead><tr>
-      <th>Login</th><th>Display name</th><th>Email</th><th>Role</th><th>Teams</th>
+      <th>User name</th><th>Display name</th><th>Email</th><th>Sign-in</th><th>Role</th><th>Teams</th>
       <th>ERP usernames</th><th>Stations (primary bold)</th><th>Access</th><th></th>
     </tr></thead>
-    <tbody id="usrBody"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+    <tbody id="usrBody"><tr><td colspan="10" class="muted">Loading…</td></tr></tbody>
   </table>
 
   <div class="editor" id="editor">
     <h3 id="edTitle">Add user</h3>
     <div class="frow">
-      <div class="fcol"><label>Login name</label><input id="fUser" autocomplete="off" placeholder="e.g. mandy"></div>
+      <div class="fcol"><label>User name <span class="hint">(internal id, shown on records)</span></label><input id="fUser" autocomplete="off" placeholder="e.g. mandy"></div>
       <div class="fcol"><label>Display name</label><input id="fDisp" autocomplete="off" placeholder="optional"></div>
-      <div class="fcol"><label>Email</label><input id="fEmail" autocomplete="off" placeholder="optional, unique"></div>
-      <div class="fcol"><label>Password</label><input id="fPwd" type="password" autocomplete="new-password" placeholder="required for new user"></div>
+      <div class="fcol"><label>Email <span class="hint">(the sign-in / L!NK key)</span></label><input id="fEmail" type="email" autocomplete="off" placeholder="required, unique"></div>
+      <div class="fcol"><label>Sign-in</label>
+        <select id="fAuth"><option value="local">Password</option><option value="swivel">SWIVEL L!NK</option><option value="both">Password + L!NK</option></select>
+      </div>
+      <div class="fcol"><label>Password</label><input id="fPwd" type="password" autocomplete="new-password" placeholder="required (not for L!NK-only)"></div>
       <div class="fcol"><label>Role</label>
         <select id="fRole"><option value="operator">operator</option><option value="manager">manager</option><option value="admin">admin</option></select>
       </div>
@@ -304,7 +307,8 @@ function fillForm(u) {
   $('#fUser').value = u ? u.username : ''; $('#fUser').disabled = !!u;
   $('#fDisp').value = u ? (u.displayName || '') : '';
   $('#fEmail').value = u ? (u.email || '') : '';
-  $('#fPwd').value = ''; $('#fPwd').placeholder = u ? 'leave blank to keep' : 'required for new user';
+  $('#fAuth').value = u ? (u.authProvider || 'local') : 'local';
+  $('#fPwd').value = ''; $('#fPwd').placeholder = u ? 'leave blank to keep' : 'required (not for L!NK-only)';
   $('#fRole').value = u ? (u.role || 'operator') : 'operator';
   $('#fAdmin').checked = u ? !!u.admin : false;
   document.querySelectorAll('#gStations .stck').forEach(c => { c.checked = u ? arr(u.stations).includes(c.value) : false; c.dispatchEvent(new Event('change')); });
@@ -326,16 +330,18 @@ function renderTable() {
   const q = ($('#usrSearch').value || '').trim().toLowerCase();
   const rows = q ? USERS.filter(u => userMatches(u, q)) : USERS;
   $('#usrCount').textContent = !USERS.length ? '' : (q ? rows.length + ' of ' + USERS.length + ' users' : USERS.length + ' user' + (USERS.length === 1 ? '' : 's'));
-  if (!USERS.length) { tb.innerHTML = '<tr><td colspan="9" class="muted">No users yet — add the first (admin) user below.</td></tr>'; return; }
-  if (!rows.length) { tb.innerHTML = '<tr><td colspan="9" class="muted">No users match “' + esc(q) + '”.</td></tr>'; return; }
+  if (!USERS.length) { tb.innerHTML = '<tr><td colspan="10" class="muted">No users yet — add the first (admin) user below.</td></tr>'; return; }
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="10" class="muted">No users match “' + esc(q) + '”.</td></tr>'; return; }
   rows.forEach(u => {
     const tr = document.createElement('tr');
     const sts = arr(u.stations).map(s => s === u.primaryStation ? '<b>' + esc(s) + '</b>' : esc(s)).join(' · ') || '<span class="muted">all</span>';
     const acc = arr(u.access).map(a => '<span class="tag acc">' + esc(a) + '</span>').join('') || '<span class="muted">all</span>';
     const tms = arr(u.teams).map(t => '<span class="tag">' + esc(t) + '</span>').join('') || '—';
     const erp = arr(u.erpUsers).map(t => '<span class="tag erp">' + esc(t) + '</span>').join('') || '<span class="muted">= login</span>';
+    const ap = (u.authProvider || 'local'); const apLbl = ap === 'swivel' ? 'L!NK' : (ap === 'both' ? 'Pwd+L!NK' : 'Password');
     tr.innerHTML = '<td><b>' + esc(u.username) + '</b>' + (u.admin ? ' <span class="tag acc">admin-ui</span>' : '') + '</td>' +
-      '<td>' + esc(u.displayName || '') + '</td><td>' + esc(u.email || '') + '</td><td>' + esc(u.role || '') + '</td>' +
+      '<td>' + esc(u.displayName || '') + '</td><td>' + esc(u.email || '') + '</td>' +
+      '<td><span class="tag">' + esc(apLbl) + '</span></td><td>' + esc(u.role || '') + '</td>' +
       '<td>' + tms + '</td><td>' + erp + '</td><td>' + sts + '</td><td>' + acc + '</td>' +
       '<td class="rowact"><button class="ghost ed">Edit</button> <button class="ghost del">Delete</button></td>';
     tr.querySelector('.ed').onclick = () => { fillForm(u); $('#editor').scrollIntoView({ behavior: 'smooth' }); };
@@ -353,11 +359,12 @@ async function save() {
   $('#edErr').textContent = '';
   const body = {
     username: $('#fUser').value.trim(), displayName: $('#fDisp').value.trim(), email: $('#fEmail').value.trim(),
-    password: $('#fPwd').value, role: $('#fRole').value, admin: $('#fAdmin').checked,
+    password: $('#fPwd').value, role: $('#fRole').value, admin: $('#fAdmin').checked, authProvider: $('#fAuth').value,
     teams: tTeams.get(), stations: pickedStations(), primaryStation: pickedPrimary(),
     access: pickedAccess(), erpUsers: tErp.get()
   };
-  if (!body.username) { $('#edErr').textContent = 'Login name required'; return; }
+  if (!body.username) { $('#edErr').textContent = 'User name required'; return; }
+  if (!body.email) { $('#edErr').textContent = 'Email required (it is the sign-in key)'; return; }
   const r = await api('/api-ops/admin/users', { method: 'POST', body });
   if (r.error) { $('#edErr').textContent = r.error; return; }
   $('#edErr').innerHTML = '<span class="okline">✓ saved</span>';
@@ -366,7 +373,7 @@ async function save() {
 
 async function load() {
   const d = await api('/api-ops/admin/users');
-  if (d.error) { $('#usrBody').innerHTML = '<tr><td colspan="9" class="muted">' + esc(d.error) + '</td></tr>'; return; }
+  if (d.error) { $('#usrBody').innerHTML = '<tr><td colspan="10" class="muted">' + esc(d.error) + '</td></tr>'; return; }
   USERS = arr(d.users); renderTable(); warnDupErp();
 }
 

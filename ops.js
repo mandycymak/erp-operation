@@ -25,6 +25,27 @@ async function api(path, opts) {
 // access gating: ME.access = allowed mode-bound pairs; empty/open mode = everything allowed
 function hasPair(m, b) { return !ME || !ME.authOn || !arr(ME.access).length || arr(ME.access).includes(m + '-' + b); }
 
+// ---------- SWIVEL L!NK iframe boot ----------
+// L!NK opens this app embedded as: index.html?mode={light|dark}&site={CODE}#code={CODE}&state={STATE}
+// Read mode/site (non-secret context) + the one-time code/state from the URL FRAGMENT, apply the theme, store the
+// site context, then redeem the code for OUR OWN session before init() runs. code/state are sensitive + single-use
+// (~60s) so we strip them from the visible URL immediately. No code = an ordinary load (login.html fallback still
+// applies). Inert end-to-end unless L!NK actually hands us a code; the server endpoint is itself env-gated.
+async function linkBoot() {
+  let q, h;
+  try { q = new URLSearchParams(location.search); h = new URLSearchParams((location.hash || '').replace(/^#/, '')); } catch (e) { return; }
+  const mode = q.get('mode'), site = q.get('site');
+  if (mode === 'dark' || mode === 'light') { document.documentElement.setAttribute('data-theme', mode); try { localStorage.setItem('theme', mode); } catch (e) {} }
+  window.MG_LINK_CONTEXT = { mode: mode || 'light', site: site || '' };   // L!NK site/company context (NOT auth)
+  const code = h.get('code'), st = h.get('state');
+  if (!code || !st) return;
+  try { history.replaceState(null, document.title, location.pathname + location.search); } catch (e) {}   // scrub the sensitive fragment
+  try {
+    await fetch('/api-ops/link-oauth-login', { method: 'POST', cache: 'no-store', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, state: st }) });
+  } catch (e) {}   // success -> session cookie set, /api-ops/me passes; failure -> /me 401 -> login.html
+}
+
 // ---------- init ----------
 async function init() {
   ME = await api('/api-ops/me');   // FIRST: 401 here bounces to login.html before anything renders
@@ -1275,4 +1296,4 @@ function taskCard(t, fromOthers, today) {
   return d;
 }
 
-init();
+linkBoot().then(init);

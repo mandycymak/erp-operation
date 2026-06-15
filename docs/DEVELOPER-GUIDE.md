@@ -105,6 +105,19 @@ intermittently timing out the open.)
 / `Scope-PairClause` AND it into queries; `Test-JobScope` gates by-job endpoints. Admin/manager bypass scope.
 Builders **emit items** (no leading-comma wrap) — collect with `@(Cur-...)`.
 
+**Sign-in is by email; `username` stays the internal identity.** `email` is the login / federation key (required +
+unique); `username` keys notes/@-mentions/sessions/scope/`erpUsers` — **don't** switch those to email. The seam:
+`Get-OpsUserByEmail` (case-insensitive) + **`New-OpsSession $ctx $u`** (builds the session + cookie, returns the
+public payload) — every sign-in path calls `New-OpsSession`. `Handle-OpsLogin` matches email, with a `Get-OpsUser`
+(username) fallback. Per-user `authProvider` (`local` | `swivel` | `both`); a `swivel` user has no salt/pwdHash.
+
+**SWIVEL L!NK** (`/api-ops/link-oauth-login` → `Handle-LinkOAuthLogin`, an SQL-free public route): redeems the
+one-time `code` server-side at `SWIVEL_OAUTH_PROFILE_URL` (no client_id/secret), **verifies the echoed `state`**,
+federates on `profile.email`, auto-provisions via `Provision-LinkUser` when enabled, then `New-OpsSession`. Gated
+by `$LinkEnabled` (env `SWIVEL_OAUTH_PROFILE_URL`/`SWIVEL_OAUTH_XSYSTEM` or the `swivelLink` config block);
+`/api-ops/config` exposes `linkEnabled`. Frontend `linkBoot()` (runs before `init()`) reads `mode`/`site` +
+`#code&state`, redeems, then scrubs the fragment.
+
 ### The draft-document subsystem
 
 This is the largest feature; it is keyed by `job_no`/`doc_id`:
@@ -123,13 +136,22 @@ This is the largest feature; it is keyed by `job_no`/`doc_id`:
 ### ERP document API (`erp-doc-api.ps1`)
 
 `Invoke-ErpDocAgree` = `/booking/get` (read-merge) → `/booking/update`. `Invoke-ErpDocIssue` = per-file
-`/file/upload` (documentTypeCode from `erp-api-map.json`) → `/event/update` (transportBill). Mode-aware
-(`moduleTypeCode` AIR/SEA). `ErpMockMode` returns true when no `baseUrl`+token → writes `erp-mock/` instead.
+`/file/upload` (documentTypeCode from `erp-api-map.json`) → `/event/update` (transportBill). `Invoke-ErpEditPush`
+= the **Edit ERP data** save path (`/booking/get` existence guard → `/booking/update` of only the changed fields).
+Mode-aware (`moduleTypeCode` AIR/SEA). `ErpMockMode` returns true when no `baseUrl`+token → writes `erp-mock/`.
+
+**Routing identity is per-station, never hard-coded.** `partyGroupCode` comes from `erp-api-map.json`
+(`Set-ErpApiMap` lets the admin **ERP API** tab edit it). The **`forwarderCode` / `bookingParty.forwarderPartyCode`**
+(= office owncode) comes from `Resolve-ForwarderCode($station)` → `Get-StationOwnCode` (`fm3kco.site`, cached, map
+fallback) — threaded through `Invoke-ErpBookingGet`, `Invoke-ErpEditPush`, and the three `Invoke-ErpFile*`
+functions; `Build-ErpPatchPayload` **always** injects `forwarderPartyCode`. `Invoke-ErpEditPush` also **read-merges**
+`serviceCode`/`commodity`/POL/POD from the live booking (the ERP validates POL against the job schedule).
 
 > **Gotcha — live-call findings (baked in):** `Invoke-RestMethod` returns a JSON array as ONE object
-> (assign-then-`@()`); do **not** send `carrierCode`/`vesselName` on update; key `/file/upload` + `/event/update`
-> by `houseNo`+`bookingNo` (the doc guid 422s); `ErpErr` rewinds the consumed response stream to surface the
-> ERP's real validation text.
+> (assign-then-`@()`); do **not** send `carrierCode`/`vesselName` on update; the ERP **422s a wrong forwarder code**
+> and **500s a missing POL** ("No such POL in job schedule") — hence per-station owncode + the schedule read-merge;
+> key `/file/upload` + `/event/update` by `houseNo`+`bookingNo` (the doc guid 422s); `ErpErr` rewinds the consumed
+> response stream to surface the ERP's real validation text.
 
 ### Headless PDF (`Doc-RenderPdf`)
 

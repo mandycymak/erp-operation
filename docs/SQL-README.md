@@ -126,13 +126,19 @@ as the agree flow).
 
 > All write keys **verified against the Swivel OpenAPI spec** (`3rd-erpapi.json` — `NewBooking.bookingParty`,
 > top-level, and the `flexData` IATA-leg object); each is tunable in `erp-edit-fields.json` (`writeKey`) with no
-> code change. A correction is only sent when the operator actually edits that field; `bookingUpdateMode:
-> best-effort` records any rejection. **Carrier and the estimated dates push best-effort** (the carrier master
-> rejects raw ERP codes; demoerp still rejects date-touching updates — open Swivel ticket), captured verbatim in
-> `erp_edit_log`. **Trucker / customs broker / warehouse are dropped** — the booking API has no field for them;
-> **No. of originals and PIC *name* have no write key** (PIC is corrected via `picId`/`picEmail`). The four
-> `custsub`/`portmstr`/`servmstr`/`linermstr` masters exist in **both** the station DB (`fm3k<code>`) and
-> corporate `fm3kco`; the editor reads the **station** DB.
+> code change. A correction is only sent when the operator actually edits that field.
+>
+> **Routing identity (verified live 2026-06-15):** every `/booking/update` carries **`partyGroupCode`** (company
+> code, e.g. `DEV`) and **`bookingParty.forwarderPartyCode`** = the office **owncode** (`fm3kco.site` dbname→owncode:
+> HKG=`S0001`, SHA=`S0002`, SIN=`S0005`, BKK=`S0009`), resolved per station by `Resolve-ForwarderCode` — never a
+> single hard-coded code (the ERP **422s a wrong forwarder code**). The push also **read-merges**
+> `serviceCode`/`commodity`/POL/POD code+name from the live `/booking/get`, or the ERP **500s** "No such POL in job
+> schedule". With the old payload-invariant rejection now gone, **`bookingUpdateMode` is `strict`** (a real
+> rejection aborts and is captured in `erp_edit_log`). **Carrier still pushes best-effort** (the carrier master
+> rejects raw ERP codes). **Trucker / customs broker / warehouse are dropped** — the booking API has no field for
+> them; **No. of originals and PIC *name* have no write key** (PIC via `picId`/`picEmail`). The four
+> `custsub`/`portmstr`/`servmstr`/`linermstr` masters exist in **both** the station DB (`fm3k<code>`) and corporate
+> `fm3kco`; the editor reads the **station** DB.
 
 ---
 
