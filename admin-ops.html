@@ -59,6 +59,7 @@
     <button class="tabbtn on" data-tab="users">Users</button>
     <button class="tabbtn" data-tab="milestones">Milestones &amp; alerts</button>
     <button class="tabbtn" data-tab="documents">Documents</button>
+    <button class="tabbtn" data-tab="erp">ERP API</button>
   </div>
 
   <section id="tab-users" class="tabpane">
@@ -210,6 +211,27 @@
     </div>
   </div>
   </section>
+
+  <section id="tab-erp" class="tabpane" style="display:none">
+  <div class="editor" id="erpSection">
+    <h3>ERP API identity</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">
+      Codes sent to the Swivel ERP on every <b>Save data to ERP</b> / document call.
+      <b>Party group code</b> is the company/customer code (e.g. <code>DEV</code>) — required by the ERP.
+      <b>Forwarder code</b> is the office <i>owncode</i> the data belongs to (where it goes, e.g. <code>S0001</code>=HKG);
+      this is the fallback — each station's real owncode is resolved automatically from the ERP when available.
+      The bearer token is <b>not</b> here (it stays in the server config). Changes apply immediately — no restart.
+    </div>
+    <div class="frow">
+      <div class="fcol" style="min-width:200px"><label>Party group code (company)</label><input id="ePartyGroup" autocomplete="off" placeholder="e.g. DEV"></div>
+      <div class="fcol" style="min-width:240px"><label>Forwarder code (fallback owncode)</label><input id="eForwarder" autocomplete="off" placeholder="e.g. S0001"></div>
+    </div>
+    <div class="bar">
+      <button class="primary" id="erpSaveBtn">Save ERP settings</button>
+      <span class="errline" id="erpErr"></span>
+    </div>
+  </div>
+  </section>
 </div>
 <script>
 'use strict';
@@ -351,6 +373,22 @@ async function load() {
 function switchTab(name) {
   document.querySelectorAll('.tabpane').forEach(p => p.style.display = (p.id === 'tab-' + name) ? '' : 'none');
   document.querySelectorAll('.tabbtn').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+}
+
+/* ---------- ERP API identity (erp-api-map.json scalars) ---------- */
+async function loadErp() {
+  const d = await api('/api-ops/admin/erp-settings');
+  if (d.error) { $('#erpErr').textContent = d.error; return; }
+  $('#ePartyGroup').value = d.partyGroupCode || '';
+  $('#eForwarder').value = d.forwarderCode || '';
+}
+async function saveErp() {
+  $('#erpErr').textContent = '';
+  const body = { partyGroupCode: $('#ePartyGroup').value.trim(), forwarderCode: $('#eForwarder').value.trim() };
+  if (!body.partyGroupCode) { $('#erpErr').textContent = 'Party group code is required.'; return; }
+  const r = await api('/api-ops/admin/erp-settings', { method: 'POST', body });
+  if (r.error) { $('#erpErr').textContent = r.error; return; }
+  $('#erpErr').innerHTML = '<span class="okline">✓ saved</span>';
 }
 
 /* ---------- milestones & alerts (milestone_def editor) ---------- */
@@ -512,6 +550,8 @@ async function loadDocs() {
   $('#docSaveBtn').onclick = saveDoc;
   $('#docResetBtn').onclick = () => fillDocForm(null);
   loadDocs();
+  $('#erpSaveBtn').onclick = saveErp;
+  loadErp();
 })();
 </script>
 </body>

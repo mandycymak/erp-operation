@@ -22,8 +22,8 @@
   "_generateDocument": "true = after saving data + event, also call /document/generate so the ERP produces the official house bill document.",
   "generateDocument": false,
 
-  "_bookingUpdateMode": "strict = an ERP rejection of /booking/update aborts the issue. best-effort = the rejection is logged in the document history and the issue continues with /file/upload + /event/update. Set to best-effort 2026-06-12 because the demoerp /booking/update rejects EVERY payload with 'Departure date not active yet, Invalid carrier code' (verified payload-invariant, even with master-listed carrier APLU + future ETD/ETA) - raised with Swivel; flip back to strict once fixed.",
-  "bookingUpdateMode": "best-effort",
+  "_bookingUpdateMode": "strict = an ERP rejection of /booking/update aborts the issue. best-effort = the rejection is logged in the document history and the issue continues with /file/upload + /event/update. Flipped back to strict 2026-06-15: the old payload-invariant 'Departure date not active yet, Invalid carrier code' rejection is gone (live /booking/update returns ok once partyGroupCode=DEV + bookingParty.forwarderPartyCode=owncode are sent and POL/POD/service/commodity are read-merged from the live booking), so a real rejection now surfaces as an error.",
+  "bookingUpdateMode": "strict",
 
   "_bookingOverrides": "Optional last-step overrides applied to the /booking/update payload. Key = API property name; value = 'field:<doc field code>' (agreed document box), 'sa:<shipment_alerts column>' (snapshot), or 'const:<literal>'. Example: { \"freightTermsCode\": \"const:PP\" }.",
   "bookingOverrides": {}

@@ -36,6 +36,18 @@ function Get-ErpApiMap {
   }
   $script:ErpApiMap
 }
+# Persist scalar settings into erp-api-map.json (read-modify-write so comments + nested blocks survive), then
+# reset the cache so Get-ErpApiMap re-reads. $updates = @{ key=value }. Used by the admin ERP-settings endpoint.
+function Set-ErpApiMap($updates){
+  $obj= if(Test-Path $script:ErpApiMapPath){ [IO.File]::ReadAllText($script:ErpApiMapPath)|ConvertFrom-Json } else { [pscustomobject]@{} }
+  foreach($k in @($updates.Keys)){
+    if($obj.PSObject.Properties[$k]){ $obj.$k=$updates[$k] }
+    else { $obj | Add-Member -NotePropertyName $k -NotePropertyValue $updates[$k] }
+  }
+  $json=$obj|ConvertTo-Json -Depth 8
+  [IO.File]::WriteAllText($script:ErpApiMapPath,$json,(New-Object System.Text.UTF8Encoding($false)))
+  $script:ErpApiMap=$obj
+}
 # first line of a multi-line box = the party NAME, the rest = the ADDRESS (the on-screen bill convention)
 function Split-PartyBox($text){
   $t="$text".Replace("`r","").Trim()
@@ -157,11 +169,15 @@ function Build-ErpBookingPayload($head,$fields,$sa,$map){
 
 # Fetch the current booking (POST /booking/get accepts the same JSON body as the documented GET - verified
 # live). The same bookingNo can exist once per module (SEA + AIR), so filter by moduleTypeCode.
-function Invoke-ErpBookingGet($api,$map,$bookingNo,$moduleTypeCode){
+function Invoke-ErpBookingGet($api,$map,$bookingNo,$moduleTypeCode,$forwarderCode){
   try{
+    # forwarderCode = the office that owns the booking (= the station owncode, e.g. S0001=HKG). The caller may
+    # pass the per-station owncode; fall back to the map default. /booking/get keys on it, so a wrong code reads
+    # nothing and the existence guard aborts.
+    $fwd="$forwarderCode".Trim(); if(-not $fwd){ $fwd="$($map.forwarderCode)".Trim() }
     # NB: Invoke-RestMethod returns a JSON array as ONE pipeline object (like ConvertFrom-Json) - assign
     # first, then @() to enumerate. @(Invoke-ErpCall ...) directly would nest the array as a single item.
-    $resp=Invoke-ErpCall $api '/booking/get' ([ordered]@{ partyGroupCode="$($map.partyGroupCode)".Trim(); forwarderCode="$($map.forwarderCode)".Trim(); bookingNo="$bookingNo" })
+    $resp=Invoke-ErpCall $api '/booking/get' ([ordered]@{ partyGroupCode="$($map.partyGroupCode)".Trim(); forwarderCode=$fwd; bookingNo="$bookingNo" })
     $hit=@(@($resp) | Where-Object { $_ -and "$($_.moduleTypeCode)" -eq "$moduleTypeCode" })
     if($hit.Count){ $hit[0] } else { $null }
   }catch{ $null }
@@ -214,11 +230,12 @@ function Erp-FileArray($resp){
 # (e.g. Air: HAWB,Booking,MAWB ; Sea: Booking,HBL); we try each as 3rdBookingID first, then bookingNo, and
 # return the FIRST hit so files attached at the booking surface even when a higher-priority id doesn't match.
 # Returns @{ files=@({fileName,documentTypeCode,remark}); keyUsed; keyKind; keyField; mock; error? }.
-function Invoke-ErpFileEnquiry($api,$map,$module,$candidates){
+function Invoke-ErpFileEnquiry($api,$map,$module,$candidates,$forwarderCode){
   if(ErpMockMode $api){ return @{ files=@(); keyUsed=''; keyKind=''; keyField=''; mock=$true } }
   $cands=@(@($candidates) | Where-Object { $_ -and "$($_.val)".Trim() })
   if(-not $cands.Count){ return @{ files=@(); keyUsed=''; keyKind=''; keyField=''; mock=$false; error='no booking/bill number on this shipment' } }
-  $base=@{ partyGroupCode="$($map.partyGroupCode)".Trim(); forwarderCode="$($map.forwarderCode)".Trim(); moduleTypeCode="$module" }
+  $fwd="$forwarderCode".Trim(); if(-not $fwd){ $fwd="$($map.forwarderCode)".Trim() }   # per-station owncode; map fallback
+  $base=@{ partyGroupCode="$($map.partyGroupCode)".Trim(); forwarderCode=$fwd; moduleTypeCode="$module" }
   $lastErr=''
   foreach($field in '3rdBookingID','bookingNo'){
     foreach($c in $cands){
@@ -236,12 +253,13 @@ function Invoke-ErpFileEnquiry($api,$map,$module,$candidates){
 # plus an optional fileName, and returns an array of {fileName,documentTypeCode,remark,base64}. We try the same
 # candidate/field order as enquiry, pick the item matching $fileName (or the first with content), and decode the
 # base64. Returns @{ bytes=[byte[]]; fileName; mock; error? }.
-function Invoke-ErpFileDownload($api,$map,$module,$candidates,$fileName){
+function Invoke-ErpFileDownload($api,$map,$module,$candidates,$fileName,$forwarderCode){
   if(ErpMockMode $api){ return @{ bytes=$null; fileName="$fileName"; mock=$true } }
   $cands=@(@($candidates) | Where-Object { $_ -and "$($_.val)".Trim() })
   if(-not $cands.Count){ return @{ bytes=$null; fileName="$fileName"; mock=$false; error='no booking/bill number on this shipment' } }
   $want="$fileName".Trim()
-  $base=@{ partyGroupCode="$($map.partyGroupCode)".Trim(); forwarderCode="$($map.forwarderCode)".Trim(); moduleTypeCode="$module" }
+  $fwd="$forwarderCode".Trim(); if(-not $fwd){ $fwd="$($map.forwarderCode)".Trim() }   # per-station owncode; map fallback
+  $base=@{ partyGroupCode="$($map.partyGroupCode)".Trim(); forwarderCode=$fwd; moduleTypeCode="$module" }
   $lastErr=''
   foreach($field in '3rdBookingID','bookingNo'){
     foreach($c in $cands){
@@ -271,14 +289,15 @@ function Invoke-ErpFileDownload($api,$map,$module,$candidates,$fileName){
 # Keyed by houseNo+bookingNo (same identity the issue flow uses). The bytes stream request-body -> ERP; nothing
 # is persisted locally. Returns @{ ok; mock; error? }. Shared by the doc-issue flow and the standalone
 # milestone-clearing upload endpoint.
-function Invoke-ErpFileUpload($api,$map,$module,$houseNo,$bookingNo,$doctypeCode,$fileName,$base64,$remark){
+function Invoke-ErpFileUpload($api,$map,$module,$houseNo,$bookingNo,$doctypeCode,$fileName,$base64,$remark,$forwarderCode){
   if(ErpMockMode $api){
     try{ ErpMockWrite "upload-$([guid]::NewGuid().ToString('N')).json" ([ordered]@{ at=(Get-Date).ToString('o'); module="$module"; houseNo="$houseNo"; bookingNo="$bookingNo"; documentTypeCode="$doctypeCode"; fileName="$fileName"; bytes=[int]([Math]::Ceiling(("$base64").Length*0.75)); remark="$remark" }) }catch{}
     return @{ ok=$true; mock=$true }
   }
+  $fwd="$forwarderCode".Trim(); if(-not $fwd){ $fwd="$($map.forwarderCode)".Trim() }   # per-station owncode; map fallback
   $up=[ordered]@{
     partyGroupCode="$($map.partyGroupCode)".Trim()
-    forwarderCode="$($map.forwarderCode)".Trim()
+    forwarderCode=$fwd
     moduleTypeCode="$module"
     houseNo="$houseNo"
     bookingNo="$bookingNo"
@@ -352,6 +371,7 @@ function Invoke-ErpDocIssue($head,$fields,$sa,$by,$attachment,$riderAtts){
   if(-not "$houseNo".Trim()){ return @{ ok=$false; error="the $($head.doc_type) number box is empty - fill it in before issuing" } }
   $bookingNo= if("$($sa.sono)".Trim()){ "$($sa.sono)".Trim() }else{ "$($head.job_no)" }
   $module=$(if($isAir){'AIR'}else{'SEA'})
+  $fwd=Resolve-ForwarderCode "$($sa.station)"   # per-station owncode (not hard-coded); map fallback inside
   $dtc="$($map.documentTypeCode.($head.doc_type))".Trim()
   $evStatus="$($map.event.status)".Trim(); if(-not $evStatus){ $evStatus='transportBill' }
   # one upload payload per file: bounded request sizes, attributable failures
@@ -373,7 +393,7 @@ function Invoke-ErpDocIssue($head,$fields,$sa,$by,$attachment,$riderAtts){
   if([bool]$map.generateDocument){
     $generate=[ordered]@{
       partyGroupCode="$($map.partyGroupCode)".Trim()
-      forwarderCode="$($map.forwarderCode)".Trim()
+      forwarderCode=$fwd
       moduleTypeCode=$module
       documentTypeCode=$dtc
       bookingNo=$bookingNo
@@ -392,7 +412,7 @@ function Invoke-ErpDocIssue($head,$fields,$sa,$by,$attachment,$riderAtts){
   }
   $steps=@()
   foreach($fl in $files){
-    $up=Invoke-ErpFileUpload $api $map $module $houseNo $bookingNo $dtc "$($fl.name)" "$($fl.base64)" "$($fl.remark)"
+    $up=Invoke-ErpFileUpload $api $map $module $houseNo $bookingNo $dtc "$($fl.name)" "$($fl.base64)" "$($fl.remark)" $fwd
     if(-not $up.ok){ return @{ ok=$false; error="file/upload failed for $($fl.name): $($up.error)"; steps=$steps } }
     $steps+="file/upload ok: $($fl.name)"
   }
@@ -498,6 +518,12 @@ function Build-ErpPatchPayload($changed,$defs,$ident,$map,$all){
     if($wk -match 'Party'){ $party[$wk]=$sv } else { $p[$wk]=$sv }
     $sent+=,@{ field=$code; writeKey=$wk; value=$sv }
   }
+  # forwarderPartyCode (the owncode = which office owns this booking) is REQUIRED inside bookingParty by the
+  # NewBooking schema and is how /booking/update routes the write to the right office. Always send it - even when
+  # no party field was edited - so the update never lands in the wrong (or no) office. Per-station owncode via
+  # $ident.forwarderCode; map.forwarderCode is the fallback.
+  $fwd="$($ident.forwarderCode)".Trim(); if(-not $fwd){ $fwd="$($map.forwarderCode)".Trim() }
+  if($fwd){ $party['forwarderPartyCode']=$fwd; $sent+=,@{ field='_forwarder'; writeKey='bookingParty.forwarderPartyCode'; value=$fwd } }
   if($party.Count){ $p['bookingParty']=$party }
   if($flex.Count){ $p['flexData']=$flex }
   @{ payload=$p; sent=@($sent) }
@@ -506,7 +532,7 @@ function Build-ErpPatchPayload($changed,$defs,$ident,$map,$all){
 # abort if the booking is absent so /booking/update can never CREATE a duplicate. Honors bookingUpdateMode
 # (best-effort logs an ERP rejection and reports rejected=$true; strict reports error). Returns
 # @{ ok; mock; rejected?; steps; error? }.
-function Invoke-ErpEditPush($payload,$bookingNo,$module,$by){
+function Invoke-ErpEditPush($payload,$bookingNo,$module,$by,$forwarderCode){
   $api=$cfg.erpApi; $map=Get-ErpApiMap; $mock=ErpMockMode $api
   if($mock){
     try{
@@ -514,10 +540,17 @@ function Invoke-ErpEditPush($payload,$bookingNo,$module,$by){
       return @{ ok=$true; mock=$true; steps=@('booking/update (mock)') }
     }catch{ return @{ ok=$false; mock=$true; steps=@(); error="mock edit failed: $($_.Exception.Message)" } }
   }
-  $cur=Invoke-ErpBookingGet $api $map "$bookingNo" "$module"
-  if(-not $cur){ return @{ ok=$false; mock=$false; steps=@(); error="booking '$bookingNo' ($module) not found via /booking/get - aborting so the update cannot create a new booking. Check partyGroupCode/forwarderCode in erp-api-map.json and the booking number." } }
+  $cur=Invoke-ErpBookingGet $api $map "$bookingNo" "$module" $forwarderCode
+  if(-not $cur){ return @{ ok=$false; mock=$false; steps=@(); error="booking '$bookingNo' ($module) not found via /booking/get - aborting so the update cannot create a new booking. Check partyGroupCode/forwarderCode (owncode) in erp-api-map.json and the booking number." } }
   $bestEffort=("$($map.bookingUpdateMode)".Trim().ToLower() -eq 'best-effort')
   $steps=@('booking/get ok (exists)')
+  # /booking/update validates the schedule fields against the job (a missing POL/POD -> 500 "No such POL in job
+  # schedule"), and serviceCode/commodity are NewBooking-required. The operator usually edits none of these, so
+  # read-merge them from the live booking ($cur) for any key the payload doesn't already carry - same
+  # read-merge-write idea as the agree flow, so an edit to one field never blanks the rest of the record.
+  foreach($k in 'serviceCode','commodity','portOfLoadingCode','portOfLoadingName','portOfDischargeCode','portOfDischargeName'){
+    if(-not $payload.Contains($k)){ $v="$($cur.$k)".Trim(); if($v){ $payload[$k]=$v } }
+  }
   try{
     [void](Invoke-ErpCall $api '/booking/update' $payload)
     $steps+='booking/update ok'

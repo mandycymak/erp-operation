@@ -668,7 +668,7 @@ function Handle-ErpFiles($cn,$qs){
   # ordered identifier candidates (ops rule): Air HAWB -> Booking -> MAWB ; Sea Booking(sono) -> HBL
   $cands= if($isAir){ @(@{kind='HAWB';val=$hbl},@{kind='Booking';val=$sono},@{kind='MAWB';val=$mbl}) } else { @(@{kind='Booking';val=$sono},@{kind='HBL';val=$hbl}) }
   if(-not @(@($cands)|Where-Object{ "$($_.val)".Trim() }).Count){ return @{ error='no booking / bill number on this shipment to query the ERP' } }
-  $r=Invoke-ErpFileEnquiry $cfg.erpApi (Get-ErpApiMap) $module $cands
+  $r=Invoke-ErpFileEnquiry $cfg.erpApi (Get-ErpApiMap) $module $cands (Resolve-ForwarderCode $a.station)
   # doctypes whose upload would clear a milestone on THIS shipment (derived from the evidence map, cached)
   $dmap=Get-MilestoneDoctypeMap $cn; $clearable=@()
   foreach($dt in $dmap.Keys){ foreach($ms in @($dmap[$dt])){ if($ms.bound -eq "$($a.bound)" -and ($ms.module -eq '' -or $ms.module -eq $module)){ $clearable+=$dt; break } } }
@@ -703,7 +703,7 @@ function Handle-ErpFileUpload($cn,$ctx,$me){
   $houseNo="$($a.house_bill)".Trim()
   $bookingNo= if("$($a.sono)".Trim()){ "$($a.sono)".Trim() } else { "$($a.master_bill)".Trim() }
   $remark="Uploaded via Control Tower by $me to clear '$doctype'"
-  $up=Invoke-ErpFileUpload $cfg.erpApi $map $module $houseNo $bookingNo $dtc $v.name ([Convert]::ToBase64String($v.bytes)) $remark
+  $up=Invoke-ErpFileUpload $cfg.erpApi $map $module $houseNo $bookingNo $dtc $v.name ([Convert]::ToBase64String($v.bytes)) $remark (Resolve-ForwarderCode $a.station)
   if(-not $up.ok){ Audit $me "erp-file-upload $job '$doctype' FAILED: $($up.error)"; return @{ error="ERP upload failed: $($up.error)" } }
   # success: the upload is the proof - clear the milestone(s) locally
   $cleared=@()
@@ -727,7 +727,7 @@ function Handle-ErpFileDownload($cn,$ctx,$qs){
   $sono="$($a.sono)".Trim(); $hbl="$($a.house_bill)".Trim(); $mbl="$($a.master_bill)".Trim()
   $cands= if($isAir){ @(@{kind='HAWB';val=$hbl},@{kind='Booking';val=$sono},@{kind='MAWB';val=$mbl}) } else { @(@{kind='Booking';val=$sono},@{kind='HBL';val=$hbl}) }
   if(-not @(@($cands)|Where-Object{ "$($_.val)".Trim() }).Count){ return $false }
-  $r=Invoke-ErpFileDownload $cfg.erpApi (Get-ErpApiMap) $module $cands $file
+  $r=Invoke-ErpFileDownload $cfg.erpApi (Get-ErpApiMap) $module $cands $file (Resolve-ForwarderCode $a.station)
   if($r.mock -or -not $r.bytes){ return $false }
   $name= if("$($r.fileName)".Trim()){ "$($r.fileName)".Trim() } elseif($file){ $file } else { 'erp-file' }
   $ct= switch([IO.Path]::GetExtension($name).ToLower()){
@@ -837,6 +837,7 @@ function Handle-ErpEditSeed($cn,$qs){
   $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=15;Packet Size=512"
   try{
     $srcCn.Open()
+    $ownCode=Get-StationOwnCode $srcCn $db   # forwarderPartyCode for /booking/update (which office owns this booking)
     $tbl= if($isAir){'awbhead'}else{'blhead'}
     $key="$($a.erp_ref)".Trim()
     $csv=($cols -join ',')
@@ -935,7 +936,7 @@ function Handle-ErpEditSeed($cn,$qs){
       # Weight unit defaults to KGS when the ERP leaves it blank
       if($fields.Contains('cargo_wunit') -and -not "$($fields['cargo_wunit'])".Trim()){ $fields['cargo_wunit']='KGS' }
     }
-    @{ jobNo=$job; mode="$($a.mode)"; bound="$($a.bound)"; dict=@($defs); fields=$fields; resolved=$resolved }
+    @{ jobNo=$job; mode="$($a.mode)"; bound="$($a.bound)"; dict=@($defs); fields=$fields; resolved=$resolved; ownCode=$ownCode }
   } catch {
     @{ error="ERP lookup failed: $($_.Exception.Message)" }
   } finally { try{ $srcCn.Close() }catch{} }
@@ -1014,9 +1015,11 @@ function Save-ErpEdit($cn,$ctx,$me){
   $bookingNo=''
   foreach($code in $bkChain){ $v="$($sf[$code])".Trim(); if($v){ $bookingNo=$v; break } }
   if(-not $bookingNo){ $bookingNo=$job }
-  $ident=@{ bookingNo=$bookingNo; module=$modeKey; bound="$($a.bound)" }
+  # forwarderPartyCode (owncode) - which office owns this booking; resolved from the seed (fm3kco.site), map fallback.
+  $fwd="$($seed.ownCode)".Trim(); if(-not $fwd){ $fwd="$((Get-ErpApiMap).forwarderCode)".Trim() }
+  $ident=@{ bookingNo=$bookingNo; module=$modeKey; bound="$($a.bound)"; forwarderCode=$fwd }
   $built=Build-ErpPatchPayload $changed $defs $ident (Get-ErpApiMap) $clean
-  $erp=Invoke-ErpEditPush $built.payload $bookingNo $modeKey $me
+  $erp=Invoke-ErpEditPush $built.payload $bookingNo $modeKey $me $fwd
   $changeRecs=@(); foreach($c in $changedCodes){ $changeRecs+=,@{ field=$c; writeKey="$($defByCode[$c].writeKey)"; before=(Doc-ValStr $current[$c]); after=(Doc-ValStr $clean.$c) } }
   $status= if($erp.mock){'mock'} elseif($erp.error){'error'} elseif($erp.rejected){'rejected'} else {'saved'}
   $ip="$($ctx.Request.RemoteEndPoint.Address)"
@@ -1321,6 +1324,33 @@ function Doc-CustLookup($srcCn,$db,$code){
 # once per server lifetime (PERF: removes 1-3 ERP round-trips from every draft create after the first; also
 # stops the dev path - where fm3kco is absent - from paying 3 failing round-trips each time). Empty is cached too
 # (a deployment-stable "can't resolve"); a server restart re-resolves if the office is set up later.
+# The bare owncode for a station (e.g. S0001 = HKG), from fm3kco.site dbname->owncode. This is the ERP's
+# forwarderPartyCode / forwarderCode: which office a booking belongs to (the "where the data goes" key for
+# /booking/update + /booking/get). Cached per db (stable per station); empty cached too. Distinct from
+# Get-OwnOfficeAgent, which resolves the same owncode into a full name+address party block.
+$script:OwnCodeByDb=@{}
+function Get-StationOwnCode($srcCn,$db){
+  if($script:OwnCodeByDb.ContainsKey($db)){ return $script:OwnCodeByDb[$db] }
+  $oc=''
+  try{ $r=@(RunQ $srcCn "SELECT TOP 1 owncode FROM fm3kco.dbo.site WHERE dbname=@d" @{ d=$db } 8); if($r.Count){ $oc="$($r[0].owncode)".Trim() } }catch{}
+  $script:OwnCodeByDb[$db]=$oc
+  $oc
+}
+# The ERP forwarderCode (= office owncode, "where the data goes") for a station, NOT hard-coded: resolve the
+# station's real owncode from fm3kco.site. Cache-first (Get-StationOwnCode); opens one short source connection
+# only on a cache miss. Falls back to erp-api-map.json forwarderCode when the owncode can't be resolved (e.g.
+# fm3kco absent / station not mapped). Used by every /file/* + /booking/* call so each routes to its own office.
+function Resolve-ForwarderCode($station){
+  $fallback="$((Get-ErpApiMap).forwarderCode)".Trim()
+  $db=$DbByStation["$station".Trim().ToUpper()]
+  if(-not $db){ return $fallback }
+  if(-not $script:OwnCodeByDb.ContainsKey($db)){
+    $srcCn=New-Object System.Data.SqlClient.SqlConnection "Server=$server;Database=$db;$SrcAuthClause;TrustServerCertificate=True;Connect Timeout=15;Packet Size=512"
+    try{ $srcCn.Open(); [void](Get-StationOwnCode $srcCn $db) }catch{}finally{ try{ $srcCn.Close() }catch{} }
+  }
+  $oc="$($script:OwnCodeByDb[$db])".Trim()
+  if($oc){ $oc } else { $fallback }
+}
 function Get-OwnOfficeAgent($srcCn,$db){
   if($script:OwnAgentByDb.ContainsKey($db)){ return $script:OwnAgentByDb[$db] }
   $own=''
@@ -2066,6 +2096,29 @@ WHEN NOT MATCHED THEN INSERT(milestone_code,bound,name,seq,phase_anchor,qualify_
       $script:MsDoctypeMap=$null
       Audit $sess.username "delete evidence doc id=$id"
       Send-Json $ctx @{ ok=$true }
+    }
+    "/api-ops/admin/erp-settings" {
+      # The non-secret ERP API identity codes in erp-api-map.json. partyGroupCode = the company/customer group
+      # (e.g. DEV) sent on every call. forwarderCode = the default office owncode used when a station's owncode
+      # can't be resolved from fm3kco.site (per-station owncode otherwise wins). The bearer token is NOT here
+      # (it lives in the gitignored config). Edits apply immediately (cache reset by Set-ErpApiMap).
+      if($method -eq "POST"){
+        $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+        $pg="$($j.partyGroupCode)".Trim()
+        if(-not $pg -or $pg.Length -gt 32){ Send-Json $ctx @{ error="Party group code required (max 32 chars) - the company code, e.g. DEV" } 400; return }
+        $upd=@{ partyGroupCode=$pg }
+        if($j.PSObject.Properties['forwarderCode']){
+          $fc="$($j.forwarderCode)".Trim()
+          if($fc.Length -gt 32){ Send-Json $ctx @{ error="Forwarder code too long (max 32 chars)" } 400; return }
+          $upd['forwarderCode']=$fc
+        }
+        Set-ErpApiMap $upd
+        Audit $sess.username "erp-settings partyGroupCode=$pg$(if($upd.ContainsKey('forwarderCode')){' forwarderCode='+$upd['forwarderCode']})"
+        Send-Json $ctx @{ ok=$true }
+      } else {
+        $m=Get-ErpApiMap
+        Send-Json $ctx @{ partyGroupCode="$($m.partyGroupCode)".Trim(); forwarderCode="$($m.forwarderCode)".Trim() }
+      }
     }
     default { Send-Json $ctx @{ error="unknown admin endpoint" } 404 }
   }
