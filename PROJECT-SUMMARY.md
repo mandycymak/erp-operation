@@ -17,7 +17,15 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-14b — Edit-ERP-data UX rename + pen shortcut + contact fields; Air IATA flight legs + corrected cargo cols; Sea blitem/blcont field map; VPN connect-timeout fix. Committed `4b43832` — RESUME HERE).**
+**Latest session (2026-06-15 — house-level ERP-update key; filter declutter (Alerts/My-notes icons after POD); Vessel/Flight search; Air-Export flight number from the MASTER record — RESUME HERE).**
+Operator-feedback round, triggered by checking job `SEHKG260100001` (which showed "no ERP data") and traced to the non-uniqueness of the ERP job number.
+- **ERP-update key is now house-level, never the (one-to-many) `jobn`.** A single ERP `jobn` covers many houses (e.g. `SEHKG260100001` = the house `HK01SE6010001` **and** a master/console leg `…M01`), so keying `/booking/update` on it is ambiguous. `Save-ErpEdit` now derives the booking key from the freshly-read seed, mode-aware: **Sea `sono` → HBL (`blno`) → `jobn`** ; **Air `booking` → HAWB (`hawb`) → MAWB (`mawb`) → `jobn`** (the field name itself differs by mode — Sea calls it `sono`, Air calls it `booking`). Reads were already correct (keyed on the unique `erp_ref`); this fixes the **write** when `sono` is blank. `serve-ops.ps1`.
+- **Filter declutter.** **Alerts** and **My notes** moved to the **end of the filter row (after POD)** and reduced to icons — **⚠** (Alerts) / **💬** (My notes) — full text kept in the tooltip + `aria-label`; new `.iconbtn` style. `index.html` / `styles.css` (toggle wiring in `ops.js` unchanged — it keys off the element id).
+- **Search by Vessel / Flight.** New search-field option **"Vessel / Flight"** (`conv`) → matches `shipment_alerts.vessel_voyage`, the one column that holds the **sea vessel/voyage AND the air flight no**, so it serves both modes. Like the other identifier searches it ignores the date window + ownership lens. `index.html` / `ops.js` / `serve-ops.ps1`.
+- **Air-Export flight number — from the MASTER record (key finding).** Air Import showed the flight but Export often went blank. Root cause: for a **consolidated** export the house (`awb_type H/S`) has an empty `flight1` — the flight lives on the **master** (`awb_type M/B`) row that owns the MAWB (verified: house `DT-35005` blank → master `235-63057046` = `TK071`). And `carr` is **always empty** on this ERP (airline is in `rout_by_1`). Since the worklist already groups Air by MAWB, the conveyance is now **house `flight1` → master `flight1` (looked up by MAWB) → blank** — the real flight number the operator needs, never the bare airline code ("CX" can't say which of many daily CX flights). `$assigned` (space-confirmed) is now flight-based, matching milestone A2. `seed-alerts.ps1` (added a chunked `masterFltByMawb` precompute mirroring the `veslmstr` seek). Existing `pgsops_net` data recomputed in place: Air **0** airline-code-only rows; Export 199/299 + Import 150/154 now carry a real flight no (remaining blanks have no flight on house **or** master yet).
+- Files: `serve-ops.ps1` `seed-alerts.ps1` `index.html` `ops.js` `styles.css`.
+
+**Previous session (2026-06-14b — Edit-ERP-data UX rename + pen shortcut + contact fields; Air IATA flight legs + corrected cargo cols; Sea blitem/blcont field map; VPN connect-timeout fix. Committed `4b43832`).**
 Operator-feedback round on the ERP data editor, every mapping reconciled against live `fm3khkg` SQL + the Swivel `3rd-erpapi.json`.
 - **Rename + UX.** "Correct ERP data" -> **"Edit ERP data"** everywhere ("correct" read as negative); dropped the description blurb;
   added a **pen (edit) shortcut** at the end of the drawer's first row (ETD/ETA/ATD | auto/manual) that opens the editor; the
@@ -419,7 +427,9 @@ user pasted). Only `*.example.json` is tracked.
    Confirm** (operator closes even with no data; un-tickable).
 3. **Air freight is a separate table.** Sea = `blhead` (+`blcont` containers); Air = **`awbhead`** (465 cols).
    Air operator-shipments = `awb_type IN('H','S')` (H=house, S=direct; M=consol master & B=booking pipeline
-   excluded). `carr` (carrier code) is empty in both → use vessel/voyage (sea) and airline+`flight1` (air).
+   excluded). `carr` (carrier code) is **always empty** → conveyance = vessel/voyage (sea) and **`flight1`** (air);
+   for a **consolidated** house `flight1` is blank and the flight lives on the **MASTER** (`awb_type M/B`) row,
+   looked up by MAWB. The airline code is in `rout_by_1` (not a substitute for the flight number).
 4. **Carrier code & ETA are sparse/empty** in these copies; consignee/shipper **names** are ~100%. Container data
    (`blcont`) is rich for sea FCL; air uses pieces/weight (`t_book_qty`/`t_book_wgt`).
 5. **Cross-station factory-booking** (advice, not yet built): at booking time there's no HBL/MBL, only the

@@ -52,9 +52,7 @@
       <label class="fl"><input type="text" class="datebox" id="fFrom" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window start — format yyyy-mm-dd. Shows shipments moving, with work due, or created in the window; work overdue up to 30 days also shows."></label>
       <span class="fl">→</span>
       <label class="fl"><input type="text" class="datebox" id="fTo" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window end — format yyyy-mm-dd. Shows shipments moving, with work due, or created in the window; work overdue up to 30 days also shows."></label>
-      <button class="ghost" id="thisWeek" title="This week's work: shipments moving, with a milestone due, or created this week (plus work overdue up to 30 days). Clear both date boxes to see all dates.">This week</button>
-      <button class="ghost" id="fAlerts" title="Show only shipments with a red or amber alert (within the current view)">Alerts</button>
-      <button class="ghost" id="fNotes" title="Show shipments with an open note or reminder of mine — any date, so a note never gets lost. Mark the note done to clear it from here.">My notes</button>
+      <button class="ghost" id="thisWeek" title="Click to cycle the date window: This week -> Last week to today -> Custom (clears the boxes so you can type any range). 'This week' = shipments moving, due, or created this week, plus work overdue up to 30 days.">This week</button>
       <span class="searchbox">
         <select class="sf" id="fSearchField" title="What to search">
           <option value="company">Company</option>
@@ -63,6 +61,7 @@
           <option value="po">PO</option>
           <option value="house">House B/L</option>
           <option value="master">Master B/L</option>
+          <option value="conv">Vessel / Flight</option>
         </select>
         <span class="combo" id="companyCombo">
           <input type="text" id="fCompany" autocomplete="off" placeholder="Company name…" title="Company: matches shipper, consignee, agent or controlling customer. Pick a number type to find a file by its ID (ignores the date window).">
@@ -76,6 +75,8 @@
       <span class="combo portchips" id="fPodChips" title="Port of discharge — type a code or name; pick several">
         <input type="text" placeholder="POD…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span>
       </span>
+      <button class="ghost iconbtn" id="fAlerts" title="Alerts — show only shipments with a red or amber alert (within the current view)" aria-label="Alerts">⚠</button>
+      <button class="ghost iconbtn" id="fNotes" title="My notes — show shipments with an open note or reminder of mine (any date, so a note never gets lost). Mark the note done to clear it from here." aria-label="My notes">💬</button>
     </div>
     <div id="inboundPanel" class="inbound" style="display:none"></div>
     <div id="worklist"><div class="empty">Loading…</div></div>

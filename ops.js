@@ -161,14 +161,38 @@ function syncModeBound(m, b) {
 }
 // ---------- filters (date window + company + POL/POD) ----------
 function fmtDate(x) { const m = String(x.getMonth() + 1).padStart(2, '0'); const d = String(x.getDate()).padStart(2, '0'); return x.getFullYear() + '-' + m + '-' + d; }
+function shiftYmd(ymd, days) { const d = new Date(ymd + 'T00:00:00'); d.setDate(d.getDate() + days); return fmtDate(d); }
 function currentWeek() { const d = (ME && ME.today) ? new Date(ME.today + 'T00:00:00') : new Date(); const dow = (d.getDay() + 6) % 7; const mon = new Date(d); mon.setDate(d.getDate() - dow); const sun = new Date(mon); sun.setDate(mon.getDate() + 6); return { from: fmtDate(mon), to: fmtDate(sun) }; }
 function wireFilters() {
   const wk = currentWeek(); state.from = wk.from; state.to = wk.to;
   const ff = $('#fFrom'), ft = $('#fTo'); ff.value = state.from; ft.value = state.to;
-  const applyDate = (inp, key) => { const v = inp.value.trim(); if (isYmd(v)) { inp.classList.remove('bad'); state[key] = v; loadWorklist(); } else { inp.classList.add('bad'); } };
+  // The date button cycles three presets: 0 = this week, 1 = last week -> today (recent catch-up),
+  // 2 = custom (clears both boxes and waits for you to type a range; does NOT auto-load everything).
+  const wkBtn = $('#thisWeek');
+  const DATE_MODES = ['This week', 'Last wk → today', 'Custom dates'];
+  state.dateMode = 0;
+  function applyDateMode(reloadIt) {
+    const w = currentWeek();
+    const today = (ME && ME.today) ? ME.today : fmtDate(new Date());
+    if (state.dateMode === 0) { state.from = w.from; state.to = w.to; }
+    else if (state.dateMode === 1) { state.from = shiftYmd(w.from, -7); state.to = today; }
+    else { state.from = ''; state.to = ''; }   // custom: clear, wait for the operator to type
+    ff.value = state.from; ft.value = state.to; ff.classList.remove('bad'); ft.classList.remove('bad');
+    if (wkBtn) wkBtn.textContent = DATE_MODES[state.dateMode];
+    if (reloadIt && state.dateMode !== 2) loadWorklist();   // custom mode leaves the current list until you type
+  }
+  // manual edit: blank = open-ended on that side (so clearing both = all dates); switches to custom mode.
+  const applyDate = (inp, key) => {
+    const v = inp.value.trim();
+    if (v === '' || isYmd(v)) {
+      inp.classList.remove('bad'); state[key] = v;
+      state.dateMode = 2; if (wkBtn) wkBtn.textContent = DATE_MODES[2];
+      loadWorklist();
+    } else { inp.classList.add('bad'); }
+  };
   ff.onchange = () => applyDate(ff, 'from');
   ft.onchange = () => applyDate(ft, 'to');
-  $('#thisWeek').onclick = () => { const w = currentWeek(); state.from = w.from; state.to = w.to; ff.value = w.from; ft.value = w.to; loadWorklist(); };
+  if (wkBtn) wkBtn.onclick = () => { state.dateMode = (state.dateMode + 1) % 3; applyDateMode(true); };
   // show/hide ALL filter + view controls (Sea/Air, Import/Export, lens, station, dates, search, POL/POD) to
   // reclaim space, esp. on mobile. The toggle, Collapse-all and the count stay visible; the count keeps the
   // current Sea/Air · Import/Export context so you still know which view you're in while collapsed. Choice persists.
@@ -261,7 +285,7 @@ function setCompany(code) {
 // filters by role code). Any identifier field (job/booking/PO/house/master) = a server lookup that ignores the
 // date window AND the ownership lens, so you can pull up any file by its number even if it's outside this week
 // or another operator's. The date boxes are disabled in identifier mode to make that explicit.
-const SEARCH_PH = { company: 'Company name…', job: 'Job number…', booking: 'Booking / SO number…', po: 'PO number…', house: 'House B/L number…', master: 'Master B/L number…' };
+const SEARCH_PH = { company: 'Company name…', job: 'Job number…', booking: 'Booking / SO number…', po: 'PO number…', house: 'House B/L number…', master: 'Master B/L number…', conv: 'Vessel / voyage (sea) or flight no (air)…' };
 function setDateBoxesEnabled(on) {
   ['#fFrom', '#fTo', '#thisWeek'].forEach(s => { const e = $(s); if (e) { e.disabled = !on; e.style.opacity = on ? '' : '.5'; } });
 }

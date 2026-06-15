@@ -133,6 +133,21 @@ if($Mode -ne 'Air'){
   }
 }
 
+# ---- air consol flight: a CONSOLIDATED house's flight number lives on its MASTER awbhead row (awb_type M/B),
+#      not the house (the seeder reads only H/S). We group the worklist by MAWB, so seed each house's flight
+#      from its own flight1, else the master's flight1 looked up by MAWB. The bare airline code (rout_by_1) is
+#      NOT a substitute - "CX" alone can't tell the operator which of many daily CX flights to tender cargo to.
+$masterFltByMawb=@{}
+if($Mode -eq 'Air'){
+  $mawbs=@($ships | ForEach-Object { ("$($_.mawb)").Trim() } | Where-Object { $_ } | Select-Object -Unique)
+  for($off=0; $off -lt $mawbs.Count; $off+=500){
+    $chunk=@($mawbs[$off..([Math]::Min($off+499,$mawbs.Count-1))])
+    $p=@{}; $ins=@(); $i=0; foreach($mw in $chunk){ $ins+="@m$i"; $p["m$i"]=$mw; $i++ }
+    $rows = Query $Station "SELECT mawb, flight1 FROM dbo.awbhead WHERE awb_type IN('M','B') AND NULLIF(LTRIM(RTRIM(flight1)),'') IS NOT NULL AND mawb IN ($($ins -join ','))" $p
+    foreach($d in $rows){ $k="$($d.mawb)".Trim(); $f=("$($d.flight1)").Trim(); if($k -and $f -and -not $masterFltByMawb.ContainsKey($k)){ $masterFltByMawb[$k]=$f } }
+  }
+}
+
 # ---- resolve EVERY involved company (shipper/consignee/agent/controlling-customer) from the customer master
 #      in ONE indexed seek on custsub.code2 (its clustered PK). We deliberately do NOT use
 #      consignee_view/shipper_view/agent_view here: each wraps custsub with a usermstr join + per-row scalar
@@ -224,15 +239,22 @@ foreach($b in $ships){
   # mode-specific: conveyance (vessel/voyage | airline+flight), cargo profile, departure/arrival anchors,
   # reference docs (house/master bill, incoterm, customer PO, container/liner-SO), cargo-ready date.
   if($Mode -eq 'Air'){
-    $fl=("$($b.flight1)").Trim(); $cr=("$($b.carr)").Trim()
-    $vv = if($fl -and $cr){ "$cr $fl" } elseif($fl){ $fl } elseif($cr){ $cr } else { '' }
+    # Conveyance = the FLIGHT NUMBER (e.g. CX247): the operator needs to know which of an airline's many daily
+    # flights to tender cargo to, so the bare airline code is not enough. Use the house's own flight1; when blank
+    # (a consolidated house), fall back to the MASTER record's flight1 by MAWB (built above). flight1 already
+    # embeds the airline. carr is ALWAYS empty on this ERP; the airline lives in rout_by_1, kept only as the
+    # carrier code (a confirmed flight is what marks space as assigned - see milestone A2).
+    $fl=("$($b.flight1)").Trim()
+    if(-not $fl){ $mw=("$($b.mawb)").Trim(); if($mw -and $masterFltByMawb.ContainsKey($mw)){ $fl=$masterFltByMawb[$mw] } }
+    $cr=("$($b.rout_by_1)").Trim()
+    $vv = $fl
     # booking estimates (t_book_*) are empty once an AWB is issued — fall back to actual received pcs / total
     # chargeable weight so shipped air jobs still show their cargo profile
     $q=[int]("0"+"$($b.t_book_qty)"); if($q -le 0){ $q=[int]("0"+"$($b.t_rece_qty)") }
     $w=[double]("0"+"$($b.t_book_wgt)"); if($w -le 0){ $w=[double]("0"+"$($b.ttl_cwt)") }
     $cp = @{ summary=$(if($q -gt 0){"$q pcs"}else{$null}); count=$q; wgt=$(if($w -gt 0){[math]::Round($w,2)}else{$null}); cbm=$null; first_cont=$null; liner_so=$null; liner=$null }
     $etdV=$ship.f_date1; $etaV=$null; $atdV=$ship.atd_date; $ataV=$ship.ata_date
-    $dep=$ship.atd_date; $eta=$null; $assigned=($fl -ne '' -or $cr -ne '')
+    $dep=$ship.atd_date; $eta=$null; $assigned=($fl -ne '')   # space is "assigned" once a flight is confirmed (airline-only is not enough)
     $houseBill=$ship.hawb; $masterBill=$ship.mawb; $incoterm=$ship.incoterm; $custRef=$ship.po_no
     $cargoReady=$ship.cargoready; $carrierVal=$cr
     $sono=$ship.booking; $availDate=$null; $etaDel=$null; $gdsDel=$b.goods_delivery

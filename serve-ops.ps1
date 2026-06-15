@@ -514,7 +514,8 @@ function Handle-Worklist($cn,$qs,$me){
     # "Job No" matches BOTH the stored key and the human jobn (the key may be a synthetic for booking-stage rows)
     if($refField -eq 'job'){ $w+=" AND (job_no LIKE @ref OR erp_job_no LIKE @ref) " }
     else{
-      $col=@{ booking='sono'; po='cust_ref'; house='house_bill'; master='master_bill'; liner='liner_so'; container='container_no' }[$refField]
+      # 'conv' = conveyance: vessel_voyage holds the sea vessel/voyage AND the air flight no, so one field serves both modes
+      $col=@{ booking='sono'; po='cust_ref'; house='house_bill'; master='master_bill'; liner='liner_so'; container='container_no'; conv='vessel_voyage' }[$refField]
       if($col){ $w+=" AND $col LIKE @ref " }
       else{ $w+=" AND (job_no LIKE @ref OR erp_job_no LIKE @ref OR sono LIKE @ref OR house_bill LIKE @ref OR master_bill LIKE @ref OR cust_ref LIKE @ref OR container_no LIKE @ref OR liner_so LIKE @ref) " }
     }
@@ -959,7 +960,17 @@ function Save-ErpEdit($cn,$ctx,$me){
   $blocked=@($changedCodes | Where-Object { -not "$($defByCode[$_].writeKey)".Trim() })
   if($blocked.Count){ return @{ error="these fields cannot be written to the ERP (no write key): $($blocked -join ', ')" } }
   $changed=[ordered]@{}; foreach($c in $changedCodes){ $changed[$c]=$clean.$c }
-  $bookingNo= if("$($a.sono)".Trim()){ "$($a.sono)".Trim() }else{ $job }
+  # Booking key for /booking/update - this names the ONE house/booking to patch, so it MUST be house-level, never
+  # the jobn (one jobn = many houses). NOTE the field name differs by mode: Sea = 'sono', Air = 'booking'. Air's
+  # booking is often blank, so fall back through the bills. Chains (last resort = jobn, still better than the
+  # internal synthetic key which the ERP can't resolve):  Sea  sono -> HBL(blno) -> jobn ;  Air  booking -> HAWB ->
+  # MAWB -> jobn. Read from the fresh seed, whose codes are mode-mapped to the right ERP column (booking_no=sono/
+  # booking, bl_no=blno/hawb, master_no=mobl/mawb, job_disp=jobn).
+  $sf=$seed.fields
+  $bkChain= if($isAir){ @('booking_no','bl_no','master_no','job_disp') } else { @('booking_no','bl_no','job_disp') }
+  $bookingNo=''
+  foreach($code in $bkChain){ $v="$($sf[$code])".Trim(); if($v){ $bookingNo=$v; break } }
+  if(-not $bookingNo){ $bookingNo=$job }
   $ident=@{ bookingNo=$bookingNo; module=$modeKey; bound="$($a.bound)" }
   $built=Build-ErpPatchPayload $changed $defs $ident (Get-ErpApiMap) $clean
   $erp=Invoke-ErpEditPush $built.payload $bookingNo $modeKey $me

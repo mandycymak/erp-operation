@@ -43,6 +43,7 @@ button:hover{filter:brightness(1.08)}
 .datebox.bad{border-color:var(--r)}
 .filters button{font-size:12px;padding:5px 10px}
 .filters button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.filters button.iconbtn{font-size:15px;line-height:1;padding:5px 9px}
 .combo{position:relative;display:inline-flex;align-items:center}
 .combo input{font-size:12px;padding:5px 8px;min-width:210px}
 .combo .combo-x{position:absolute;right:4px;border:0;background:transparent;padding:2px 6px;color:var(--mut);font-size:12px;cursor:pointer}
