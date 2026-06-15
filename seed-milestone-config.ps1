@@ -117,7 +117,7 @@ Write-Host "Seeded milestone_def: $($defs.Count) rows (Sea + Air, Export + Impor
 # ---- starter evidence map: documentTypeCode / EDI -> milestone (SECONDARY close path) ----
 function Ev($code,$bound,$kind,$table,$field,$val,$mod){ [pscustomobject]@{code=$code;bound=$bound;kind=$kind;table=$table;field=$field;val=$val;mod=$mod} }
 $evid = @(
- (Ev 'M1'  'Export' 'pic_doctype' 'PIC'    'doctype' 'Booking Photo'  'SEA')   # confirmed present in snapshot
+ (Ev 'M1'  'Export' 'pic_doctype' 'PIC'    'doctype' 'BOOKING'        'SEA')   # ERP Document Type code (live-verified); admin-maintained via the Documents tab
  (Ev 'M6'  'Export' 'pic_doctype' 'PIC'    'doctype' 'HBL'            'SEA')   # user's example: upload HBL closes SI
  (Ev 'M8a' 'Export' 'edi_log'     'edilog' 'status'  'success'        $null)   # AMS via EDI ack
  (Ev 'M10' 'Export' 'pic_doctype' 'PIC'    'doctype' 'INVOICE'        'SEA')

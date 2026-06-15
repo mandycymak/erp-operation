@@ -1058,28 +1058,64 @@ function erpFilesPanel(job, sh) {
     if (d.mock) { bodyEl.innerHTML = '<div class="empty">ERP not configured — no live file lookup in this environment.</div>'; return; }
     const keyLabel = (d.keyKind || 'booking') + (d.keyUsed ? ' ' + d.keyUsed : '');
     const files = arr(d.files);
-    if (!files.length) {
-      h.textContent = 'ERP files · ' + keyLabel;
-      bodyEl.innerHTML = '<div class="empty">No files in the ERP for this ' + esc((d.keyKind || 'booking').toLowerCase()) + '.</div>';
-      return;
-    }
     h.textContent = 'ERP files · ' + keyLabel;
-    files.forEach(f => {
-      const card = el('div', 'doccard');
-      const bits = [];
-      if (f.documentTypeCode) bits.push('<span class="docstatus">' + esc(f.documentTypeCode) + '</span>');
-      bits.push('<b>' + esc(f.fileName || '(unnamed)') + '</b>');
-      if (f.remark) bits.push('<span class="mut">' + esc(f.remark) + '</span>');
-      const meta = el('span'); meta.innerHTML = bits.join(' · '); card.appendChild(meta);
-      if (f.fileName) {
-        const dl = el('button', 'ghost', 'Download'); dl.style.cssText = 'margin-left:auto;font-size:11px;padding:2px 8px';
-        dl.onclick = () => downloadErpFile(job, f.fileName, dl);
-        card.appendChild(dl);
-      }
-      bodyEl.appendChild(card);
-    });
+    if (!files.length) {
+      bodyEl.appendChild(el('div', 'empty', 'No files in the ERP for this ' + esc((d.keyKind || 'booking').toLowerCase()) + '.'));
+    } else {
+      files.forEach(f => {
+        const card = el('div', 'doccard');
+        const bits = [];
+        if (f.documentTypeCode) bits.push('<span class="docstatus">' + esc(f.documentTypeCode) + '</span>');
+        bits.push('<b>' + esc(f.fileName || '(unnamed)') + '</b>');
+        if (f.remark) bits.push('<span class="mut">' + esc(f.remark) + '</span>');
+        const meta = el('span'); meta.innerHTML = bits.join(' · '); card.appendChild(meta);
+        if (f.fileName) {
+          const dl = el('button', 'ghost', 'Download'); dl.style.cssText = 'margin-left:auto;font-size:11px;padding:2px 8px';
+          dl.onclick = () => downloadErpFile(job, f.fileName, dl);
+          card.appendChild(dl);
+        }
+        bodyEl.appendChild(card);
+      });
+    }
+    // upload a missing document -> ERP /file/upload; a successful upload clears its milestone alert
+    const clearable = arr(d.clearableDoctypes);
+    if (clearable.length) bodyEl.appendChild(erpUploadRow(job, clearable));
   }).catch(() => { bodyEl.innerHTML = '<div class="empty">Could not reach the ERP for files.</div>'; });
   return wrap;
+}
+// Upload a missing document straight to the ERP. The doctype list comes from the server (only types that would
+// clear a milestone on this shipment). The file is base64'd in the browser and POSTed; nothing is stored locally.
+// On success the whole drawer is refreshed so the cleared milestone light + the new file both show.
+function erpUploadRow(job, doctypes) {
+  const row = el('div', 'erpupload');
+  row.appendChild(el('div', 'erpupload-lbl', 'Missing a document? Upload it to the ERP to clear the alert:'));
+  const line = el('div', 'erpupload-line');
+  const sel = el('select');
+  doctypes.forEach(dt => { const o = el('option'); o.value = dt; o.textContent = dt; sel.appendChild(o); });
+  const file = el('input'); file.type = 'file'; file.accept = '.pdf,.png,.jpg,.jpeg';
+  const btn = el('button', 'primary', 'Upload'); btn.style.fontSize = '11px';
+  const msg = el('span', 'mut'); msg.style.cssText = 'font-size:11px;margin-left:4px';
+  line.appendChild(sel); line.appendChild(file); line.appendChild(btn); line.appendChild(msg);
+  row.appendChild(line);
+  btn.onclick = async () => {
+    const f = file.files && file.files[0];
+    if (!f) { msg.textContent = 'choose a file first'; return; }
+    if (f.size > 5 * 1024 * 1024) { msg.textContent = 'file too large (max 5 MB)'; return; }
+    if (!['application/pdf', 'image/png', 'image/jpeg'].includes(f.type)) { msg.textContent = 'PDF, PNG or JPEG only'; return; }
+    const old = btn.textContent; btn.disabled = true; btn.textContent = 'Uploading…'; msg.textContent = '';
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const rd = new FileReader();
+        rd.onload = () => res(('' + rd.result).split(',')[1] || '');
+        rd.onerror = rej;
+        rd.readAsDataURL(f);
+      });
+      const r = await api('/api-ops/erp-file-upload', { method: 'POST', body: { job: job, doctype: sel.value, fileName: f.name, content_type: f.type, base64: base64 } });
+      if (r.error) { msg.textContent = r.error; btn.disabled = false; btn.textContent = old; return; }
+      const data = await api('/api-ops/shipment?job=' + encodeURIComponent(job)); renderShipment(job, data); loadWorklist();
+    } catch (e) { msg.textContent = 'upload failed'; btn.disabled = false; btn.textContent = old; }
+  };
+  return row;
 }
 // Fetch the file bytes through the authed fetch (carries the cookie / X-Ops-User header in either mode), then
 // trigger a browser download with the right filename. Avoids relying on cookie presence for a plain link.

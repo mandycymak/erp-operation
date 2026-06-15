@@ -238,6 +238,10 @@ button:hover{filter:brightness(1.08)}
 
 /* ---- draft document review panel (drawer) ---- */
 .doccard{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px;font-size:12.5px}
+.erpupload{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
+.erpupload-lbl{font-size:11px;color:var(--mut);margin-bottom:5px}
+.erpupload-line{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.erpupload-line select,.erpupload-line input[type=file]{font-size:11px}
 .docstatus{font-size:10.5px;padding:1px 8px;border-radius:8px;border:1px solid var(--line);color:var(--mut)}
 .docstatus.s-SENT{color:#1565c0;border-color:#1565c0}
 .docstatus.s-CUSTOMER_SUBMITTED{color:#b26a00;border-color:#b26a00}

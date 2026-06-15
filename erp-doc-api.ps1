@@ -267,6 +267,26 @@ function Invoke-ErpFileDownload($api,$map,$module,$candidates,$fileName){
   }
   @{ bytes=$null; fileName="$want"; mock=$false; error=$(if($lastErr){$lastErr}else{'file not found in the ERP'}) }
 }
+# Upload ONE file to the ERP via /file/upload (one attachment per call: bounded body, attributable failure).
+# Keyed by houseNo+bookingNo (same identity the issue flow uses). The bytes stream request-body -> ERP; nothing
+# is persisted locally. Returns @{ ok; mock; error? }. Shared by the doc-issue flow and the standalone
+# milestone-clearing upload endpoint.
+function Invoke-ErpFileUpload($api,$map,$module,$houseNo,$bookingNo,$doctypeCode,$fileName,$base64,$remark){
+  if(ErpMockMode $api){
+    try{ ErpMockWrite "upload-$([guid]::NewGuid().ToString('N')).json" ([ordered]@{ at=(Get-Date).ToString('o'); module="$module"; houseNo="$houseNo"; bookingNo="$bookingNo"; documentTypeCode="$doctypeCode"; fileName="$fileName"; bytes=[int]([Math]::Ceiling(("$base64").Length*0.75)); remark="$remark" }) }catch{}
+    return @{ ok=$true; mock=$true }
+  }
+  $up=[ordered]@{
+    partyGroupCode="$($map.partyGroupCode)".Trim()
+    forwarderCode="$($map.forwarderCode)".Trim()
+    moduleTypeCode="$module"
+    houseNo="$houseNo"
+    bookingNo="$bookingNo"
+    attachments=@([ordered]@{ documentTypeCode="$doctypeCode"; fileName="$fileName"; base64="$base64"; remark="$remark" })
+  }
+  try{ [void](Invoke-ErpCall $api '/file/upload' $up); return @{ ok=$true; mock=$false } }
+  catch{ return @{ ok=$false; mock=$false; error=(ErpErr $_.Exception) } }
+}
 
 # ---- AGREE: save the agreed booking data (read-merge-write). Returns @{ ok; mock; steps; error? } ----
 function Invoke-ErpDocAgree($head,$fields,$sa,$by){
@@ -372,16 +392,9 @@ function Invoke-ErpDocIssue($head,$fields,$sa,$by,$attachment,$riderAtts){
   }
   $steps=@()
   foreach($fl in $files){
-    $up=[ordered]@{
-      partyGroupCode="$($map.partyGroupCode)".Trim()
-      forwarderCode="$($map.forwarderCode)".Trim()
-      moduleTypeCode=$module
-      houseNo=$houseNo
-      bookingNo=$bookingNo
-      attachments=@([ordered]@{ documentTypeCode=$dtc; fileName="$($fl.name)"; base64="$($fl.base64)"; remark="$($fl.remark)" })
-    }
-    try{ [void](Invoke-ErpCall $api '/file/upload' $up); $steps+="file/upload ok: $($fl.name)" }
-    catch{ return @{ ok=$false; error="file/upload failed for $($fl.name): $(ErpErr $_.Exception)"; steps=$steps } }
+    $up=Invoke-ErpFileUpload $api $map $module $houseNo $bookingNo $dtc "$($fl.name)" "$($fl.base64)" "$($fl.remark)"
+    if(-not $up.ok){ return @{ ok=$false; error="file/upload failed for $($fl.name): $($up.error)"; steps=$steps } }
+    $steps+="file/upload ok: $($fl.name)"
   }
   try{ [void](Invoke-ErpCall $api '/event/update' $evPayload); $steps+="event/update ok ($evStatus)" }
   catch{ return @{ ok=$false; error="event/update failed: $(ErpErr $_.Exception)"; steps=$steps } }

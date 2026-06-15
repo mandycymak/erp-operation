@@ -669,7 +669,50 @@ function Handle-ErpFiles($cn,$qs){
   $cands= if($isAir){ @(@{kind='HAWB';val=$hbl},@{kind='Booking';val=$sono},@{kind='MAWB';val=$mbl}) } else { @(@{kind='Booking';val=$sono},@{kind='HBL';val=$hbl}) }
   if(-not @(@($cands)|Where-Object{ "$($_.val)".Trim() }).Count){ return @{ error='no booking / bill number on this shipment to query the ERP' } }
   $r=Invoke-ErpFileEnquiry $cfg.erpApi (Get-ErpApiMap) $module $cands
-  @{ keyUsed=[string]$r.keyUsed; keyKind=[string]$r.keyKind; keyField=[string]$r.keyField; mock=[bool]$r.mock; files=@($r.files); error=[string]$r.error }
+  # doctypes whose upload would clear a milestone on THIS shipment (derived from the evidence map, cached)
+  $dmap=Get-MilestoneDoctypeMap $cn; $clearable=@()
+  foreach($dt in $dmap.Keys){ foreach($ms in @($dmap[$dt])){ if($ms.bound -eq "$($a.bound)" -and ($ms.module -eq '' -or $ms.module -eq $module)){ $clearable+=$dt; break } } }
+  @{ keyUsed=[string]$r.keyUsed; keyKind=[string]$r.keyKind; keyField=[string]$r.keyField; mock=[bool]$r.mock; files=@($r.files); error=[string]$r.error; clearableDoctypes=@($clearable|Select-Object -Unique) }
+}
+# Upload a missing document to the ERP and, on success, clear the milestone(s) that document satisfies. The
+# successful upload IS the proof (the doctype -> milestone link is derived live from milestone_evidence_map, so it
+# tracks admin edits). The file streams request-body -> ERP via /file/upload; nothing is stored locally. On ERP
+# failure nothing clears. Body: { job, doctype, fileName, content_type, base64 }.
+function Handle-ErpFileUpload($cn,$ctx,$me){
+  if($ctx.Request.ContentLength64 -gt 7340032){ return @{ error='file too large (max 5 MB)' } }   # cap BEFORE reading body
+  $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+  if(-not $j -or -not $j.job){ return @{ error='invalid payload' } }
+  $job="$($j.job)".Trim(); $doctype="$($j.doctype)".Trim()
+  if(-not $doctype){ return @{ error='choose a document type' } }
+  $al=@(RunQ $cn "SELECT TOP 1 job_no,station,mode,bound,sono,house_bill,master_bill FROM dbo.shipment_alerts WHERE job_no=@j" @{ j=$job })
+  if(-not $al.Count){ return @{ error='not found' } }
+  if(-not (Test-JobScope $al[0])){ return @{ error='not found' } }
+  $a=$al[0]
+  $isAir=("$($a.mode)" -eq 'Air'); $module= if($isAir){'AIR'}else{'SEA'}
+  # validate the file (pdf/png/jpeg, magic-byte, <=5MB) - same rules as draft-doc attachments
+  $v=Doc-AttachValidate $j.fileName $j.content_type $j.base64
+  if(-not $v.ok){ return @{ error=$v.err } }
+  # which milestones would this doctype clear for this shipment? (derived, cached)
+  $dmap=Get-MilestoneDoctypeMap $cn
+  $codes=@(); foreach($ms in @($dmap[$doctype])){ if($ms.bound -eq "$($a.bound)" -and ($ms.module -eq '' -or $ms.module -eq $module)){ $codes+=$ms.code } }
+  $codes=@($codes|Select-Object -Unique)
+  # the doctype IS the ERP Document Type code (admin-maintained in milestone_evidence_map.match_value, kept to
+  # match the ERP) - send it verbatim. Resolve the booking identity keys.
+  $map=Get-ErpApiMap
+  $dtc=$doctype
+  $houseNo="$($a.house_bill)".Trim()
+  $bookingNo= if("$($a.sono)".Trim()){ "$($a.sono)".Trim() } else { "$($a.master_bill)".Trim() }
+  $remark="Uploaded via Control Tower by $me to clear '$doctype'"
+  $up=Invoke-ErpFileUpload $cfg.erpApi $map $module $houseNo $bookingNo $dtc $v.name ([Convert]::ToBase64String($v.bytes)) $remark
+  if(-not $up.ok){ Audit $me "erp-file-upload $job '$doctype' FAILED: $($up.error)"; return @{ error="ERP upload failed: $($up.error)" } }
+  # success: the upload is the proof - clear the milestone(s) locally
+  $cleared=@()
+  if($codes.Count){
+    $cr=Close-MilestonesFor $cn $job $codes "document: $doctype ($($v.name)) uploaded to ERP" $me
+    if($cr.ok){ $cleared=@($cr.cleared) }
+  }
+  Audit $me "erp-file-upload $job '$doctype' ($($v.bytes.Length) bytes)$(if($up.mock){' [mock]'}) -> cleared [$($cleared -join ',')]"
+  @{ ok=$true; mock=[bool]$up.mock; doctype=$doctype; fileName=$v.name; cleared=@($cleared) }
 }
 # Stream one ERP-held file's bytes (download round). Same identifier resolution as Handle-ErpFiles, then
 # /file/download for the requested fileName. Returns $true when the blob is sent so the router skips JSON.
@@ -981,6 +1024,61 @@ function Save-ErpEdit($cn,$ctx,$me){
   Audit $me "erp-edit $job [$($changedCodes -join ',')] -> erp:$status$(if($erp.error){' ERR '+$erp.error})"
   @{ ok=$true; changed=@($changedCodes); sent=@($built.sent); status=$status; erp=@{ ok=[bool]$erp.ok; mock=[bool]$erp.mock; rejected=[bool]$erp.rejected; steps=@($erp.steps); error="$($erp.error)" } }
 }
+# Recompute the checklist rollup from its items (pending A/R lights count; bypass=manual, done=auto). Mutates
+# $chk.rollup in place and returns the column values for the UPDATE. Shared by manual Tick and evidence-close so
+# both paths stay consistent.
+function Update-ChecklistRollup($chk){
+  $amber=0;$red=0;$auto=0;$man=0;$nextDue=$null
+  foreach($m in @($chk.milestones)){
+    $st="$($m.state)"
+    if($st -eq 'bypassed'){ $man++ } elseif($st -eq 'done'){ $auto++ }
+    elseif($st -eq 'pending'){ if("$($m.light)" -eq 'A'){$amber++} elseif("$($m.light)" -eq 'R'){$red++}
+      if($m.due){ $d=[datetime]"$($m.due)"; if(-not $nextDue -or $d -lt $nextDue){ $nextDue=$d } } }
+  }
+  $worst= if($red){'R'}elseif($amber){'A'}else{'G'}
+  $nd=$(if($nextDue){$nextDue.ToString('yyyy-MM-dd')}else{$null})
+  $chk.rollup.worst_light=$worst; $chk.rollup.open_amber=$amber; $chk.rollup.open_red=$red
+  $chk.rollup.next_due=$nd; $chk.rollup.automation.manual=$man
+  @{ worst=$worst; amber=$amber; red=$red; nextDue=$nd; man=$man }
+}
+# Cached doctype -> milestone map, derived from milestone_evidence_map (admin-editable). An uploaded document of
+# type X clears every milestone whose pic_doctype evidence rule matches X for the shipment's bound/module. Built
+# once; $script:MsDoctypeMap is reset to $null when an admin edits milestones so changes take effect with no
+# restart and no per-request rule parse.
+function Get-MilestoneDoctypeMap($cn){
+  if($script:MsDoctypeMap){ return $script:MsDoctypeMap }
+  $m=@{}
+  foreach($r in @(RunQ $cn "SELECT em.match_value doctype, em.milestone_code, em.bound, em.module_match, d.name FROM dbo.milestone_evidence_map em LEFT JOIN dbo.milestone_def d ON d.milestone_code=em.milestone_code AND d.bound=em.bound WHERE em.active=1 AND em.source_kind='pic_doctype' AND NULLIF(em.match_value,'') IS NOT NULL" @{})){
+    $dt="$($r.doctype)".Trim(); if(-not $dt){ continue }
+    if(-not $m.ContainsKey($dt)){ $m[$dt]=@() }
+    $m[$dt]+=@{ code="$($r.milestone_code)".Trim(); name="$($r.name)".Trim(); bound="$($r.bound)".Trim(); module=$(if($null -eq $r.module_match){''}else{"$($r.module_match)".Trim()}) }
+  }
+  $script:MsDoctypeMap=$m; $m
+}
+# Mark one or more milestones DONE on a shipment because the operator supplied real proof (a document uploaded to
+# the ERP). Mirrors the Tick write path: overlay state='done' on the matched codes, recompute the rollup, persist,
+# thread a (silent) evidence note. Returns @{ ok; cleared=@(codes); ... }.
+function Close-MilestonesFor($cn,$job,$codes,$basis,$by){
+  $want=@(@($codes)|Where-Object{ "$_".Trim() }|ForEach-Object{ "$_".Trim() }|Select-Object -Unique)
+  if(-not $want.Count){ return @{ ok=$true; cleared=@() } }
+  $row=@(RunQ $cn "SELECT TOP 1 milestone_checklist FROM dbo.shipment_alerts WHERE job_no=@j" @{ j=$job })
+  if(-not $row.Count){ return @{ ok=$false; error='shipment not found' } }
+  $chk=$null; try{ $chk=("$($row[0].milestone_checklist)")|ConvertFrom-Json }catch{}
+  if(-not $chk){ return @{ ok=$false; error='no checklist on this shipment' } }
+  $cleared=@()
+  foreach($m in @($chk.milestones)){
+    if($want -contains "$($m.code)" -and "$($m.state)" -ne 'done'){
+      $m.state='done'; $m.done_by=$by; $m.done_at=(Get-Date).ToString('o'); $m.light='G'; $m.basis=$basis
+      $cleared+="$($m.code)"
+    }
+  }
+  if(-not $cleared.Count){ return @{ ok=$true; cleared=@() } }
+  $rr=Update-ChecklistRollup $chk
+  RunQ $cn "UPDATE dbo.shipment_alerts SET milestone_checklist=@chk,worst_light=@w,open_amber=@a,open_red=@r,next_due=@nd,manual_done=@m,updated_at=SYSDATETIME() WHERE job_no=@j" @{ chk=($chk|ConvertTo-Json -Depth 8 -Compress); w=$rr.worst; a=$rr.amber; r=$rr.red; nd=$rr.nextDue; m=$rr.man; j=$job } | Out-Null
+  $note=[pscustomobject]@{ id=[guid]::NewGuid().ToString(); created=(Get-Date).ToString('o'); user=$by; job_no=$job; milestone_code=($cleared -join ','); kind='evidence'; note=$basis; mentions=@(); status='open'; doneBy=''; doneAt=''; silent=$true }
+  Write-Notes (@(Read-Notes) + $note)
+  @{ ok=$true; cleared=@($cleared); worst=$rr.worst; openAmber=$rr.amber; openRed=$rr.red; nextDue=$rr.nextDue }
+}
 # Manual Tick & Confirm on a milestone: overlay bypass/reopen onto the stored checklist, recompute the rollup,
 # persist, and drop a note (so it threads + can @-mention). Pure JSON — no ERP touched.
 function Save-MilestoneClose($cn,$ctx,$me){
@@ -1002,18 +1100,9 @@ function Save-MilestoneClose($cn,$ctx,$me){
   }
   if(-not $found){ return @{error='milestone not in checklist'} }
   # recompute rollup from items (pending milestones with A/R lights; bypass/done are cleared)
-  $amber=0;$red=0;$auto=0;$man=0;$nextDue=$null
-  foreach($m in @($chk.milestones)){
-    $st="$($m.state)"
-    if($st -eq 'bypassed'){ $man++ } elseif($st -eq 'done'){ $auto++ }
-    elseif($st -eq 'pending'){ if("$($m.light)" -eq 'A'){$amber++} elseif("$($m.light)" -eq 'R'){$red++}
-      if($m.due){ $d=[datetime]"$($m.due)"; if(-not $nextDue -or $d -lt $nextDue){ $nextDue=$d } } }
-  }
-  $worst= if($red){'R'}elseif($amber){'A'}else{'G'}
-  $chk.rollup.worst_light=$worst; $chk.rollup.open_amber=$amber; $chk.rollup.open_red=$red
-  $chk.rollup.next_due=$(if($nextDue){$nextDue.ToString('yyyy-MM-dd')}else{$null}); $chk.rollup.automation.manual=$man
-  $nd=$(if($nextDue){$nextDue.ToString('yyyy-MM-dd')}else{$null})
-  RunQ $cn "UPDATE dbo.shipment_alerts SET milestone_checklist=@chk,worst_light=@w,open_amber=@a,open_red=@r,next_due=@nd,manual_done=@m,updated_at=SYSDATETIME() WHERE job_no=@j" @{ chk=($chk|ConvertTo-Json -Depth 8 -Compress); w=$worst; a=$amber; r=$red; nd=$nd; m=$man; j=$job } | Out-Null
+  $rr=Update-ChecklistRollup $chk
+  $worst=$rr.worst; $amber=$rr.amber; $red=$rr.red; $nd=$rr.nextDue
+  RunQ $cn "UPDATE dbo.shipment_alerts SET milestone_checklist=@chk,worst_light=@w,open_amber=@a,open_red=@r,next_due=@nd,manual_done=@m,updated_at=SYSDATETIME() WHERE job_no=@j" @{ chk=($chk|ConvertTo-Json -Depth 8 -Compress); w=$worst; a=$amber; r=$red; nd=$nd; m=$rr.man; j=$job } | Out-Null
   # thread a note documenting the action (mentions optional)
   $ment=@(@($j.mentions)|Where-Object{ $_ -and "$_".Trim() -ne '' }|ForEach-Object{"$_".Trim()}|Select-Object -Unique)
   $kind= if($reopen){'reopen'}else{'bypass'}
@@ -1918,6 +2007,7 @@ WHEN MATCHED THEN UPDATE SET name=@name,seq=@seq,phase_anchor=@anchor,qualify_ru
 WHEN NOT MATCHED THEN INSERT(milestone_code,bound,name,seq,phase_anchor,qualify_rule,complete_rule,sla_type,sla_offset_val,sla_offset_unit,sla_direction,sla_anchor,mode,active)
   VALUES(@code,@bound,@name,@seq,@anchor,@qual,@comp,@slatype,@offval,@offunit,@dir,@slaanchor,@mmode,@active);
 "@ @{ code=$code;bound=$bound;name=$name;seq=$seq;anchor=$anchor;qual=$qual;comp=$comp;slatype=$slatype;offval=$offval;offunit=$offunit;dir=$dir;slaanchor=$slaanchor;mmode=$mmode;active=$active } | Out-Null
+          $script:MsDoctypeMap=$null   # milestone config changed -> rebuild the derived doctype map on next use
           Audit $sess.username "upsert milestone $code/$bound (mode=$mmode, sla=$slatype, active=$active)"
           Send-Json $ctx @{ ok=$true }
         } else {
@@ -1932,7 +2022,49 @@ WHEN NOT MATCHED THEN INSERT(milestone_code,bound,name,seq,phase_anchor,qualify_
       if(-not $code -or -not $bound){ Send-Json $ctx @{ error="code + bound required" } 400; return }
       $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
       try{ RunQ $cn "DELETE FROM dbo.milestone_def WHERE milestone_code=@code AND bound=@bound" @{ code=$code; bound=$bound } | Out-Null } finally { $cn.Close() }
+      $script:MsDoctypeMap=$null   # milestone config changed -> rebuild the derived doctype map on next use
       Audit $sess.username "delete milestone $code/$bound"
+      Send-Json $ctx @{ ok=$true }
+    }
+    "/api-ops/admin/evidence" {
+      # Document types that clear a milestone (the milestone_evidence_map pic_doctype rows). The match_value MUST
+      # equal the ERP Document Type code so /file/upload accepts it and the worklist upload dropdown matches the ERP.
+      $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
+      try{
+        if($method -eq "POST"){
+          $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+          $doctype="$($j.doctype)".Trim()
+          if(-not $doctype -or $doctype.Length -gt 64){ Send-Json $ctx @{ error="Document type required (max 64 chars) - must match the ERP Document Type code exactly" } 400; return }
+          $code="$($j.milestone_code)".Trim().ToUpper(); $bound="$($j.bound)".Trim()
+          if($bound -notin 'Export','Import'){ Send-Json $ctx @{ error="Bound must be Export or Import" } 400; return }
+          $mod="$($j.module)".Trim().ToUpper(); if($mod -and $mod -notin 'SEA','AIR'){ Send-Json $ctx @{ error="Module must be SEA, AIR or blank (any)" } 400; return }
+          $modVal= if($mod){ $mod } else { [DBNull]::Value }
+          if(-not @(RunQ $cn "SELECT TOP 1 1 ok FROM dbo.milestone_def WHERE milestone_code=@c AND bound=@b" @{ c=$code; b=$bound }).Count){ Send-Json $ctx @{ error="No milestone $code ($bound) - pick one from the list" } 400; return }
+          $active=if($null -eq $j.active){1}else{[int][bool]$j.active}
+          $id=0; [void][int]::TryParse("$($j.id)",[ref]$id)
+          if($id -gt 0){
+            RunQ $cn "UPDATE dbo.milestone_evidence_map SET milestone_code=@c,bound=@b,match_value=@v,module_match=@m,active=@a WHERE id=@id AND source_kind='pic_doctype'" @{ c=$code; b=$bound; v=$doctype; m=$modVal; a=$active; id=$id } | Out-Null
+          } else {
+            RunQ $cn "INSERT INTO dbo.milestone_evidence_map(milestone_code,bound,source_kind,source_table,source_field,match_value,module_match,active) VALUES(@c,@b,'pic_doctype','PIC','doctype',@v,@m,@a)" @{ c=$code; b=$bound; v=$doctype; m=$modVal; a=$active } | Out-Null
+          }
+          $script:MsDoctypeMap=$null
+          Audit $sess.username "upsert evidence doc '$doctype' -> $code/$bound (mod=$(if($mod){$mod}else{'any'}), active=$active)"
+          Send-Json $ctx @{ ok=$true }
+        } else {
+          $rows=@(RunQ $cn "SELECT id,milestone_code,bound,match_value,module_match,active FROM dbo.milestone_evidence_map WHERE source_kind='pic_doctype' ORDER BY bound,match_value" @{})
+          $defs=@(RunQ $cn "SELECT milestone_code,bound,name,mode FROM dbo.milestone_def WHERE active=1 ORDER BY mode,bound,seq" @{})
+          Send-Json $ctx @{ docs=$rows; milestones=$defs }
+        }
+      } finally { $cn.Close() }
+    }
+    "/api-ops/admin/evidence-delete" {
+      $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
+      $id=0; [void][int]::TryParse("$($j.id)",[ref]$id)
+      if($id -le 0){ Send-Json $ctx @{ error="id required" } 400; return }
+      $cn=New-Object System.Data.SqlClient.SqlConnection $ConnStr; $cn.Open()
+      try{ RunQ $cn "DELETE FROM dbo.milestone_evidence_map WHERE id=@id AND source_kind='pic_doctype'" @{ id=$id } | Out-Null } finally { $cn.Close() }
+      $script:MsDoctypeMap=$null
+      Audit $sess.username "delete evidence doc id=$id"
       Send-Json $ctx @{ ok=$true }
     }
     default { Send-Json $ctx @{ error="unknown admin endpoint" } 404 }
@@ -2006,6 +2138,7 @@ while($listener.IsListening){
                 "/api-ops/erp-detail"      { Send-Json $ctx (Handle-ErpDetail $cn $qs) }
                 "/api-ops/erp-files"       { Send-Json $ctx (Handle-ErpFiles $cn $qs) }
                 "/api-ops/erp-file-download" { if(-not (Handle-ErpFileDownload $cn $ctx $qs)){ Send-Json $ctx @{ error='file not available' } 404 } }
+                "/api-ops/erp-file-upload" { Send-Json $ctx (Handle-ErpFileUpload $cn $ctx $me) }
                 "/api-ops/erp-edit"        { Send-Json $ctx (Handle-ErpEditSeed $cn $qs) }
                 "/api-ops/erp-master"      { Send-Json $ctx (Handle-ErpMasterSearch $cn $qs) }
                 "/api-ops/erp-edit-save"   { Send-Json $ctx (Save-ErpEdit $cn $ctx $me) }
