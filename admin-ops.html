@@ -90,6 +90,9 @@
       <div class="fcol"><label>Sign-in</label>
         <select id="fAuth"><option value="local">Password</option><option value="swivel">SWIVEL L!NK</option><option value="both">Password + L!NK</option></select>
       </div>
+      <div class="fcol"><label>Language <span class="hint">(default; user can switch)</span></label>
+        <select id="fLang"><option value="">Browser / English</option><option value="en">English</option><option value="zh-Hans">中文 (Simplified)</option><option value="ja">日本語</option></select>
+      </div>
       <div class="fcol"><label>Password</label><input id="fPwd" type="password" autocomplete="new-password" placeholder="required (not for L!NK-only)"></div>
       <div class="fcol"><label>Role</label>
         <select id="fRole"><option value="operator">operator</option><option value="manager">manager</option><option value="admin">admin</option></select>
@@ -308,6 +311,7 @@ function fillForm(u) {
   $('#fDisp').value = u ? (u.displayName || '') : '';
   $('#fEmail').value = u ? (u.email || '') : '';
   $('#fAuth').value = u ? (u.authProvider || 'local') : 'local';
+  $('#fLang').value = u ? (u.language || '') : '';
   $('#fPwd').value = ''; $('#fPwd').placeholder = u ? 'leave blank to keep' : 'required (not for L!NK-only)';
   $('#fRole').value = u ? (u.role || 'operator') : 'operator';
   $('#fAdmin').checked = u ? !!u.admin : false;
@@ -359,7 +363,7 @@ async function save() {
   $('#edErr').textContent = '';
   const body = {
     username: $('#fUser').value.trim(), displayName: $('#fDisp').value.trim(), email: $('#fEmail').value.trim(),
-    password: $('#fPwd').value, role: $('#fRole').value, admin: $('#fAdmin').checked, authProvider: $('#fAuth').value,
+    password: $('#fPwd').value, role: $('#fRole').value, admin: $('#fAdmin').checked, authProvider: $('#fAuth').value, language: $('#fLang').value,
     teams: tTeams.get(), stations: pickedStations(), primaryStation: pickedPrimary(),
     access: pickedAccess(), erpUsers: tErp.get()
   };

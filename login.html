@@ -25,34 +25,44 @@
 <div class="loginwrap">
   <form class="logincard" id="loginForm">
     <h1 id="brandingTitle">Control Tower</h1>
-    <div class="sub">Sign in to continue</div>
-    <label for="u">Email</label>
+    <div class="sub" data-i18n>Sign in to continue</div>
+    <label for="u" data-i18n>Email</label>
     <input id="u" type="email" autocomplete="username" placeholder="you@example.com" autofocus>
-    <label for="p">Password</label>
+    <label for="p" data-i18n>Password</label>
     <input id="p" type="password" autocomplete="current-password">
-    <button type="submit" id="btn">Sign in</button>
+    <button type="submit" id="btn" data-i18n>Sign in</button>
     <div class="loginerr" id="err"></div>
+    <div style="margin-top:16px;text-align:center"><select id="langPicker" class="ghost" style="font-size:12px" title="Language"></select></div>
   </form>
 </div>
+<script src="i18n.js"></script>
 <script>
+// No logged-in profile here, so language comes from this device's choice / the browser, then English.
+if (window.I18N) I18N.boot().then(function () {
+  var sel = document.getElementById('langPicker'); if (!sel) return;
+  var sup = I18N.supported || { en: 'English' };
+  Object.keys(sup).forEach(function (code) { var o = document.createElement('option'); o.value = code; o.textContent = sup[code]; if (code === I18N.current()) o.selected = true; sel.appendChild(o); });
+  sel.style.display = Object.keys(sup).length > 1 ? '' : 'none';
+  sel.onchange = function () { I18N.setLang(sel.value); };
+});
 (function () {
   fetch('/api-ops/config').then(function (r) { return r.ok ? r.json() : Promise.reject(); }).then(function (cfg) {
     var name = (cfg.appName || 'Control Tower') + (cfg.instanceName ? ' — ' + cfg.instanceName : '');
-    document.title = 'Sign in — ' + name;
+    document.title = tr('Sign in') + ' — ' + name;
     var h = document.getElementById('brandingTitle'); if (h) h.textContent = name;
   }).catch(function () {});
 })();
 var f = document.getElementById("loginForm"), btn = document.getElementById("btn"), err = document.getElementById("err");
 f.addEventListener("submit", async function (e) {
-  e.preventDefault(); err.textContent = ""; btn.disabled = true; btn.textContent = "Signing in…";
+  e.preventDefault(); err.textContent = ""; btn.disabled = true; btn.textContent = tr("Signing in…");
   try {
     var r = await fetch("/api-ops/login", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: document.getElementById("u").value, password: document.getElementById("p").value }) });
     if (r.ok) { location.href = "index.html"; return; }
     var d = {}; try { d = await r.json(); } catch (e2) {}
-    err.textContent = d.error || "Sign in failed";
-  } catch (e3) { err.textContent = "Cannot reach the service."; }
-  btn.disabled = false; btn.textContent = "Sign in";
+    err.textContent = d.error || tr("Sign in failed");
+  } catch (e3) { err.textContent = tr("Cannot reach the service."); }
+  btn.disabled = false; btn.textContent = tr("Sign in");
 });
 </script>
 </body>

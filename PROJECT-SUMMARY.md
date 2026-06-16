@@ -17,7 +17,52 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-16 — web tier migrated from `serve-ops.ps1` to an ASP.NET Core .NET 10 app in `server/`; all 7 stages built + verified live against demoerp. RESUME HERE).**
+**Latest session (2026-06-16c — UI internationalization (i18n): English + Simplified Chinese + Japanese; plus always-on ERP document upload. RESUME HERE).**
+Added a lightweight, **no-build-step** localization layer so station staff can use the UI in their own language while
+English stays the source-of-truth and one-click fallback. **Client-side captions only** (data, documents and user
+notes stay as-is); scope = the operator-facing pages (`index.html`/`ops.js`/`login.html`). Verified live on :8079 via
+headless-Edge DevTools (boot + translate + context-key + fallback) and a build.
+- **New `i18n.js`** (shared, loaded before `ops.js`): `tr(en, ctx?)` with **English source string = key** (missing key
+  falls back to English, never blank), `applyDom()` sweeps `data-i18n` / `data-i18n-title` / `-placeholder` /
+  `-aria-label`, `boot(profileLang)` resolves language (**localStorage `lang` -> profile `ME.language` ->
+  `navigator.language` -> en**), `setLang()` persists per-device + reloads. Mirrors the theme-toggle pattern. Context
+  separator is the gettext `` written as the **escaped JSON text** (a raw control byte is invalid JSON — that bug
+  was caught and fixed in verification).
+- **Dictionaries** `lang/zh-Hans.json` + `lang/ja.json` (284 keys each, machine-draft for local staff to refine).
+  Served statically — the `Program.cs` static-secret guard was opened for `lang/*.json` (it blocks all other `.json`).
+  Adding a language later = drop `lang/<code>.json` + one line in `SUPPORTED` (+ the per-language font + server
+  allow-list); `norm()` auto-detects any added language from `navigator.language` by primary subtag.
+- **Retrofit:** `data-i18n*` attributes on static markup in `index.html`/`login.html`; `tr(...)` wraps the ~200 dynamic
+  strings in `ops.js`; a header **language picker** (English / 中文 / 日本語). ISO dates and ERP/company data are never
+  translated. `styles.css` gets per-language CJK font stacks (`html[lang="ja"]` JP fonts, `html[lang="zh-Hans"]` SC).
+- **Profile plumbing:** a `language` field flows through `server/Auth.cs` (`UserRec`), `/api-ops/me` (`Program.cs`),
+  admin user CRUD (`server/Handlers.Admin.cs` + the admin Users form `<select>`), `users.example.json`, and
+  `serve-ops.ps1` (parity). Allow-list = `'' | en | zh-Hans | ja`.
+- **UX note on caption length (measured):** Japanese/Chinese captions are *compact* (equal or shorter than English on
+  the long labels; only short labels grow, at tiny absolute widths) -> **no overflow**. Spanish/European would be the
+  expansion case; a one-time layout-robustness pass is the only thing those would need later.
+- **Always-on ERP document upload (operator feedback).** The drawer's **ERP files** upload box was gated on a
+  *clearable milestone* existing, so it hid on shipments (esp. **Air**) with files but no mapped milestone. Now it
+  **always shows when the ERP is live**: server returns **`uploadDoctypes`** (all configured Document-tab types) beside
+  `clearableDoctypes`; the picker lists every type and flags the milestone-clearing ones with a **`*`** (legend
+  `* clears alert` in the caption, so the code reads e.g. `Booking*`, not `Booking (clears alert)`); free-text fallback
+  if none configured. The upload handler already accepted any doctype — clearing stays a bonus. `Handlers.ErpFiles.cs` /
+  `serve-ops.ps1` / `ops.js`.
+- **Files:** new `i18n.js`, `lang/zh-Hans.json`, `lang/ja.json`; edited `index.html` `login.html` `ops.js` `styles.css`
+  `admin-ops.html` `users.example.json` `server/{Auth,Program,Handlers.Admin,Handlers.ErpFiles}.cs` `serve-ops.ps1`.
+  Admin/erp-edit/doc-editor/public bl-review pages are **not yet localized** (English) — the framework is ready for them.
+
+**Previous session (2026-06-16b — operator-feedback round on the .NET port: erp-edit dropdown/UX, Sea/Air ERP-edit field-map fixes, team-aware @mentions. Committed `85a6fd5`).**
+All work was on the **live .NET server** (`server/`, port 8079, network config = live `fm3k*` on 192.168.5.2 + local `pgsops_net`), driven by hands-on testing of the staff **ERP-edit** editor. Server was rebuilt+restarted on 8079 after each `.cs` change; client files are static (reload only).
+- **erp-edit master-lookup dropdown no longer shoves the form sideways.** `.lookbox` was anchor-relative `position:absolute; left:0`, so a right-side field (controlling cust / liner agent) spilled past the right edge, widened the page and pushed the shipper column off-screen; a naive leftward flip then spilled off the left. Rewritten to **viewport-fixed + clamped** (opens down, flips up near the bottom, clamps left/right, caps height with internal scroll) and focuses the search box with `preventScroll`; `.wrap{overflow-x:clip}` guard. `erp-edit.js` / `erp-edit.html`.
+- **doc-editor: copy-link icon** beside the generated customer review link (`navigator.clipboard` + execCommand fallback, "Copied" flash). `doc-editor.js`.
+- **ERP save "Liner cannot be blank" (500) fixed.** A Sea `/booking/update` carrying `bookingContainers` is rejected unless the booking's Liner = **carrierCode** is set; the patch omitted it so the ERP blanked the carrier. Now **read-merge the EXISTING carrierCode/carrierName** from `/booking/get` when containers are present, **SEA ONLY** (`module=="SEA"`; Air has no container table). Confirmed via `erp_edit_log`: identical edit failed WITH containers, saved WITHOUT. `server/Erp.cs EditPush`.
+- **Liner agent recall (Sea only).** The editor read it only from `blcont.lagent`, blank when a booking has no container line. Now reads **`blcont.lagent` -> `blitem.lagent2` -> `blhead.ilagent`**, then a **"last saved here" overlay** from `erp_edit_log` when the BL read diverges/blank — because the ERP keeps the edited `linerAgentPartyCode` in its booking store and **never echoes it back** (not in `/booking/get`, not in the BL columns), which made operators re-enter it. Labelled "ERP read-back pending". `server/Handlers.ErpEdit.cs`.
+- **Air commodity** now seeds from **`awbdetl.good_desc2`** (detail-line short cargo desc), distinct from Sea's `blitem.commodity`; header `awbhead.commodity` kept as fallback. Air-only branch. `server/Handlers.ErpEdit.cs`.
+- **Team-aware @-mentions.** `/api-ops/roster` now returns **team + primary station** per user; the mention picker labels each colleague `@user - Name - Team / Station` and **matches on name/team/station** (so `@HKG` / `@HK-Import` narrows the ~500-user list). The **Arrangements +reminder** field — previously a plain text box with NO lookup, which is why mentions there "didn't find" anyone — now uses the **same picker** as the note composer. Typing a team is only a search filter (you still pick an individual; no team broadcast was requested). `server/Handlers.Misc.cs` / `ops.js` / `styles.css`.
+- **NEXT CHAT = language / i18n.** The UI strings are **hard-coded English** throughout (`index.html`, `ops.js`, `erp-edit.html`/`erp-edit.js`, `admin-ops.html`, `login.html`, `bl-*`, server-side default strings); there is **no i18n layer** yet. Note the house encoding rule (keep `.ps1` ASCII-only; HTML pages need `<meta charset="utf-8">`; read files with `[IO.File]::ReadAllText`) — relevant once non-ASCII (e.g. Chinese) strings enter.
+
+**Previous session (2026-06-16 — web tier migrated from `serve-ops.ps1` to an ASP.NET Core .NET 10 app in `server/`; all 7 stages built + verified live against demoerp).**
 The single-threaded PowerShell `HttpListener` (`serve-ops.ps1`, ~2,288 lines, 44 routes) is **reimplemented as a
 multi-threaded ASP.NET Core minimal-API** (`server/`, `net10.0`, one NuGet: `Microsoft.Data.SqlClient`, **raw ADO,
 no Dapper**), mirroring the completed sibling migration at `..\erp-dashboard\server`. **Strangler, web tier only** —

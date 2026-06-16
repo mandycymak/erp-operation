@@ -149,7 +149,7 @@ function Provision-LinkUser($email,$displayName){
   $un=$local.ToLower(); $n=1
   while($script:Users | Where-Object { $_.username -eq $un }){ $n++; $un="$local$n".ToLower() }
   $dn= if("$displayName".Trim()){ "$displayName".Trim() } else { $local }
-  $rec=[pscustomobject][ordered]@{ username=$un; displayName=$dn; email="$email".Trim(); salt=''; pwdHash=''; role=$LinkDefaultRole; admin=$false; authProvider='swivel'; teams=@(); stations=@(); primaryStation=''; access=@(); erpUsers=@() }
+  $rec=[pscustomobject][ordered]@{ username=$un; displayName=$dn; email="$email".Trim(); salt=''; pwdHash=''; role=$LinkDefaultRole; admin=$false; authProvider='swivel'; language=''; teams=@(); stations=@(); primaryStation=''; access=@(); erpUsers=@() }
   $users=[System.Collections.ArrayList]@($script:Users); [void]$users.Add($rec)
   $script:Users=@($users); Save-Users
   $rec
@@ -158,7 +158,7 @@ function Me-PayloadOps($sess){
   if(-not $script:AuthOn){ return @{ user=$sess.username; username=$sess.username; authOn=$false; today=(Today-Str) } }
   $u=Get-OpsUser $sess.username
   @{ user=$sess.username; username=$sess.username; authOn=$true; today=(Today-Str)
-     displayName="$($sess.displayName)"; role="$($sess.role)"; admin=[bool]$sess.admin
+     displayName="$($sess.displayName)"; role="$($sess.role)"; admin=[bool]$sess.admin; language="$($u.language)".Trim()
      teams=@(@($u.teams)|Where-Object{ "$_".Trim() }); stations=@(@($u.stations)|Where-Object{ "$_".Trim() })
      primaryStation="$($u.primaryStation)".Trim(); access=@(@($u.access)|Where-Object{ "$_".Trim() })
      erpUsers=@(@($u.erpUsers)|Where-Object{ "$_".Trim() }) }
@@ -737,7 +737,9 @@ function Handle-ErpFiles($cn,$qs){
   # doctypes whose upload would clear a milestone on THIS shipment (derived from the evidence map, cached)
   $dmap=Get-MilestoneDoctypeMap $cn; $clearable=@()
   foreach($dt in $dmap.Keys){ foreach($ms in @($dmap[$dt])){ if($ms.bound -eq "$($a.bound)" -and ($ms.module -eq '' -or $ms.module -eq $module)){ $clearable+=$dt; break } } }
-  @{ keyUsed=[string]$r.keyUsed; keyKind=[string]$r.keyKind; keyField=[string]$r.keyField; mock=[bool]$r.mock; files=@($r.files); error=[string]$r.error; clearableDoctypes=@($clearable|Select-Object -Unique) }
+  # ALL configured ERP document types - so any document can be uploaded, not only one that clears an alert
+  $allDt=@($dmap.Keys | Sort-Object)
+  @{ keyUsed=[string]$r.keyUsed; keyKind=[string]$r.keyKind; keyField=[string]$r.keyField; mock=[bool]$r.mock; files=@($r.files); error=[string]$r.error; clearableDoctypes=@($clearable|Select-Object -Unique); uploadDoctypes=$allDt }
 }
 # Upload a missing document to the ERP and, on success, clear the milestone(s) that document satisfies. The
 # successful upload IS the proof (the doctype -> milestone link is derived live from milestone_evidence_map, so it
@@ -2022,6 +2024,7 @@ function Handle-OpsAdmin($ctx,$sess,$path){
         if($em -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$'){ Send-Json $ctx @{ error="Enter a valid email address" } 400; return }
         if($script:Users | Where-Object { $_.username -ne $un -and "$($_.email)".Trim().ToLower() -eq $em.ToLower() }){ Send-Json $ctx @{ error="Email already assigned to another user" } 400; return }
         $authProvider="$($j.authProvider)".Trim().ToLower(); if($authProvider -notin 'local','swivel','both'){ $authProvider='local' }
+        $language="$($j.language)".Trim(); if($language -notin '','en','zh-Hans','ja'){ $language='' }
         $isAdmin=[bool]$j.admin
         if($un -eq $sess.username -and -not $isAdmin){ Send-Json $ctx @{ error="You cannot remove your own admin rights" } 400; return }
         $stations=@(Tag-List $j.stations); $validSts=@($StationList | ForEach-Object { $_.code })
@@ -2037,7 +2040,7 @@ function Handle-OpsAdmin($ctx,$sess,$path){
         $idx=-1; for($i=0;$i -lt $users.Count;$i++){ if($users[$i].username -eq $un){ $idx=$i; break } }
         if($idx -ge 0){
           $rec=$users[$idx]
-          $new=[ordered]@{ username=$un; displayName=$dn; email=$em; salt=$rec.salt; pwdHash=$rec.pwdHash; role=$role; admin=$isAdmin; authProvider=$authProvider; teams=$teams; stations=$stations; primaryStation=$prim; access=$access; erpUsers=$erpUsers }
+          $new=[ordered]@{ username=$un; displayName=$dn; email=$em; salt=$rec.salt; pwdHash=$rec.pwdHash; role=$role; admin=$isAdmin; authProvider=$authProvider; language=$language; teams=$teams; stations=$stations; primaryStation=$prim; access=$access; erpUsers=$erpUsers }
           if($j.password){ $salt=New-Salt; $new.salt=$salt; $new.pwdHash=(Hash-Pwd $salt $j.password) }
           $users[$idx]=[pscustomobject]$new
           Audit $sess.username "update user $un (role=$role, admin=$isAdmin, stations=$($stations -join '/'), primary=$prim, access=$($access -join '/'), erp=$($erpUsers -join '/')$(if($j.password){', password reset'}))"
@@ -2045,7 +2048,7 @@ function Handle-OpsAdmin($ctx,$sess,$path){
           # a 'swivel' (L!NK-only) user signs in via OAuth, so no local password is needed; everyone else needs one
           if(-not $j.password -and $authProvider -ne 'swivel'){ Send-Json $ctx @{ error="A password is required for a new user (or set Sign-in to SWIVEL L!NK)" } 400; return }
           $salt=''; $hash=''; if($j.password){ $salt=New-Salt; $hash=(Hash-Pwd $salt $j.password) }
-          $new=[ordered]@{ username=$un; displayName=$dn; email=$em; salt=$salt; pwdHash=$hash; role=$role; admin=$isAdmin; authProvider=$authProvider; teams=$teams; stations=$stations; primaryStation=$prim; access=$access; erpUsers=$erpUsers }
+          $new=[ordered]@{ username=$un; displayName=$dn; email=$em; salt=$salt; pwdHash=$hash; role=$role; admin=$isAdmin; authProvider=$authProvider; language=$language; teams=$teams; stations=$stations; primaryStation=$prim; access=$access; erpUsers=$erpUsers }
           [void]$users.Add([pscustomobject]$new)
           Audit $sess.username "create user $un (role=$role, admin=$isAdmin, stations=$($stations -join '/'), primary=$prim, access=$($access -join '/'), erp=$($erpUsers -join '/'))"
         }
@@ -2055,6 +2058,7 @@ function Handle-OpsAdmin($ctx,$sess,$path){
         Send-Json $ctx @{ users=@($script:Users | ForEach-Object { @{
           username="$($_.username)"; displayName="$($_.displayName)"; email="$($_.email)"; role="$($_.role)"; admin=[bool]$_.admin
           authProvider=$(if("$($_.authProvider)".Trim()){"$($_.authProvider)".Trim().ToLower()}else{'local'})
+          language="$($_.language)".Trim()
           teams=@(Tag-List $_.teams); stations=@(Tag-List $_.stations); primaryStation="$($_.primaryStation)"
           access=@(Tag-List $_.access); erpUsers=@(Tag-List $_.erpUsers); hasPwd=[bool]"$($_.pwdHash)" } }) }
       }

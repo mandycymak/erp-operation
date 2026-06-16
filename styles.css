@@ -15,7 +15,11 @@
   --g:#2fbf71; --a:#f0a830; --r:#e0524e; --accent:#5b8def; --accent2:#7a6cf0;
 }
 *{box-sizing:border-box}
-body{margin:0;font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Noto Sans SC",sans-serif;background:var(--bg);color:var(--ink)}
+/* Language-specific font stacks (boot() sets <html lang>). Japanese kanji have different glyph shapes
+   than Simplified Chinese, so prefer JP fonts when the UI language is Japanese. */
+html[lang="ja"] body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Yu Gothic","Meiryo","Hiragino Kaku Gothic ProN","Noto Sans JP","Noto Sans CJK JP",sans-serif}
+html[lang="zh-Hans"] body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Noto Sans SC",sans-serif}
 header{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
 header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
 header .sub{color:var(--mut);font-size:12px}

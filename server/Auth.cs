@@ -31,6 +31,7 @@ public sealed class UserRec
     public string Role = "";
     public bool Admin;
     public string AuthProvider = "local";
+    public string Language = "";                          // UI language preference (e.g. "zh-Hans"); "" = follow browser/English
     public string[] Teams = Array.Empty<string>();
     public string[] Stations = Array.Empty<string>();
     public string PrimaryStation = "";
@@ -82,6 +83,7 @@ public static class Auth
                 Role = (string?)o["role"] ?? "",
                 Admin = (bool?)o["admin"] ?? false,
                 AuthProvider = NonEmpty((string?)o["authProvider"], "local"),
+                Language = ((string?)o["language"] ?? "").Trim(),
                 Teams = StrArray(o["teams"]),
                 Stations = StrArray(o["stations"]),
                 PrimaryStation = ((string?)o["primaryStation"] ?? "").Trim(),
@@ -168,6 +170,7 @@ public static class Auth
         ["role"] = u.Role,
         ["admin"] = u.Admin,
         ["authProvider"] = u.AuthProvider,
+        ["language"] = u.Language,
         ["teams"] = JArr(u.Teams),
         ["stations"] = JArr(u.Stations),
         ["primaryStation"] = u.PrimaryStation,

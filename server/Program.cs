@@ -276,6 +276,7 @@ MapAuthed("/api-ops/me", new[] { "GET" }, (ctx, sess, rs) =>
         displayName = sess.DisplayName,
         role = sess.Role,
         admin = sess.Admin,
+        language = u.Language,
         teams = u.Teams,
         stations = u.Stations,
         primaryStation = u.PrimaryStation,
@@ -459,6 +460,8 @@ app.Use(async (ctx, next) =>
         || p.Contains("/ops-lists/") || p.Contains("/server/") || p.Contains("/erp-mock/") || p.Contains("/.git");
     // doc-fields.json is the one .json the client legitimately fetches (the bill renderer needs it).
     if (p == "/doc-fields.json") sensitive = false;
+    // lang/<code>.json are the UI translation dictionaries the client loads (no secrets in them).
+    if (p.StartsWith("/lang/") && ext == ".json") sensitive = false;
     if (sensitive && !p.StartsWith("/api-ops") && !p.StartsWith("/api-doc"))
     { ctx.Response.StatusCode = 404; await ctx.Response.CompleteAsync(); return; }
     await next();

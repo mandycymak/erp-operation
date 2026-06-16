@@ -33,11 +33,15 @@ public static partial class Handlers
         foreach (var kv in dmap)
             if (kv.Value.Any(ms => ms.Bound == bound && (ms.Module == "" || ms.Module == module)))
                 clearable.Add(kv.Key);
+        // ALL configured ERP document types (admin Documents tab) - so an operator can upload any document,
+        // not only one that clears an alert. The upload handler accepts any doctype; clearing is a bonus.
+        var allDoctypes = dmap.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray();
 
         return new
         {
             keyUsed = r.KeyUsed, keyKind = r.KeyKind, keyField = r.KeyField, mock = r.Mock,
             files = r.Files, error = r.Error, clearableDoctypes = clearable.Distinct().ToArray(),
+            uploadDoctypes = allDoctypes,
         };
     }
 

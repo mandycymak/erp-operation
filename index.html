@@ -16,11 +16,12 @@
   <span class="sub" id="appSub"></span>
   <span class="spacer"></span>
   <span class="muted" id="userbar" style="font-size:12px"></span>
-  <span class="muted" id="opLabel" style="font-size:12px">Operator</span>
-  <select id="userPicker" title="View as operator (demo identity)"></select>
-  <button class="ghost themebtn" id="themeBtn" title="Switch theme (Auto / Light / Dark)">Auto</button>
-  <button class="ghost" id="tasksBtn" title="My Tasks inbox">My Tasks <span class="badge" id="taskBadge" style="display:none">0</span></button>
-  <button class="ghost" id="refreshBtn" title="Refresh">↻</button>
+  <span class="muted" id="opLabel" style="font-size:12px" data-i18n>Operator</span>
+  <select id="userPicker" data-i18n-title title="View as operator (demo identity)"></select>
+  <select class="ghost" id="langPicker" title="Language"></select>
+  <button class="ghost themebtn" id="themeBtn" data-i18n-title title="Switch theme (Auto / Light / Dark)">Auto</button>
+  <button class="ghost" id="tasksBtn" data-i18n-title title="My Tasks inbox"><span data-i18n>My Tasks</span> <span class="badge" id="taskBadge" style="display:none">0</span></button>
+  <button class="ghost" id="refreshBtn" data-i18n-title title="Refresh">↻</button>
 </header>
 
 <div class="wrap">
@@ -28,65 +29,65 @@
     <div class="lens">
       <span class="vctl" id="viewControls">
         <div class="seg" id="modeSeg">
-          <button data-tmode="Sea">🚢 Sea</button>
-          <button data-tmode="Air">✈ Air</button>
+          <button data-tmode="Sea" data-i18n>🚢 Sea</button>
+          <button data-tmode="Air" data-i18n>✈ Air</button>
         </div>
         <div class="seg" id="boundSeg">
-          <button data-bound="Import">Import</button>
-          <button data-bound="Export">Export</button>
+          <button data-bound="Import" data-i18n>Import</button>
+          <button data-bound="Export" data-i18n>Export</button>
         </div>
         <div class="seg" id="lensSeg">
-          <button data-lens="mine" class="on">My work</button>
-          <button data-lens="user">Teammate</button>
-          <button data-lens="all">All</button>
+          <button data-lens="mine" class="on" data-i18n>My work</button>
+          <button data-lens="user" data-i18n>Teammate</button>
+          <button data-lens="all" data-i18n="lens">All</button>
         </div>
         <select id="teammate" style="display:none"></select>
-        <select id="stationPicker" title="Filter by station (office)"><option value="">All stations</option></select>
+        <select id="stationPicker" data-i18n-title title="Filter by station (office)"><option value="">All stations</option></select>
       </span>
       <span class="spacer"></span>
-      <button class="ghost" id="collapseAll" style="font-size:12px">⊖ Collapse all</button>
-      <button class="ghost" id="toggleFilters" style="font-size:12px">Hide filters</button>
+      <button class="ghost" id="collapseAll" style="font-size:12px" data-i18n>⊖ Collapse all</button>
+      <button class="ghost" id="toggleFilters" style="font-size:12px" data-i18n>Hide filters</button>
       <span class="muted" id="wlCount" style="font-size:12px"></span>
     </div>
     <div class="filters" id="filters">
-      <label class="fl"><input type="text" class="datebox" id="fFrom" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window start — format yyyy-mm-dd. Shows shipments moving, with work due, or created in the window; work overdue up to 30 days also shows."></label>
+      <label class="fl"><input type="text" class="datebox" id="fFrom" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" data-i18n-title title="Window start — format yyyy-mm-dd. Shows shipments moving, with work due, or created in the window; work overdue up to 30 days also shows."></label>
       <span class="fl">→</span>
-      <label class="fl"><input type="text" class="datebox" id="fTo" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" title="Window end — format yyyy-mm-dd. Shows shipments moving, with work due, or created in the window; work overdue up to 30 days also shows."></label>
-      <button class="ghost" id="thisWeek" title="Click to cycle the date window: This week -> Last week to today -> Custom (clears the boxes so you can type any range). 'This week' = shipments moving, due, or created this week, plus work overdue up to 30 days.">This week</button>
+      <label class="fl"><input type="text" class="datebox" id="fTo" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off" data-i18n-title title="Window end — format yyyy-mm-dd. Shows shipments moving, with work due, or created in the window; work overdue up to 30 days also shows."></label>
+      <button class="ghost" id="thisWeek" data-i18n-title title="Click to cycle the date window: This week -> Last week to today -> Custom (clears the boxes so you can type any range). 'This week' = shipments moving, due, or created this week, plus work overdue up to 30 days." data-i18n>This week</button>
       <span class="searchbox">
-        <select class="sf" id="fSearchField" title="What to search">
-          <option value="company">Company</option>
-          <option value="job">Job No</option>
-          <option value="booking">Booking / SO</option>
-          <option value="po">PO</option>
-          <option value="house">House B/L</option>
-          <option value="master">Master B/L</option>
-          <option value="conv">Vessel / Flight</option>
+        <select class="sf" id="fSearchField" data-i18n-title title="What to search">
+          <option value="company" data-i18n>Company</option>
+          <option value="job" data-i18n>Job No</option>
+          <option value="booking" data-i18n>Booking / SO</option>
+          <option value="po" data-i18n>PO</option>
+          <option value="house" data-i18n>House B/L</option>
+          <option value="master" data-i18n>Master B/L</option>
+          <option value="conv" data-i18n>Vessel / Flight</option>
         </select>
         <span class="combo" id="companyCombo">
-          <input type="text" id="fCompany" autocomplete="off" placeholder="Company name…" title="Company: matches shipper, consignee, agent or controlling customer. Pick a number type to find a file by its ID (ignores the date window).">
-          <button class="combo-x" id="fCompanyClear" title="Clear search" style="display:none">✕</button>
+          <input type="text" id="fCompany" autocomplete="off" data-i18n-placeholder placeholder="Company name…" data-i18n-title title="Company: matches shipper, consignee, agent or controlling customer. Pick a number type to find a file by its ID (ignores the date window).">
+          <button class="combo-x" id="fCompanyClear" data-i18n-title title="Clear search" style="display:none">✕</button>
           <div class="mention-pop" id="fCompanyPop"></div>
         </span>
       </span>
-      <span class="combo portchips" id="fPolChips" title="Port of loading — type a code or name (e.g. tokyo, HKHKG, jp:tok); pick several">
-        <input type="text" placeholder="POL…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span>
+      <span class="combo portchips" id="fPolChips" data-i18n-title title="Port of loading — type a code or name (e.g. tokyo, HKHKG, jp:tok); pick several">
+        <input type="text" data-i18n-placeholder placeholder="POL…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span>
       </span>
-      <span class="combo portchips" id="fPodChips" title="Port of discharge — type a code or name; pick several">
-        <input type="text" placeholder="POD…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span>
+      <span class="combo portchips" id="fPodChips" data-i18n-title title="Port of discharge — type a code or name; pick several">
+        <input type="text" data-i18n-placeholder placeholder="POD…" autocomplete="off"><div class="mention-pop"></div><span class="chiprow"></span>
       </span>
-      <button class="ghost iconbtn" id="fAlerts" title="Alerts — show only shipments with a red or amber alert (within the current view)" aria-label="Alerts">⚠</button>
-      <button class="ghost iconbtn" id="fNotes" title="My notes — show shipments with an open note or reminder of mine (any date, so a note never gets lost). Mark the note done to clear it from here." aria-label="My notes">💬</button>
+      <button class="ghost iconbtn" id="fAlerts" data-i18n-title title="Alerts — show only shipments with a red or amber alert (within the current view)" data-i18n-aria-label aria-label="Alerts">⚠</button>
+      <button class="ghost iconbtn" id="fNotes" data-i18n-title title="My notes — show shipments with an open note or reminder of mine (any date, so a note never gets lost). Mark the note done to clear it from here." data-i18n-aria-label aria-label="My notes">💬</button>
     </div>
     <div id="inboundPanel" class="inbound" style="display:none"></div>
-    <div id="worklist"><div class="empty">Loading…</div></div>
+    <div id="worklist"><div class="empty" data-i18n>Loading…</div></div>
   </div>
 
   <div class="side">
     <div class="panel" id="tasksPanel">
-      <h3>My Tasks <span class="badge" id="taskBadge2" style="display:none">0</span></h3>
-      <div style="font-size:12px" class="muted">Reminders others sent me, and ones I'm waiting on.</div>
-      <div id="tasksBody"><div class="empty">Loading…</div></div>
+      <h3><span data-i18n>My Tasks</span> <span class="badge" id="taskBadge2" style="display:none">0</span></h3>
+      <div style="font-size:12px" class="muted" data-i18n>Reminders others sent me, and ones I'm waiting on.</div>
+      <div id="tasksBody"><div class="empty" data-i18n>Loading…</div></div>
     </div>
   </div>
 </div>
@@ -103,6 +104,7 @@
   <div class="body" id="drawerBody"></div>
 </aside>
 
+<script src="i18n.js"></script>
 <script src="ops.js"></script>
 </body>
 </html>

@@ -30,7 +30,7 @@ public static partial class Handlers
     static UserRec Clone(UserRec u) => new()
     {
         Username = u.Username, DisplayName = u.DisplayName, Email = u.Email, Salt = u.Salt, PwdHash = u.PwdHash,
-        Role = u.Role, Admin = u.Admin, AuthProvider = u.AuthProvider,
+        Role = u.Role, Admin = u.Admin, AuthProvider = u.AuthProvider, Language = u.Language,
         Teams = (string[])u.Teams.Clone(), Stations = (string[])u.Stations.Clone(),
         PrimaryStation = u.PrimaryStation, Access = (string[])u.Access.Clone(), ErpUsers = (string[])u.ErpUsers.Clone(),
     };
@@ -41,6 +41,7 @@ public static partial class Handlers
         {
             username = u.Username, displayName = u.DisplayName, email = u.Email, role = u.Role, admin = u.Admin,
             authProvider = string.IsNullOrWhiteSpace(u.AuthProvider) ? "local" : u.AuthProvider.Trim().ToLowerInvariant(),
+            language = u.Language,
             teams = u.Teams, stations = u.Stations, primaryStation = u.PrimaryStation,
             access = u.Access, erpUsers = u.ErpUsers, hasPwd = u.PwdHash != "",
         }).ToArray()
@@ -60,6 +61,8 @@ public static partial class Handlers
             return new Resp(new { error = "Email already assigned to another user" }, 400);
         var authProvider = j.Str("authProvider").Trim().ToLowerInvariant();
         if (authProvider is not ("local" or "swivel" or "both")) authProvider = "local";
+        var language = j.Str("language").Trim();              // UI language preference; "" = follow browser/English
+        if (language is not ("" or "en" or "zh-Hans" or "ja")) language = "";
         var isAdmin = j.Bool("admin") == true;
         if (un == sess.Username && !isAdmin) return new Resp(new { error = "You cannot remove your own admin rights" }, 400);
 
@@ -81,7 +84,7 @@ public static partial class Handlers
         if (idx >= 0)
         {
             var rec = users[idx];
-            rec.DisplayName = dn; rec.Email = em; rec.Role = role; rec.Admin = isAdmin; rec.AuthProvider = authProvider;
+            rec.DisplayName = dn; rec.Email = em; rec.Role = role; rec.Admin = isAdmin; rec.AuthProvider = authProvider; rec.Language = language;
             rec.Teams = teams; rec.Stations = stations; rec.PrimaryStation = prim; rec.Access = access; rec.ErpUsers = erpUsers;
             if (pwd != "") { rec.Salt = Auth.NewSalt(); rec.PwdHash = Auth.HashPwd(rec.Salt, pwd); }
             Auth.Audit(sess.Username, $"update user {un} (role={role}, admin={isAdmin}, stations={string.Join("/", stations)}, primary={prim}, access={string.Join("/", access)}, erp={string.Join("/", erpUsers)}{(pwd != "" ? ", password reset" : "")})");
@@ -94,7 +97,7 @@ public static partial class Handlers
             users.Add(new UserRec
             {
                 Username = un, DisplayName = dn, Email = em, Salt = salt, PwdHash = hash, Role = role, Admin = isAdmin,
-                AuthProvider = authProvider, Teams = teams, Stations = stations, PrimaryStation = prim, Access = access, ErpUsers = erpUsers,
+                AuthProvider = authProvider, Language = language, Teams = teams, Stations = stations, PrimaryStation = prim, Access = access, ErpUsers = erpUsers,
             });
             Auth.Audit(sess.Username, $"create user {un} (role={role}, admin={isAdmin}, stations={string.Join("/", stations)}, primary={prim}, access={string.Join("/", access)}, erp={string.Join("/", erpUsers)})");
         }
