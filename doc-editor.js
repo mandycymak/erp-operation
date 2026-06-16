@@ -216,8 +216,24 @@
           '?subject=' + encodeURIComponent('Draft ' + h.docType + ' for your review - ' + h.jobNo) +
           '&body=' + encodeURIComponent('Dear ' + (name.trim() || 'customer') + ',\n\nPlease review the draft document at the secure link below. You can correct the text directly on screen and send it back to us.\n\n' + r.link + '\n\nThe link is valid for ' + r.expiresDays + ' days.\n\nBest regards');
         flash('Link created (v' + r.sentVersion + ', valid ' + r.expiresDays + ' days). Any earlier link is now dead.<br>' +
-          '<input class="line" style="margin:6px 0" value="' + esc(r.link) + '" readonly onclick="this.select()">' +
+          '<span style="display:inline-flex;align-items:center;gap:6px;margin:6px 0;max-width:100%">' +
+          '<input id="lnkBox" class="line" style="margin:0;flex:1;min-width:240px" value="' + esc(r.link) + '" readonly onclick="this.select()">' +
+          '<button id="lnkCopy" type="button" title="Copy link" aria-label="Copy link" ' +
+          'style="display:inline-flex;align-items:center;justify-content:center;padding:5px 7px;cursor:pointer">' +
+          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+          'stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect>' +
+          '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button>' +
+          '<span id="lnkCopied" class="muted" style="display:none">Copied</span></span><br>' +
           '<a href="' + esc(mailto) + '">Open in email</a> or copy the link above into your own message.');
+        const cb = $('#lnkCopy');
+        if (cb) cb.onclick = () => {
+          const inp = $('#lnkBox'); if (inp) { inp.focus(); inp.select(); }
+          const ok = $('#lnkCopied');
+          const done = () => { if (ok) { ok.style.display = 'inline'; setTimeout(() => { ok.style.display = 'none'; }, 1600); } };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(r.link).then(done, () => { try { document.execCommand('copy'); } catch (e) {} done(); });
+          } else { try { document.execCommand('copy'); } catch (e) {} done(); }
+        };
         load();
       });
   }

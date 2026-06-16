@@ -73,6 +73,32 @@ public static partial class Handlers
 
     static string DateStr(object? v) => v is DateTime dt ? dt.ToString("yyyy-MM-dd") : "";
 
+    // Recall the value we last successfully pushed for a field from erp_edit_log (the ops DB). Used for fields the
+    // ERP keeps only in its booking store and never echoes back through /booking/get or the BL tables (e.g. the
+    // liner agent) - so a freshly-saved value is shown again instead of appearing blank and being re-entered. The
+    // most recent 'saved' row that touched the field wins (its 'after'); returns "" if none.
+    static string LastSavedFieldValue(SqlConnection cn, string job, string fieldCode)
+    {
+        try
+        {
+            var rows = Db.RunQ(cn, "SELECT TOP 8 changed_json FROM dbo.erp_edit_log WHERE job_no=@j AND erp_status='saved' ORDER BY occurred_at DESC", new Dictionary<string, object?> { ["j"] = job });
+            foreach (var r in rows)
+            {
+                var cj = Db.Str(Db.G(r, "changed_json")); if (cj == "") continue;
+                try
+                {
+                    if (JsonNode.Parse(cj) is not JsonArray arr) continue;
+                    foreach (var it in arr)
+                        if (it is JsonObject o && (o["field"]?.ToString() ?? "") == fieldCode)
+                            return (o["after"]?.ToString() ?? "").Trim();   // most recent row that touched it wins
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return "";
+    }
+
     // ---- /api-ops/erp-edit (serve-ops.ps1 Handle-ErpEditSeed 881-1008) ----
     // seed the editor: current ERP value + resolved master name for every dict field on this shipment.
     public static object ErpEditSeed(SqlConnection cn, Qs q, ReqState rs)
@@ -110,7 +136,7 @@ public static partial class Handlers
             else cols.Add(rf);
         }
         if (isAir) cols.Add("f_date1");
-        else cols.AddRange(new[] { "departure1", "departure2", "arrival1", "arrival2", "vessel_1", "vessel_2", "voyage_1", "voyage_2", "deli" });
+        else cols.AddRange(new[] { "departure1", "departure2", "arrival1", "arrival2", "vessel_1", "vessel_2", "voyage_1", "voyage_2", "deli", "ilagent" });
         var csv = string.Join(",", cols.Distinct());
 
         SqlConnection? src = null;
@@ -187,11 +213,15 @@ public static partial class Handlers
             {
                 try
                 {
-                    var adr = Db.RunQ(src, "SELECT TOP 1 mark2, desc2, good_desc1 FROM dbo.awbdetl WHERE blh=@r ORDER BY ref", new Dictionary<string, object?> { ["r"] = Db.G(b, "ref") }, 8);
+                    var adr = Db.RunQ(src, "SELECT TOP 1 mark2, desc2, good_desc1, good_desc2 FROM dbo.awbdetl WHERE blh=@r ORDER BY ref", new Dictionary<string, object?> { ["r"] = Db.G(b, "ref") }, 8);
                     if (adr.Count > 0)
                     {
                         if (fields.ContainsKey("ship_marks")) fields["ship_marks"] = Db.Str(Db.G(adr[0], "mark2")).Trim();
                         if (fields.ContainsKey("goods_desc")) { var gd = Db.Str(Db.G(adr[0], "desc2")).Trim(); if (gd == "") gd = Db.Str(Db.G(adr[0], "good_desc1")).Trim(); fields["goods_desc"] = gd; }
+                        // Air commodity = the short cargo description on the detail line (awbdetl.good_desc2), which
+                        // differs from Sea (blitem.commodity). Override the header awbhead.commodity read with it when
+                        // present; the header value remains a fallback if good_desc2 is blank.
+                        if (fields.ContainsKey("commodity")) { var cm = Db.Str(Db.G(adr[0], "good_desc2")).Trim(); if (cm != "") fields["commodity"] = cm; }
                     }
                 }
                 catch { }
@@ -216,10 +246,28 @@ public static partial class Handlers
                 catch { }
                 if (fields.ContainsKey("liner_code"))
                 {
-                    var lc = "";
-                    try { var lcr = Db.RunQ(src, "SELECT TOP 1 lagent FROM dbo.blcont WHERE blh=@r AND NULLIF(lagent,'') IS NOT NULL ORDER BY ref", new Dictionary<string, object?> { ["r"] = Db.G(b, "ref") }, 8); if (lcr.Count > 0) lc = Db.Str(Db.G(lcr[0], "lagent")).Trim(); } catch { }
+                    // Liner agent can sit on the container line (blcont.lagent), the item line (blitem.lagent2)
+                    // or the header (blhead.ilagent). A booking with no container yet has NO blcont row, so read
+                    // through these in order - otherwise the liner agent shows blank on recall even though it is
+                    // present in the item/header data, which made operators re-enter it.
+                    var erpVal = "";
+                    try { var lcr = Db.RunQ(src, "SELECT TOP 1 lagent FROM dbo.blcont WHERE blh=@r AND NULLIF(lagent,'') IS NOT NULL ORDER BY ref", new Dictionary<string, object?> { ["r"] = Db.G(b, "ref") }, 8); if (lcr.Count > 0) erpVal = Db.Str(Db.G(lcr[0], "lagent")).Trim(); } catch { }
+                    if (erpVal == "") try { var ir = Db.RunQ(src, "SELECT TOP 1 lagent2 FROM dbo.blitem WHERE blh=@r AND NULLIF(lagent2,'') IS NOT NULL ORDER BY ref", new Dictionary<string, object?> { ["r"] = Db.G(b, "ref") }, 8); if (ir.Count > 0) erpVal = Db.Str(Db.G(ir[0], "lagent2")).Trim(); } catch { }
+                    if (erpVal == "") erpVal = Db.Str(Db.G(b, "ilagent")).Trim();
+                    // The ERP keeps the edited liner agent (linerAgentPartyCode) in its booking store and never echoes
+                    // it back into these BL columns. So when our last-pushed value differs from (or the ERP read is
+                    // blank vs) the BL value, show what we last saved with a "pending" label - otherwise the operator
+                    // sees a stale/blank value and re-enters it.
+                    var saved = LastSavedFieldValue(cn, job, "liner_code");
+                    var linerFromLastSaved = saved != "" && !string.Equals(saved, erpVal, StringComparison.OrdinalIgnoreCase);
+                    var lc = linerFromLastSaved ? saved : erpVal;
                     fields["liner_code"] = lc;
-                    if (lc != "") { var nm = MasterName(src, db, "custsub", lc); if (nm != "") resolved["liner_code"] = nm; }
+                    if (lc != "")
+                    {
+                        var nm = MasterName(src, db, "custsub", lc);
+                        if (linerFromLastSaved) resolved["liner_code"] = (nm != "" ? nm + " " : "") + "(last saved here - ERP read-back pending)";
+                        else if (nm != "") resolved["liner_code"] = nm;
+                    }
                 }
                 if (fields.ContainsKey("dest_code") && Db.Str(fields["dest_code"]).Trim() == "")
                 {

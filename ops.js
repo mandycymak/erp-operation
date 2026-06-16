@@ -71,7 +71,10 @@ async function init() {
     if (mySts.length && (!state.station || !mySts.includes(state.station))) state.station = ME.primaryStation || mySts[0] || '';
   }
   buildStationPicker();
-  const rost = await api('/api-ops/roster'); state.roster = arr(rost.users).map(u => u.username);
+  const rost = await api('/api-ops/roster'); const ru = arr(rost.users);
+  state.roster = ru.map(u => u.username);
+  // username -> { name, team, station } so the @-mention picker can label colleagues (matters at ~500 users)
+  state.rosterMeta = {}; ru.forEach(u => { state.rosterMeta[u.username] = { name: u.displayName || u.username, team: u.team || '', station: u.station || '' }; });
   if (!state.user && state.roster.length) state.user = state.roster[0];
   buildUserPicker(); buildTeammate();
   wireLens(); wireBound(); wireMode(); wireFilters(); wireTheme();
@@ -847,10 +850,11 @@ function openArrangeForm(job, type, wrap) {
     '<input class="ai contact" placeholder="contact / phone (optional)">' +
     '<input class="ai note" placeholder="reminder, e.g. confirm pickup from terminal → warehouse">' +
     '<select class="ai status"><option value="todo">to-do</option><option value="arranged">arranged</option><option value="confirmed">confirmed</option></select>' +
-    '<input class="ai ment" placeholder="@mention a colleague (optional)">';
+    '<span class="mentwrap"><input class="ai ment" placeholder="@mention a colleague — type name, team or station (optional)"><div class="mention-pop"></div></span>';
   const bar = el('div'); bar.style.cssText = 'display:flex;gap:8px;margin-top:6px';
   const save = el('button', 'primary', 'Save'); const cancel = el('button', 'ghost', 'Cancel');
   bar.appendChild(save); bar.appendChild(cancel); f.appendChild(bar); wrap.appendChild(f);
+  wireMention(f.querySelector('.ment'), f.querySelector('.mention-pop'));   // same @-mention picker as the note composer
   cancel.onclick = () => f.remove();
   save.onclick = async () => {
     const party = f.querySelector('.party').value.trim();
@@ -1211,9 +1215,23 @@ function wireMention(ta, pop) {
     const v = ta.value.slice(0, ta.selectionStart); const mt = v.match(/@([A-Za-z0-9_.\-]*)$/);
     if (!mt) return close();
     const q = mt[1].toLowerCase();
-    items = state.roster.filter(u => u.toLowerCase().includes(q)).slice(0, 8);
+    const meta = state.rosterMeta || {};
+    // match on username, real name, team OR station — so "@HKG" or "@sales" narrows the ~500-user list
+    items = state.roster.filter(u => {
+      const m = meta[u] || {};
+      return u.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q) ||
+        (m.team || '').toLowerCase().includes(q) || (m.station || '').toLowerCase().includes(q);
+    }).slice(0, 8);
     if (!items.length) return close();
-    pop.innerHTML = ''; items.forEach((u, i) => { const d = el('div', i === 0 ? 'sel' : '', esc(u)); d.onclick = () => pick(u); pop.appendChild(d); });
+    pop.innerHTML = ''; items.forEach((u, i) => {
+      const m = meta[u] || {};
+      const sub = [m.team, m.station].filter(Boolean).join(' · ');
+      const d = el('div', i === 0 ? 'sel' : '');
+      d.innerHTML = '<span class="mname">@' + esc(u) + '</span>' +
+        (m.name && m.name !== u ? ' <span class="mmeta">' + esc(m.name) + '</span>' : '') +
+        (sub ? ' <span class="mmeta">' + esc(sub) + '</span>' : '');
+      d.onclick = () => pick(u); pop.appendChild(d);
+    });
     active = 0; pop.style.display = 'block';
   });
   ta.addEventListener('keydown', e => {

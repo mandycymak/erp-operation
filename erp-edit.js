@@ -265,7 +265,23 @@
     const box = el('div', 'lookbox');
     const q = el('input', 'lq'); q.type = 'text'; q.placeholder = 'code or name...'; q.spellcheck = false; box.appendChild(q);
     const list = el('div'); box.appendChild(list);
-    anchorEl.appendChild(box); q.focus();
+    anchorEl.appendChild(box);
+    // Pin the dropdown to the viewport (position:fixed) and clamp it fully on-screen, so it is always
+    // visible whichever field opened it. (Anchor-relative absolute positioning spilled off the RIGHT for
+    // right-side fields like controlling cust / liner agent; a naive leftward flip then spilled off the
+    // LEFT.) Fixed also escapes the form's overflow:clip, and we focus without auto-scrolling the page.
+    const ar = anchorEl.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    const bw = box.offsetWidth || 230;
+    const left = Math.max(8, Math.min(ar.left, vw - 8 - bw));
+    const spaceBelow = vh - ar.bottom - 10, spaceAbove = ar.top - 10;
+    box.style.position = 'fixed'; box.style.left = left + 'px'; box.style.right = 'auto';
+    if (spaceBelow >= 160 || spaceBelow >= spaceAbove) {
+      box.style.top = (ar.bottom + 3) + 'px'; box.style.bottom = 'auto'; box.style.maxHeight = Math.max(120, spaceBelow) + 'px';
+    } else {
+      box.style.bottom = (vh - ar.top + 3) + 'px'; box.style.top = 'auto'; box.style.maxHeight = Math.max(120, spaceAbove) + 'px';
+    }
+    try { q.focus({ preventScroll: true }); } catch (e) { q.focus(); }
     let t = null;
     const run = async () => {
       list.innerHTML = '<div class="li">searching...</div>';

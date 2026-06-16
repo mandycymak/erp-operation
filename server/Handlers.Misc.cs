@@ -24,6 +24,10 @@ public static partial class Handlers
                     username = u.Username,
                     displayName = string.IsNullOrWhiteSpace(u.DisplayName) ? u.Username : u.DisplayName.Trim(),
                     email = u.Email,
+                    // team + primary station so the @-mention picker can tell ~500 colleagues apart
+                    team = string.Join(", ", u.Teams.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim())),
+                    station = !string.IsNullOrWhiteSpace(u.PrimaryStation) ? u.PrimaryStation.Trim()
+                        : (u.Stations.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s))?.Trim() ?? ""),
                 }).ToArray()
             };
         }
@@ -36,7 +40,7 @@ public static partial class Handlers
         // Match PS exactly: Select-Object -Unique dedups case-insensitively, then Sort-Object orders culture-aware
         // (case-sensitive) — so the @-mention roster lists identically (punctuation/case ordering included).
         var all = ops.Concat(noteUsers).Where(s => s != "" && s != "(open)").Distinct(StringComparer.InvariantCultureIgnoreCase).OrderBy(s => s, StringComparer.InvariantCulture);
-        return new { users = all.Select(u => new { username = u, displayName = u, email = "" }).ToArray() };
+        return new { users = all.Select(u => new { username = u, displayName = u, email = "", team = "", station = "" }).ToArray() };
     }
 
     // ---- /api-ops/companies (serve-ops.ps1 404-409) ----

@@ -337,7 +337,15 @@ public static partial class Erp
         if (cur == null) return new(false, false, false, new(), $"booking '{bookingNo}' ({module}) not found via /booking/get - aborting so the update cannot create a new booking. Check partyGroupCode/forwarderCode (owncode) in erp-api-map.json and the booking number.");
         var bestEffort = ErpMap.Str("bookingUpdateMode").Trim().ToLowerInvariant() == "best-effort";
         var steps = new List<string> { "booking/get ok (exists)" };
-        foreach (var k in new[] { "serviceCode", "commodity", "portOfLoadingCode", "portOfLoadingName", "portOfDischargeCode", "portOfDischargeName" })
+        var mergeKeys = new List<string> { "serviceCode", "commodity", "portOfLoadingCode", "portOfLoadingName", "portOfDischargeCode", "portOfDischargeName" };
+        // SEA ONLY: a Sea booking carrying container lines must also carry its Liner (carrier). If bookingContainers
+        // is sent but carrierCode is omitted, the ERP blanks the carrier and rejects with (500) "Liner cannot be
+        // blank". Read-merge the EXISTING carrier (already an accepted value on this booking) ONLY in the Sea
+        // container case, so non-container edits stay on the proven path and we never push a fresh/raw carrier code
+        // the carrier master would reject. Air has no container table (bookingContainers is never present) and must
+        // not get this merge - gate on the module explicitly.
+        if (module == "SEA" && payload.ContainsKey("bookingContainers")) { mergeKeys.Add("carrierCode"); mergeKeys.Add("carrierName"); }
+        foreach (var k in mergeKeys)
             if (!payload.ContainsKey(k)) { var v = StrProp(cur, k).Trim(); if (v != "") payload[k] = v; }
         try { Call("/booking/update", payload); steps.Add("booking/update ok"); return new(true, false, false, steps, ""); }
         catch (Exception ex)
