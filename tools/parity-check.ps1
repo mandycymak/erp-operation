@@ -5,7 +5,7 @@
   object; the .NET server emits proper arrays - the client coerces both with arr(), so these are NOT real
   differences). Volatile fields (timestamps) are ignored.
 
-  HOW TO RUN (both servers in the SAME mode against the SAME pgsops DB):
+  HOW TO RUN (both servers in the SAME mode against the SAME erpops DB):
     1. Start the legacy server:   .\serve-ops.ps1 -Port 8090
     2. Start the .NET server:     server\start-dotnet.bat   (or: OPS_HTTP_PORT=5079 dotnet run)  -> 5079
        Run BOTH from a root WITHOUT users.json (open mode) so identity = the X-Ops-User header on both,

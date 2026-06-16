@@ -1,6 +1,6 @@
 <#
   seed-ports.ps1  — copies the ERP port/airport master (portmstr: ~3.9k sea UN/LOCODEs + ~1.5k IATA codes,
-  with names + countries) into pgsops.port_dim so the UI port pickers can search by NAME as well as code
+  with names + countries) into erpops.port_dim so the UI port pickers can search by NAME as well as code
   (Tokyo -> TYO/HND/JPTYO) without the request path ever touching the ERP. The master barely changes —
   scheduled weekly by register-ops-tasks.ps1. Source ERP is READ-ONLY; the refresh is transactional
   (DELETE + chunked multi-row INSERT) so readers never see an empty table.

@@ -1,6 +1,6 @@
 <#
   seed-milestone-config.ps1
-  Seeds the milestone CONFIGURATION (data, not code) into pgsops:
+  Seeds the milestone CONFIGURATION (data, not code) into erpops:
     - milestone_def         : the Export + Import matrix (BLUEPRINT 2.3), rules expressed over the
                               REAL HKG-verified blhead columns. DATA-FIRST: qualify_rule / complete_rule
                               test ERP fields; PIC/EDI evidence is layered on as a SECONDARY way to close
@@ -18,7 +18,7 @@ $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.au
 $user=EnvOrConfig "DB_USER" $cfg.user; $password=EnvOrConfig "DB_PASSWORD" $cfg.password
 $opsDb=EnvOrConfig "DB_OPS_DB" $cfg.opsDb
 $authClause = if ($auth -eq 'sql') { "User ID=$user;Password=$password" } else { "Integrated Security=True" }
-# seeds only pgsops -> connect to the OPS server (two-server mode; falls back to source)
+# seeds only erpops -> connect to the OPS server (two-server mode; falls back to source)
 $opsServer=EnvOrConfig "DB_OPS_SERVER" $cfg.opsServer; if(-not ("$opsServer".Trim())){ $opsServer=$server }
 $opsAuth=EnvOrConfig "DB_OPS_AUTH" $cfg.opsAuth; if(-not ("$opsAuth".Trim())){ $opsAuth=$auth }
 $opsUser=EnvOrConfig "DB_OPS_USER" $cfg.opsUser; if(-not ("$opsUser".Trim())){ $opsUser=$user }

@@ -10,7 +10,7 @@ namespace Ops;
 //   DRAFT -send-> SENT -submit-> CUSTOMER_SUBMITTED -staff save-> DRAFT (resend v+1)
 //                   \-approve-> CUSTOMER_APPROVED -agree-> AGREED -issue-> ISSUED
 //   ISSUED -amend(amend_count++, fee)-> AMEND_DRAFT -> (cycle repeats) -> ISSUED
-// All state in pgsops doc_* tables; every action appended to doc_event_log. Raw tokens never stored (SHA-256).
+// All state in erpops doc_* tables; every action appended to doc_event_log. Raw tokens never stored (SHA-256).
 public static partial class Doc
 {
     // ---- tokens ----

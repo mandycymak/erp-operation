@@ -9,10 +9,10 @@
 # Idempotent: safe to re-run. It does NOT touch the source ERP or the network instance on 8079.
 
 param(
-  [string]$Root    = "C:\Users\mandy\pgs-operation",            # OPS_ROOT: holds ops.config.demoerp.json + client files + lang\
-  [string]$Publish = "C:\Users\mandy\pgs-operation\server\publish",
-  [string]$Pool    = "pgsops-demoerp",
-  [string]$Site    = "pgsops-demoerp",
+  [string]$Root    = "C:\Users\mandy\erp-operation",            # OPS_ROOT: holds ops.config.demoerp.json + client files + lang\
+  [string]$Publish = "C:\Users\mandy\erp-operation\server\publish",
+  [string]$Pool    = "erpops-demoerp",
+  [string]$Site    = "erpops-demoerp",
   [int]   $Port    = 8080,                                       # http://localhost:8080  (8079 is the dev network instance)
   [string]$Config  = "ops.config.demoerp.json",
   [string]$OpsDb   = "demoerp",

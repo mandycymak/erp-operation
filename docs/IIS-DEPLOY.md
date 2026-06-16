@@ -1,4 +1,4 @@
-# Deploying pgs-operation (Control Tower) on IIS with HTTPS
+# Deploying erp-operation (Control Tower) on IIS with HTTPS
 
 The web tier now runs as an **ASP.NET Core app** (`server/`, .NET 10) instead of `serve-ops.ps1`. It is
 multi-threaded (Kestrel) with **per-request row-level scope isolation** (the structural fix for the
@@ -11,7 +11,7 @@ network.
 
 The off-request-path PowerShell jobs (`seed-alerts.ps1`, `publish-bookings.ps1`, `seed-station-map.ps1`,
 `seed-ports.ps1`, `seed-milestone-config.ps1`, `register-ops-tasks.ps1`) keep running under Task Scheduler —
-they only write `pgsops`, so they coexist with the new server unchanged.
+they only write `erpops`, so they coexist with the new server unchanged.
 
 ## 1. Prerequisites (on the server, once)
 1. **IIS** with the *Web Server (IIS)* role.
@@ -21,7 +21,7 @@ they only write `pgsops`, so they coexist with the new server unchanged.
 3. A **TLS certificate** for the site's hostname (a real CA cert, or import an existing one into
    `LocalMachine\My`).
 4. The **Swivel VPN** reachable from the server — the source ERP SQL host (`18.136.126.101,1438` or the
-   per-customer ERP server) is only reachable through it. The customer's `pgsops` DB must also be reachable
+   per-customer ERP server) is only reachable through it. The customer's `erpops` DB must also be reachable
    (it may live on the ERP server or a separate ops server — two-server mode, see `ops.config.json`).
 5. A **headless browser** (Microsoft Edge or Google Chrome) installed on the server — used by `doc-issue` to
    render the agreed bill to PDF (`--print-to-pdf`). Optional: the issue proceeds without an auto-PDF if none is
@@ -38,34 +38,36 @@ ANCM hosting:
 ```xml
 <aspNetCore processPath="dotnet" arguments=".\Ops.dll" hostingModel="inprocess" stdoutLogEnabled="false" stdoutLogFile=".\logs\stdout" />
 ```
-Copy `server\publish\` to the server (e.g. `C:\inetpub\pgs-operation\`). **Secrets are NOT in the publish
+Copy `server\publish\` to the server (e.g. `C:\inetpub\erp-operation\`). **Secrets are NOT in the publish
 folder** — they stay with the repo working copy (see `OPS_ROOT` below), so the web-facing folder holds only
 binaries + the client static files served from `OPS_ROOT`.
 
 ## 3. Config + client files location (`OPS_ROOT`)
 The app reads `ops.config.json` and serves the client files (`index.html`, `ops.js`, `styles.css`,
-`admin-ops.html`, `bl-review.html`, `bl-form.js`, `doc-fields.json`, …) from a **root directory**, and
-reads/writes `users.json`, `roles.json`, `ops-lists/`, `erp-api-map.json`, `erp-mock/`, `*-audit.log` there too.
+`admin-ops.html`, `bl-review.html`, `bl-form.js`, `doc-fields.json`, **`i18n.js`, `lang/*.json`**, …) from a
+**root directory**, and reads/writes `users.json`, `roles.json`, `ops-lists/`, `erp-api-map.json`, `erp-mock/`,
+`*-audit.log` there too. **`OPS_ROOT` must contain the `lang/` folder** or the UI silently falls back to English.
 Point it at the repo working copy on the server:
 ```
-OPS_ROOT = C:\path\to\pgs-operation      (the folder holding ops.config.json + index.html)
+OPS_ROOT = C:\path\to\erp-operation      (the folder holding ops.config.json + index.html)
 ```
 If unset, the app walks up from its own folder looking for the config file — fine if `publish\` sits under the
 repo, but **set `OPS_ROOT` explicitly for an IIS deploy** where `publish\` is elsewhere. To run a specific
 tenant config, set `OPS_CONFIG` (e.g. `ops.config.acme.json`).
 
 > **Static serving is auth-bypassing by design** (the client shell loads before login). The app **blocks**
-> requests for `*.json` (except `doc-fields.json`), `*.ps1`, `*.bat`, `*.log`, `*.cs`, `*.csproj`, and the
-> `ops-lists/` `server/` `erp-mock/` `.git` paths — secrets in the root are never served. **This closes a real
-> exposure in `serve-ops.ps1`, which served the static root unguarded** (`/ops.config.json`, `/users.json`,
-> `/erp-api-map.json` were reachable). Patch the PS server too if it stays exposed during the cutover.
+> requests for `*.json` (except `doc-fields.json` and the **`lang/*.json`** UI dictionaries), `*.ps1`, `*.bat`,
+> `*.log`, `*.cs`, `*.csproj`, and the `ops-lists/` `server/` `erp-mock/` `.git` paths — secrets in the root are
+> never served. **This closes a real exposure in `serve-ops.ps1`, which served the static root unguarded**
+> (`/ops.config.json`, `/users.json`, `/erp-api-map.json` were reachable). Patch the PS server too if it stays
+> exposed during the cutover.
 
 ## 4. Create the IIS site
 1. **App pool**: new pool, **.NET CLR version = "No Managed Code"** (the app self-hosts via ANCM). Start mode
    *AlwaysRunning* to keep it warm. The pool **identity** needs: read/write to `OPS_ROOT` and network access to
-   the `pgsops` DB + the source ERP over the VPN. `ApplicationPoolIdentity` works if the VPN is machine-wide;
+   the `erpops` DB + the source ERP over the VPN. `ApplicationPoolIdentity` works if the VPN is machine-wide;
    use a domain/service account if the VPN or a file share needs it.
-2. **Site**: physical path = the `publish` folder you copied (e.g. `C:\inetpub\pgs-operation`).
+2. **Site**: physical path = the `publish` folder you copied (e.g. `C:\inetpub\erp-operation`).
 3. **Bindings**: add an **https** binding on 443, select the TLS certificate. (Optionally bind http:80 and
    redirect — step 6.)
 
@@ -74,7 +76,7 @@ Easiest: add to `web.config` inside `<aspNetCore>`:
 ```xml
 <aspNetCore processPath="dotnet" arguments=".\Ops.dll" hostingModel="inprocess">
   <environmentVariables>
-    <environmentVariable name="OPS_ROOT"     value="C:\path\to\pgs-operation" />
+    <environmentVariable name="OPS_ROOT"     value="C:\path\to\erp-operation" />
     <environmentVariable name="OPS_CONFIG"   value="ops.config.json" />        <!-- per-tenant config file -->
     <environmentVariable name="OPS_HTTPS"    value="1" />                       <!-- Secure cookies + HSTS -->
     <environmentVariable name="OPS_IFRAME"   value="1" />                       <!-- ONLY for the L!NK iframe: SameSite=None; Secure; Partitioned -->
@@ -87,6 +89,18 @@ Easiest: add to `web.config` inside `<aspNetCore>`:
 ```
 When hosted in IIS, **ANCM sets the listening URL** — the app's own port binding (8078) is ignored, so the
 site's IIS bindings (443) are authoritative.
+
+> ♻️ **`dotnet publish` regenerates `web.config`** — so env vars written *into* `web.config` are lost on the next
+> publish. For a repeatable redeploy, set them on the **app pool** instead (they persist across publishes):
+> `appcmd set config -section:system.applicationHost/applicationPools /+"[name='<pool>'].environmentVariables.[name='OPS_CONFIG',value='ops.config.<tenant>.json']" /commit:apphost`.
+> The local-rehearsal script below does exactly this. Redeploy = re-`dotnet publish` to the same folder (drop a
+> `app_offline.htm` first so the running app releases `Ops.dll`) and recycle the pool.
+
+> 🧪 **Rehearse the whole thing locally first.** `deploy-local-iis-demoerp.ps1` (repo root, run **elevated**,
+> once) installs IIS, checks the Hosting Bundle, grants the app-pool identity `db_owner` on the demoerp ops DB,
+> sets `OPS_ROOT`/`OPS_CONFIG` as **pool env vars**, and creates an `http://localhost:8080` site pointing at
+> `server\publish\`. `redeploy-demoerp.bat` is the minimal-effort redeploy. The production steps here are the
+> same shape plus a 443 TLS binding + `OPS_HTTPS=1`. Both helper scripts hold paths only — no secrets.
 
 ## 6. HTTP→HTTPS redirect + HSTS
 - The app emits **HSTS** (`Strict-Transport-Security`) on HTTPS responses when `OPS_HTTPS=1`, and honors
@@ -114,8 +128,8 @@ If you front the app with a separate public reverse proxy for customers, expose 
 ## Tenancy (multiple customers)
 Config-driven, **one deploy per customer**: same binaries, each customer runs its own IIS site (or app pool)
 pointed at its own `OPS_ROOT` + `ops.config.<tenant>.json` (own server/creds/`opsDb`/`stations[]`/branding/
-`erpApi`) and its own `pgsops` database. Nothing is hardcoded, so isolation is structural (separate process +
-separate DB) and there is no tenant code to maintain. One customer = one `pgsops` DB shared across all its
+`erpApi`) and its own `erpops` database. Nothing is hardcoded, so isolation is structural (separate process +
+separate DB) and there is no tenant code to maintain. One customer = one `erpops` DB shared across all its
 branches (branches are rows tagged by the `station` column, not a DB per branch).
 
 ## Notes

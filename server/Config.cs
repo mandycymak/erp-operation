@@ -5,12 +5,12 @@ namespace Ops;
 // Loaded ONCE at startup (mirrors serve-ops.ps1 lines 13-53). Immutable for the process lifetime, so it is
 // safe to read concurrently from every request thread. Everything deployment-specific comes from
 // ops.config.json (or ops.config.<tenant>.json); DB_*/OPS_*/SWIVEL_* env vars override it for headless deploys.
-// Each customer/tenant runs its own instance pointed at its own config + its own pgsops DB (see the plan).
+// Each customer/tenant runs its own instance pointed at its own config + its own erpops DB (see the plan).
 public static class Config
 {
     public static string RepoRoot { get; private set; } = "";
 
-    // ---- ops (pgsops) connection: the web tier reads/writes ONLY pgsops (two-server: may differ from the ERP) ----
+    // ---- ops (erpops) connection: the web tier reads/writes ONLY erpops (two-server: may differ from the ERP) ----
     public static string OpsServer { get; private set; } = "";
     public static string OpsDb { get; private set; } = "";
     public static string ConnStr { get; private set; } = "";
@@ -83,7 +83,7 @@ public static class Config
         _srcServer = server;
         _srcAuthClause = auth == "sql" ? $"User ID={user};Password={password}" : "Integrated Security=True";
 
-        // ops (pgsops) server may differ from the source ERP (two-server mode); falls back to the source.
+        // ops (erpops) server may differ from the source ERP (two-server mode); falls back to the source.
         OpsDb = EnvOrConfig("DB_OPS_DB", (string?)cfg["opsDb"]);
         OpsServer = NonEmpty(EnvOrConfig("DB_OPS_SERVER", (string?)cfg["opsServer"]), server);
         var opsAuth = NonEmpty(EnvOrConfig("DB_OPS_AUTH", (string?)cfg["opsAuth"]), auth);

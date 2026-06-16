@@ -15,7 +15,7 @@ Open it at **http://localhost:8079/** (demo) and sign in.
 
 > *"What must I do **today** to keep each live shipment on schedule, and where is cash leaking?"*
 
-This is an **operational** tool, not an analytics dashboard (that is its sibling, pgs-dashboard). It looks at
+This is an **operational** tool, not an analytics dashboard (that is its sibling, erp-dashboard). It looks at
 **active shipments only** — never history — and turns each one into a **traffic light** against a configurable
 **milestone matrix**: what should have happened by now, what has, and what is overdue. It also runs the
 **draft document workflow** that gets a customer to agree the House BL / HAWB before you issue it to the ERP.
@@ -95,6 +95,12 @@ Click a card to open the drawer:
 - **Arrangements** — who to contact (consignee/shipper with `tel:`/`mailto:` from the ERP), plus your own
   **Trucker / Broker / Warehouse / Customer** tasks with status. Stored as notes — no ERP write.
 - **🔔 Remind-me** — set a due date; overdue/today reminders are highlighted and counted in your badge.
+- **ERP files** — the documents the ERP already holds for this shipment (with **Download**), and an **upload
+  box** to send a document straight to the ERP. Pick the document type, choose a PDF/PNG/JPEG (≤5 MB), **Upload**.
+  The box is **always available** (for Sea and Air, whether or not files already exist). Types marked with a
+  **`*`** ("`* clears alert`") will also turn a milestone **green** when uploaded — that's the fast way to clear
+  an overdue document alert. (The document types come from the admin **Documents** tab; keep them matched to the
+  ERP.)
 
 ---
 
@@ -215,7 +221,8 @@ fix it, and **Save changes to ERP** — don't let bad source data flow into the 
 - **My Tasks badge lit:** clear **Draft reviews**, then reminders.
 - **A draft says "customer replied":** review the diff and message → Agree → Issue.
 - **An inbound booking arrives:** Assign it to start pre-arrival prep.
-- **A step done but light still amber/red:** **Tick & Confirm** it.
+- **A step done but light still amber/red:** **Tick & Confirm** it — or, if a **document** is the missing
+  evidence, upload it in the drawer's **ERP files** box (a `*` type clears the alert on upload).
 - **You spot a DUMMY/ZZZ code or wrong source data:** open **Edit ERP data** (✎), fix it, Save to ERP.
 - **Old reds under All-dates:** chase overdue invoicing / delivery / detention — that's the cash leak.
 
@@ -223,6 +230,11 @@ fix it, and **Save changes to ERP** — don't let bad source data flow into the 
 
 ## 12. Good to know
 
+- **Language.** The screen can be shown in **English, 中文 (Simplified Chinese), or 日本語 (Japanese)** — use the
+  **language picker** in the top bar (next to the theme button). Your admin can set your **default** language on
+  your profile, and you can switch any time on your own device; the choice sticks. Only the **captions** change —
+  shipment data and the bills stay in English (the working language of the documents), so you always see the real
+  values. Don't worry about losing anything: English is one click away.
 - **Signing in is by email** (your work email + password). If your company uses **SWIVEL L!NK**, open the Control
   Tower from L!NK and you're signed in automatically — same account, matched on your email; no separate password.
 - **Dates are always ISO** `yyyy-mm-dd` — display, input, and storage. Type dates in that format.

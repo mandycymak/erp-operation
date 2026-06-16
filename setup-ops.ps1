@@ -1,11 +1,11 @@
 <#
   setup-ops.ps1
-  Creates the operational-state database (default 'pgsops') with the 6 control-tower
+  Creates the operational-state database (default 'erpops') with the 6 control-tower
   tables and indexes that power the listener + UI (see BLUEPRINT.md §1, §2, §4):
     milestone_baselines · shipment_alerts · milestone_def · milestone_evidence_map
     detention_watch · milestone_event_log
   Idempotent: safe to re-run (creates DB/tables/indexes only if missing).
-  Source station databases are NEVER modified — all writes go to pgsops only.
+  Source station databases are NEVER modified — all writes go to erpops only.
 #>
 param([string]$ConfigPath = (Join-Path $PSScriptRoot "ops.config.json"))
 $ErrorActionPreference = "Stop"
@@ -17,7 +17,7 @@ $user     = EnvOrConfig "DB_USER"     $cfg.user
 $password = EnvOrConfig "DB_PASSWORD" $cfg.password
 $opsDb    = EnvOrConfig "DB_OPS_DB"   $cfg.opsDb
 $authClause = if ($auth -eq 'sql') { "User ID=$user;Password=$password" } else { "Integrated Security=True" }
-# Optional separate OPS connection (two-server mode): pgsops can live on a different server than the read-only
+# Optional separate OPS connection (two-server mode): erpops can live on a different server than the read-only
 # source ERP. Falls back to the source connection when not configured (single-server, backward compatible).
 $opsServer   = EnvOrConfig "DB_OPS_SERVER"   $cfg.opsServer;   if (-not ("$opsServer".Trim()))   { $opsServer = $server }
 $opsAuth     = EnvOrConfig "DB_OPS_AUTH"     $cfg.opsAuth;     if (-not ("$opsAuth".Trim()))     { $opsAuth = $auth }
@@ -295,7 +295,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_evt_pic_time' AND object
 #  CROSS-STATION INBOUND BOOKING FEED (publish/subscribe fan-in; see plan + project-summary key finding 5)
 #  An ORIGIN station publishes its outbound bookings (whose destination office is another station) into the
 #  central feed; the destination station's app reads ONLY rows addressed to it (dest_station=@stationCode).
-#  No station ever queries another station's ERP; the request path reads only these small pgsops tables.
+#  No station ever queries another station's ERP; the request path reads only these small erpops tables.
 # ============================================================================================================
 
 # --- X.1 station_dim — our own group offices (the destination vocabulary). Seeded from each source ERP's

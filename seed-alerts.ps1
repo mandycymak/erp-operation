@@ -1,7 +1,7 @@
 <#
   seed-alerts.ps1  — DEMO data seeder (stand-in for the deferred listener).
   Evaluates a batch of real station shipments (as of a reference date) and UPSERTs them into
-  pgsops.shipment_alerts so the worklist UI has live-looking content. Reuses ops-eval.ps1 (the same
+  erpops.shipment_alerts so the worklist UI has live-looking content. Reuses ops-eval.ps1 (the same
   evaluator eval-shipment.ps1 / the future listener use). Source ERP is READ-ONLY.
   Usage: .\seed-alerts.ps1 [-Station pgshkg] [-StationCode HKG] [-AsOf 2023-04-10] [-Limit 60] [-LeadDays 4]
 #>
@@ -168,7 +168,7 @@ $contactByCode=$custByCode   # per-shipment contact card reads .contact1/.phone1
 
 # ---- company_dim: upsert code->name for every involved company. Names were already resolved above in the
 #      single custsub seek (no extra master query here), so the picker shows real names while the request
-#      path only ever reads the small pgsops.company_dim. ----
+#      path only ever reads the small erpops.company_dim. ----
 if($allCodes.Count){
   $compMerge=@"
 MERGE dbo.company_dim AS t USING (SELECT @code code) s ON t.code=s.code

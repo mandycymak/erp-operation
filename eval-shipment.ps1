@@ -4,7 +4,7 @@
   milestone card. Proves the completion model end-to-end without the scheduled listener:
     qualify (data-driven: not every milestone applies) -> complete via ERP DATA FIRST
     -> else PIC/EDI EVIDENCE (secondary) -> else PLANNED due-window (fixed offset / anchor proxy) -> light.
-  Reads milestone_def + milestone_evidence_map from pgsops; reads ONE blhead row (+PIC) from a station DB.
+  Reads milestone_def + milestone_evidence_map from erpops; reads ONE blhead row (+PIC) from a station DB.
   Source ERP is READ-ONLY.  Usage: .\eval-shipment.ps1 [-Station pgshkg] [-AsOf 2023-04-10] [-JobNo HKGSE2300xxx]
 #>
 param(

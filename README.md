@@ -1,11 +1,11 @@
-# pgs-operation — Control Tower & Operational KPI Application
+# erp-operation — Control Tower & Operational KPI Application
 
 A lightweight, event-driven operational control tower for a freight forwarding ERP group. It tracks
 time-sensitive shipment milestones (Air + Sea, Export + Import), raises traffic-light alerts on the operator's
 daily worklist and the management dashboard, and surfaces cash-flow leakage and staff-performance KPIs — while
-**reading the core ERP read-only** and storing its own small state in a new `pgsops` database.
+**reading the core ERP read-only** and storing its own small state in a new `erpops` database.
 
-Sibling project: **`..\pgs-dashboard`** (financial / sales analytics). `pgs-operation` deliberately reuses that
+Sibling project: **`..\erp-dashboard`** (financial / sales analytics). `erp-operation` deliberately reuses that
 project's stack and proven helpers (PowerShell HttpListener + vanilla JS, the connection/retry/schema idioms,
 and the follow-up / @-mention collaboration subsystem).
 
@@ -15,10 +15,12 @@ and the follow-up / @-mention collaboration subsystem).
 |---|---|
 | **`BLUEPRINT.md`** | **The authoritative, approved design** — all 6 tables, the milestone matrix, the listener engine, the KPI queries, and the person-focused worklist. Start here. |
 | **`PROJECT-SUMMARY.md`** | **What is actually built and proven** (the session log / status snapshot). Read this when resuming. |
-| `docs/BUSINESS-GUIDE.md` | End-user guide — worklist, drawer, Tick & Confirm, drafts, Edit ERP data, inbound feed. |
-| `docs/TECHNICAL-GUIDE.md` | Install / run / config / users & roles / ERP integration / SWIVEL L!NK / VPN / troubleshooting. |
-| `docs/DEVELOPER-GUIDE.md` | Coding standards + back-/front-end conventions for extending the app. |
-| `docs/SQL-README.md` | The `pgsops` schema + the verified ERP source field map. |
+| `docs/BUSINESS-GUIDE.md` | End-user guide — worklist, drawer, Tick & Confirm, drafts, Edit ERP data, inbound feed, **UI language switch**. |
+| `docs/TECHNICAL-GUIDE.md` | Install / run / config / users & roles / ERP integration / SWIVEL L!NK / VPN / **i18n** / troubleshooting. |
+| `docs/DEVELOPER-GUIDE.md` | Coding standards + back-/front-end conventions, **the .NET web tier**, and **how to add a UI language**. |
+| `docs/SQL-README.md` | The `erpops` schema + the verified ERP source field map. |
+| **`docs/IIS-DEPLOY.md`** | **Deploying the .NET app to a real server (IIS + HTTPS).** Read this to put it in production. |
+| **`docs/CUTOVER.md`** | Strangler-flip runbook: retiring `serve-ops.ps1` for the .NET server (parity diff, click-test, L!NK URL flip). |
 | `CLAUDE.md` | Project context for Claude Code: hard constraints (gotchas), the reuse map, repo layout. Auto-loaded in a Claude Code session. |
 
 ## Status
@@ -26,18 +28,30 @@ and the follow-up / @-mention collaboration subsystem).
 **Working app — built and proven against real ERP data** on two test environments (live `fm3k*` group + demoerp).
 Air + Sea, Export + Import: arrival-driven worklist with traffic-light milestones, multi-station, cross-station
 inbound feed, the draft HBL/HAWB customer-agreement loop, **Edit ERP data → live `/booking/update`**, and
-**upload-a-document-to-clear-a-milestone**. Sign-in is **by email**, with a seam for **SWIVEL L!NK** OAuth
-sign-on. The scheduled `listener-engine.ps1` is still deferred (`seed-alerts.ps1` stands in for it). See
-`PROJECT-SUMMARY.md` for the running status and `docs/` for the guides.
+**always-on ERP document upload** (upload any configured doctype; ones that also clear a milestone are flagged).
+The UI is **localized — English + Simplified Chinese (中文) + Japanese (日本語)** with a per-user default and a
+one-click switch. Sign-in is **by email**, with a seam for **SWIVEL L!NK** OAuth sign-on.
+
+**The web tier now runs as an ASP.NET Core (.NET 10) app in [`server/`](server/)** (multi-threaded, per-request
+scope isolation). The legacy PowerShell `serve-ops.ps1` is kept for rollback. The off-request-path PowerShell
+jobs (`seed-alerts.ps1`, `publish-bookings.ps1`, …) still run under Task Scheduler. The scheduled
+`listener-engine.ps1` is still deferred (`seed-alerts.ps1` stands in for it). See `PROJECT-SUMMARY.md` for the
+running status, `docs/` for the guides, and **`docs/IIS-DEPLOY.md` to deploy**.
 
 ## Architecture
 
 ```
-station ERP DBs (READ-ONLY) --listener-engine.ps1 (Air 2h / Sea 3x day)--> pgsops (shipment_alerts, milestone_*, detention_watch)
-                                                                                |  serve-ops.ps1 (HttpListener + JSON API)
+station ERP DBs (READ-ONLY) --seed-alerts.ps1 (listener stand-in) / Task Scheduler--> erpops (shipment_alerts, milestone_*, detention_watch)
+                                                                                |  server/ (ASP.NET Core .NET 10, JSON API)  [serve-ops.ps1 = legacy/rollback]
                                                                                 v
-                                                                            browser (index.html / ops.js)
+                                                                            browser (index.html / ops.js / i18n.js + lang/*.json)
 ```
 
-Stack: PowerShell 5.1 + .NET SqlClient/HttpListener · vanilla JS (no build step) · SQL Server over the Swivel
-VPN. **The VPN must be up for any DB work**, and every connection string keeps `Packet Size=512`.
+Stack: **ASP.NET Core .NET 10** (web tier; raw ADO `Microsoft.Data.SqlClient`) · PowerShell 5.1 + .NET SqlClient
+(off-path seeders) · vanilla JS, **no build step** (client + the i18n layer) · SQL Server over the Swivel VPN.
+**The VPN must be up for any DB work**, and every connection string keeps `Packet Size=512`.
+
+## Run / deploy (quick pointers)
+- **Dev (Kestrel):** from `server/`, `OPS_CONFIG=ops.config.network.json OPS_HTTP_PORT=8079 dotnet run -c Release` → `http://localhost:8079/`.
+- **Production (IIS + HTTPS):** `dotnet publish -c Release -o publish`, then follow **`docs/IIS-DEPLOY.md`**.
+- **Local IIS rehearsal (demoerp):** run `deploy-local-iis-demoerp.ps1` (elevated) once; redeploy with `redeploy-demoerp.bat`.

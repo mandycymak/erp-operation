@@ -1,14 +1,14 @@
 # Control Tower — SQL & Data-Model Reference
 
-**Audience:** developers and SQL analysts who need to understand the `pgsops` operational schema, how it is
+**Audience:** developers and SQL analysts who need to understand the `erpops` operational schema, how it is
 populated from the source ERP, and the **field map** from logical document boxes to real ERP `table.column`.
 
 This is the companion to [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md). It documents two things: (1) the small,
-writable `pgsops` state database the app reads, and (2) the **read-only** source ERP columns the listener /
+writable `erpops` state database the app reads, and (2) the **read-only** source ERP columns the listener /
 seeder / draft-document engine pull from. The field map is the project's main unknown — every mapping below
 was **verified by a direct SQL query** against a live station before it was trusted.
 
-> 🔑 **The source ERP databases are READ-ONLY.** All writes go to `pgsops` (or the gitignored JSON note
+> 🔑 **The source ERP databases are READ-ONLY.** All writes go to `erpops` (or the gitignored JSON note
 > store). Never `INSERT`/`UPDATE`/`ALTER` an ERP table.
 
 > 🔑 **`Packet Size=512` on every connection string.** The VPN's small MTU black-holes default 8 KB TDS
@@ -18,26 +18,31 @@ was **verified by a direct SQL query** against a live station before it was trus
 
 ## 1. The two databases
 
-| | Source ERP (per station) | `pgsops` (operational state) |
+| | Source ERP (per station) | `erpops` (operational state) |
 |---|---|---|
-| Examples | `fm3khkg`, `fm3ksin`, … / `blhead`, `awbhead` | `pgsops`, `pgsops_net`, `demoerp` |
+| Examples | `fm3khkg`, `fm3ksin`, … / `blhead`, `awbhead` | `erpops`, `erpops_net`, `demoerp` |
 | Access | **read-only** | read + write |
 | Collation | Chinese_HK | Latin1 |
 | Reached on | listener / seeder / draft-creation only — **never** a UI request path | every UI request |
 | Created by | the ERP vendor | `setup-ops.ps1` (idempotent) |
 
 > ⚠️ **Cross-DB collation.** The ops DB is Latin1, the station DBs are Chinese_HK. Any text join **across
-> databases** needs `COLLATE DATABASE_DEFAULT`. Within `pgsops` (all tables same DB) no collation clause is
+> databases** needs `COLLATE DATABASE_DEFAULT`. Within `erpops` (all tables same DB) no collation clause is
 > needed.
 
-**Two-server mode.** The read-only ERP and the writable `pgsops` may live on different servers (the network
-ERP login cannot `CREATE DATABASE`, so `pgsops` is created locally on `localhost\SQLEXPRESS`). Config keys
+**Two-server mode.** The read-only ERP and the writable `erpops` may live on different servers (the network
+ERP login cannot `CREATE DATABASE`, so `erpops` is created locally on `localhost\SQLEXPRESS`). Config keys
 `opsServer`/`opsAuth`/`opsUser`/`opsPassword` route the `master` + ops DB to the ops server; everything else
 goes to the source. Single-server configs omit them and are unchanged.
 
+> ℹ️ **Not in the DB.** Logins + row-level scope live in **`users.json`** (gitignored), not SQL — including the
+> per-user UI **`language`** preference (`"" | en | zh-Hans | ja`). The translation dictionaries are flat
+> `lang/<code>.json` files, not tables. So i18n adds **no** `erpops` schema; the stored shipment data and note
+> text are never translated.
+
 ---
 
-## 2. `pgsops` tables (created by `setup-ops.ps1`, idempotent)
+## 2. `erpops` tables (created by `setup-ops.ps1`, idempotent)
 
 ### Operational core
 
@@ -45,7 +50,7 @@ goes to the source. Single-server configs omit them and are unchanged.
 |---|---|---|
 | `shipment_alerts` | one row per **active conveyance/shipment** (keyed `job_no`) | the worklist source — traffic-light status, arrival bucket, party names, cargo profile, bills, route. **The UI reads only this.** |
 | `milestone_def` | one row per milestone (keyed `mode`/`bound`/`milestone_code`) | config-as-data: the milestone matrix (Sea Export/Import + Air), each with mode/bound/seq/phase, active flag, and **alert timing** (`baseline` / fixed offset / `none`). |
-| `milestone_evidence_map` | one row per milestone→evidence rule | maps a milestone to the ERP/PIC/EDI evidence (`documentTypeCode`) that auto-closes it. |
+| `milestone_evidence_map` | one row per milestone→evidence rule | maps a milestone to the ERP/PIC/EDI evidence (`documentTypeCode`) that auto-closes it. Its distinct `documentTypeCode` values are also the **ERP-files upload** picker list (the API returns them as `uploadDoctypes`; the subset that would clear a milestone on a given shipment is `clearableDoctypes`). Maintained on the admin **Documents** tab. |
 | `milestone_baselines` | one row per lane/milestone | 3-year average durations that back the `baseline` alert timing (built by `baseline-refresh.ps1` — **not yet built**; `baseline` falls back to fixed/none until then). |
 | `milestone_event_log` | append-only | every milestone state change (audit). |
 | `detention_watch` | one row per at-risk container | detention/demurrage listing source. |

@@ -8,7 +8,7 @@ L!NK URL flip is a config change), not from a dev box.
 
 The off-request-path PowerShell jobs (`seed-alerts.ps1`, `publish-bookings.ps1`, `seed-station-map.ps1`,
 `seed-ports.ps1`, `seed-milestone-config.ps1`, `register-ops-tasks.ps1`) **stay** under Task Scheduler — they
-only write `pgsops`, so they coexist with the new server unchanged. Only the **web tier** (`serve-ops.ps1`) is
+only write `erpops`, so they coexist with the new server unchanged. Only the **web tier** (`serve-ops.ps1`) is
 retired.
 
 ## What's already verified (so you're not starting cold)
@@ -24,7 +24,7 @@ retired.
   reason for the migration).
 
 ## 1. Run the side-by-side parity diff
-Stand both servers up against the **same `pgsops` DB** in the **same identity mode**, then diff every read.
+Stand both servers up against the **same `erpops` DB** in the **same identity mode**, then diff every read.
 
 ```powershell
 # legacy (open mode = no users.json in its root; identity via X-Ops-User)
@@ -83,7 +83,7 @@ correct `<publicBaseUrl>/bl-review/<token>` customer links. Send one test draft 
 - **Keep the off-path PowerShell jobs running** (they are not part of the web tier).
 
 ## Rollback
-The cutover is just a URL/route flip — `serve-ops.ps1` reads the same `pgsops` DB and is unchanged. If anything
+The cutover is just a URL/route flip — `serve-ops.ps1` reads the same `erpops` DB and is unchanged. If anything
 misbehaves, point the proxy / L!NK URL back at the PowerShell server; no data migration is involved (both serve
 the same database).
 

@@ -4,9 +4,15 @@
 Code) on your own PC.** Read this first so your changes match the house style and the next person (or the next
 Claude session) stays consistent.
 
-The single most important rule: **match the existing code; do not re-architect it.** This is a deliberately
-small, no-build, vanilla stack — PowerShell 5.1 + .NET on the server, vanilla ES5-ish JavaScript on the
-client, SQL Server for storage. Keep it that way.
+The single most important rule: **match the existing code; do not re-architect it.** The stack: an **ASP.NET
+Core (.NET 10) web tier in `server/`** (raw ADO, no Dapper), **PowerShell 5.1** off-path seeders, vanilla
+ES5-ish JavaScript on the client (**no build step**), SQL Server for storage. Keep it that way.
+
+> 🏗️ **Web tier = `server/` (.NET); `serve-ops.ps1` = legacy/rollback.** New API work goes in `server/`
+> (`Handlers.*.cs`, one area per file; routes wired in `Program.cs`). Keep `serve-ops.ps1` in **parity** when you
+> touch a shared contract so rollback stays valid — that's why several changes below land in both. JSON casing is
+> **verbatim** (`PropertyNamingPolicy = null`); the client reads exact keys. The **off-path seeders stay
+> PowerShell** (`seed-alerts.ps1`, `publish-bookings.ps1`, `seed-*`).
 
 ---
 
@@ -18,7 +24,7 @@ accurate** — when you change a convention, update them in the same commit. `PR
 actually built and proven; update it when you ship something.
 
 > When adding a feature, point Claude at the relevant `Handle-*` function (server) and the sibling
-> **pgs-dashboard** implementation — most of this app's plumbing was lifted from there and the patterns
+> **erp-dashboard** implementation — most of this app's plumbing was lifted from there and the patterns
 > transfer almost verbatim.
 
 ---
@@ -29,8 +35,8 @@ actually built and proven; update it when you ship something.
 |---|---|
 | **`Packet Size=512` on every connection string** | The VPN MTU black-holes default 8 KB TDS packets on large responses → "semaphore timeout". |
 | **VPN must be up** to hit SQL | The DB hosts are only reachable through the Swivel OpenVPN. |
-| **Source ERP DBs are READ-ONLY** | All writes go to `pgsops` or the gitignored JSON note store. Never `INSERT`/`UPDATE`/`ALTER` an ERP table. |
-| **Single-threaded server** | One `HttpListener` request at a time. Bound every query with `CommandTimeout`; the UI reads only small `pgsops` tables, never the ERP on a request path. |
+| **Source ERP DBs are READ-ONLY** | All writes go to `erpops` or the gitignored JSON note store. Never `INSERT`/`UPDATE`/`ALTER` an ERP table. |
+| **Single-threaded server** | One `HttpListener` request at a time. Bound every query with `CommandTimeout`; the UI reads only small `erpops` tables, never the ERP on a request path. |
 | **Secrets are gitignored** (`ops.config*.json`, `users.json`, `roles.json`, `ops-lists/`, `*.log`, `erp-mock/`) | Credentials / the ERP token / access policy. Commit only `*.example.json`. **Check `git status` before every commit.** |
 | **All SQL is parameterised** | `SqlParameter` / `@name` — never string-build values from user input. |
 | **Row-level scope is the security boundary** | Per-user scope must be AND-ed into *every* data query, not just the visible table. Out-of-scope rows return "not found" — no existence oracle. |
@@ -43,14 +49,17 @@ actually built and proven; update it when you ship something.
 
 | File | Role |
 |---|---|
-| `setup-ops.ps1` | creates the `pgsops` schema (operational + feed + draft-document tables), idempotent, two-server aware |
+| `setup-ops.ps1` | creates the `erpops` schema (operational + feed + draft-document tables), idempotent, two-server aware |
 | `seed-milestone-config.ps1` | the milestone matrix as data (`milestone_def` + starter evidence map) |
 | `ops-eval.ps1` | pure evaluator — `New-ShipContext` / `New-AirContext`, `Eval-Milestones`, the route-point builders (`Get-AirRoutePoints` / `Get-SeaRoutePoints`) |
 | `seed-alerts.ps1` | the listener stand-in (`-Mode Sea\|Air`): reads `blhead`/`awbhead`, batches contacts, computes arrival/cargo/conveyance, upserts `shipment_alerts` |
 | `eval-shipment.ps1` | read-only one-shot card for one shipment (diagnostic) |
 | `seed-station-map.ps1` / `publish-bookings.ps1` | the cross-station inbound feed (identity directory + publisher) |
 | `register-ops-tasks.ps1` | Task Scheduler registration |
-| `serve-ops.ps1` | the web service — auth, JSON API, the draft-document subsystem, static files |
+| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`), `Auth.cs`, `Config.cs`, `Sql.cs`, `Filter.cs`, and `Handlers.*.cs` (one area per file: Worklist/Shipment/Notes/Tasks/Inbound/Erp*/Doc/Admin/Misc). `dotnet publish -c Release` to deploy |
+| `serve-ops.ps1` | the **legacy** web service (rollback) — same routes/contract as `server/`; keep in parity when a shared contract changes |
+| **`i18n.js`** | the client localization layer — `tr(en, ctx?)`, `applyDom()`, `boot()`, `setLang()`, the `SUPPORTED` language list |
+| **`lang/<code>.json`** | UI translation dictionaries (English source string = key). `lang/zh-Hans.json`, `lang/ja.json` |
 | `erp-doc-api.ps1` | the Swivel 3rd-party ERP API client (agree / issue: booking/update, file/upload, event/update; `Build-ErpPatchPayload` / `Invoke-ErpEditPush` for the Edit-ERP-data push) |
 | `erp-edit.html` / `erp-edit.js` / `erp-edit-fields.json` | **Edit ERP data** editor (HBL/AWB-grid layout) + its field dictionary (`writeKey` per field) |
 | `index.html` / `ops.js` / `styles.css` | the operator UI |
@@ -174,6 +183,10 @@ reusing `bl-review.css`'s `@media print`. Returns `$null` (issue proceeds) on an
   generic grid. `collect()`/`diff()` are layout-agnostic (they scan by `data-code`), so a custom layout never
   breaks save/diff.
 - **No native dialogs** for data entry — custom in-page dialogs (no "localhost says").
+- **i18n: wrap user-facing captions in `tr('English text')`** (from `i18n.js`; English source string = the key).
+  Static markup uses `data-i18n` / `data-i18n-title` / `data-i18n-placeholder` / `data-i18n-aria-label`. **Do
+  NOT** translate ERP/company data, free-text notes, or ISO dates. New strings must be added to every
+  `lang/<code>.json`. See §8.
 
 ---
 
@@ -188,7 +201,7 @@ auto-generated PDF.
 
 ## 6. Data-model cheat-sheet
 
-So your SQL is correct, read [SQL-README.md](SQL-README.md): the `pgsops` tables, the **bound-aware** sea
+So your SQL is correct, read [SQL-README.md](SQL-README.md): the `erpops` tables, the **bound-aware** sea
 fields (`onboard2`/`departure2`/`vessel_2`), and the verified Air field map (`to1`/`deli`/`to3` routing,
 `dest_name`, `desc2` goods, `mark2` marks, `dimension`, `handling`, `t_rece_qty`, `wgt_unit`, the PPD/COLL
 terms). New HTML pages need `<meta charset="utf-8">`.
@@ -206,3 +219,33 @@ terms). New HTML pages need `<meta charset="utf-8">`.
 - [ ] `.ps1` ASCII-only; dates ISO; client list fields coerced with `arr()`.
 - [ ] Test server-side changes on a **temp port** so a running instance is undisturbed.
 - [ ] Update `CLAUDE.md` / `BLUEPRINT.md` / `PROJECT-SUMMARY.md` if a convention or capability changed.
+- [ ] New UI captions wrapped in `tr()` / `data-i18n*` **and** added to every `lang/<code>.json` (§8).
+
+---
+
+## 8. Adding a UI language (i18n)
+
+The localization layer is **no-build, client-side, English-source-as-key** (`i18n.js`): `tr(en)` returns the
+translation of the English string, or the English itself if missing — so a partial dictionary never blanks the
+UI. Only **operator-facing** pages are localized today (`index.html`, `ops.js`, `login.html`); admin / erp-edit /
+doc-editor / public bl-review are still English (the framework is ready for them).
+
+**To add a language (e.g. Spanish `es`):**
+
+1. **Dictionary** — copy `lang/zh-Hans.json` to `lang/es.json` and translate the values (keys stay the exact
+   English source strings). Keep the gettext context key form `lens<U+0004>All` as the **escaped JSON text**
+   `lens0004All` — a *raw* control byte is invalid JSON (it silently fails the fetch → falls back to English).
+   Validate it parses with the same key count as the others.
+2. **Register it** — add one entry to `SUPPORTED` in `i18n.js` (`'es': 'Español'`). `norm()` already maps a
+   browser `navigator.language` like `es-MX` to `es` by primary subtag, so auto-detect works with no further edit.
+3. **Font (only if non-Latin)** — add a `html[lang="es"] body { font-family: … }` rule in `styles.css`
+   (CJK languages need this; Latin ones use the default stack). JP/SC already have rules.
+4. **Server allow-list** — add the code in `server/Handlers.Admin.cs` (`AdminUserUpsert`) **and** `serve-ops.ps1`
+   so admins can set it as a user's profile default; add an `<option>` in the `admin-ops.html` Users form.
+5. **Layout check** — European languages run ~15–30 % longer than English (CJK is *shorter*), so eyeball the
+   longest captions (worklist buckets, the filter row) for overflow; let tight cells wrap/ellipsis if needed.
+
+**Resolution order** (`i18n.js` `resolve()`): localStorage `lang` (per-device pick) → profile `ME.language` →
+`navigator.language` → `en`. `setLang()` persists the pick and reloads. English needs **no** dictionary fetch
+(the HTML ships English). Verify with headless Edge: `I18N.boot('es').then(...)` then read a translated node, and
+confirm a missing key falls back to English.

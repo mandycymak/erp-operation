@@ -1,8 +1,8 @@
-# pgs-operation — Control Tower & Operational KPI Application: Blueprint
+# erp-operation — Control Tower & Operational KPI Application: Blueprint
 
 ## Context
 
-`pgs-dashboard` is a **financial/sales analytics** dashboard: a nightly job (`refresh-warehouse.ps1`)
+`erp-dashboard` is a **financial/sales analytics** dashboard: a nightly job (`refresh-warehouse.ps1`)
 consolidates 23 station ERP DBs into the `pgsrpt` warehouse, and a single-threaded PowerShell HttpListener
 service (`serve-dashboard.ps1`) serves a vanilla-JS UI. It answers *"how much did we ship and earn"*.
 
@@ -12,13 +12,13 @@ on schedule, and where is cash leaking"*. This is an **operational control tower
 **Key finding from code exploration that shapes the whole design:** the milestone/event fields the matrix
 needs (`epdate`, `pdate`, `eta`, `etd`, ATD, `ddate`, `ad_date`, `comp_date`, `cargoready`, `cargorece`,
 `declaration_flag`, `broker_name`, `trucker_name`, `wh_code`) and the log tables (PIC, `print_log`, `sendlog`,
-event file, EDI log) **do not exist in `pgsrpt`** and are **not referenced anywhere** in pgs-dashboard. The
-warehouse carries only money/volume/geo/agent/liner. Therefore `pgs-operation` **reads the source station ERP
+event file, EDI log) **do not exist in `pgsrpt`** and are **not referenced anywhere** in erp-dashboard. The
+warehouse carries only money/volume/geo/agent/liner. Therefore `erp-operation` **reads the source station ERP
 DBs directly** (the same cross-DB pattern `refresh-warehouse.ps1` already uses), and stores its own small
-operational state in a **new `pgsops` database** — never altering core ERP tables.
+operational state in a **new `erpops` database** — never altering core ERP tables.
 
 **Decisions locked with the user:**
-1. **Stack = reuse.** PowerShell HttpListener + vanilla JS, new `pgsops` MSSQL DB on the same server. No build
+1. **Stack = reuse.** PowerShell HttpListener + vanilla JS, new `erpops` MSSQL DB on the same server. No build
    step; the follow-up/auth/ETL/scheduling code lifts over. ("JSONB" in the spec → MSSQL `NVARCHAR(MAX)` + `OPENJSON`.)
 2. **Field mapping = config-driven + admin screen.** The milestone matrix is data (rules), shipped with the
    spec's field names as defaults; an admin screen maps real ERP columns/doc-types — so a later-created document
@@ -30,7 +30,7 @@ operational state in a **new `pgsops` database** — never altering core ERP tab
 
 ## Deployment recommendation (the meta-question you asked)
 
-- **Create `pgs-operation` as a sibling project** (new folder next to `pgs-dashboard`). Do **not** embed in the
+- **Create `erp-operation` as a sibling project** (new folder next to `erp-dashboard`). Do **not** embed in the
   dashboard — operations has a different cadence (2h/3×day vs nightly), a different audience (operators/ops
   managers vs sales/finance), and a different data source (live ERP vs `pgsrpt`). Coupling them would drag the
   control tower into the analytics release cycle and scope model.
@@ -38,18 +38,18 @@ operational state in a **new `pgsops` database** — never altering core ERP tab
   `Test-Transient`, `RunQ`/`RunMulti`, `Table-Exists`/`Column-Exists` with `@(...)` guards), the
   `Send-Json`/`Send-File` `no-store` plumbing, the session/auth model, and the **entire follow-up subsystem**
   (your "Tick & Confirm" + communication requirement is already built — see §1.4).
-- **`pgsops` is a new DB on the same SQL Server** (`18.136.126.101,1438`, over the VPN, `Packet Size=512`).
+- **`erpops` is a new DB on the same SQL Server** (`18.136.126.101,1438`, over the VPN, `Packet Size=512`).
   All new tables live here. The source station DBs stay **read-only**.
-- **Close this `pgs-dashboard` chat and start a fresh chat in the new `pgs-operation` folder.** Reasons:
+- **Close this `erp-dashboard` chat and start a fresh chat in the new `erp-operation` folder.** Reasons:
   (a) the working directory / git repo will be the new project, so tools resolve correctly; (b) a clean context
   keeps the assistant focused on operations, not analytics; (c) this blueprint file is the handoff — open the new
-  chat with *"read this blueprint"*. Keep `pgs-dashboard` running unchanged.
+  chat with *"read this blueprint"*. Keep `erp-dashboard` running unchanged.
 
 ---
 
 ## 1. Close Alert — baseline storage + active tracking
 
-Two tables in `pgsops`, created with the idempotent `IF OBJECT_ID(...) IS NULL CREATE / IF COL_LENGTH(...) IS
+Two tables in `erpops`, created with the idempotent `IF OBJECT_ID(...) IS NULL CREATE / IF COL_LENGTH(...) IS
 NULL ALTER` pattern from `setup-warehouse.ps1`. **The baseline is reference-only** (the spec says "if there is
 no such information is still ok") — when a lane/carrier has no baseline, the milestone falls back to its fixed
 SLA rule or to *no time-gate* (status stays Green until the milestone is missed outright).
@@ -498,18 +498,18 @@ built. Lift it wholesale, keyed by `job_no` instead of company code:
 
 ---
 
-## Files to create (all new, in `pgs-operation/`)
+## Files to create (all new, in `erp-operation/`)
 
-| File | Role | Reuses from pgs-dashboard |
+| File | Role | Reuses from erp-dashboard |
 |---|---|---|
-| `setup-ops.ps1` | Create `pgsops` schema (the 6 tables above) idempotently | `setup-warehouse.ps1` guard idiom |
+| `setup-ops.ps1` | Create `erpops` schema (the 6 tables above) idempotently | `setup-warehouse.ps1` guard idiom |
 | `listener-engine.ps1` | The `-Mode Sea\|Air` listener (§3.1) | `ConnStr`/`Test-Transient`/`Table-Column-Exists` from `refresh-warehouse.ps1` |
 | `baseline-refresh.ps1` | Monthly 3-yr baselines (§3.3) | `summary_*` materialize pattern |
 | `register-ops-tasks.ps1` | Schedule Air-2h / Sea-3×day / baseline-monthly | `register-nightly-task.ps1` |
 | `serve-ops.ps1` | HttpListener API: worklist, alerts, KPIs, notes/roster/my-tasks, admin | `serve-dashboard.ps1` (Send-Json/File, sessions, Handle-Roster/Followup*/Admin) |
 | `index.html` / `ops.js` / `styles.css` | Vanilla-JS UI: worklist, manager plan, det/dem, my-tasks | `app.js` (`arr()`/`arrFields()`, mention popup, `wireFollowupDone`, badge) |
 | `admin-ops.html` | Milestone-def / evidence-map / alias-map editors (§2.5) | `admin.html` |
-| `ops.config.json` (gitignored) | server/auth/`pgsops` name/station list (env `DB_*` override) | `warehouse.config.json` + `EnvOrConfig` |
+| `ops.config.json` (gitignored) | server/auth/`erpops` name/station list (env `DB_*` override) | `warehouse.config.json` + `EnvOrConfig` |
 | `users.json`/`roles.json` | auth/scope (can share the dashboard's) | as-is |
 
 ## Verification (when built)
@@ -534,4 +534,4 @@ built. Lift it wholesale, keyed by `job_no` instead of company code:
 - The stable `job_no` key across stations (the dashboard notes switch-bill shipments have **no shared key**
   across station DBs — operations tracking is per-station-leg, same limitation).
 - Free-time days & daily rates per destination port × carrier for detention/demurrage.
-- Whether `pgs-operation` shares the dashboard's `users.json`/`roles.json` or maintains its own.
+- Whether `erp-operation` shares the dashboard's `users.json`/`roles.json` or maintains its own.

@@ -1,7 +1,7 @@
 <#
   seed-station-map.ps1  — build the station identity directory that powers the cross-station inbound feed.
 
-  Populates two pgsops tables (off the request path):
+  Populates two erpops tables (off the request path):
     station_dim         — our group offices (from each source ERP's dbo.asw_station_list + config stations[]).
     station_route_map   — resolves an ORIGIN booking's destination code -> the importing station.
 
@@ -14,7 +14,7 @@
     3. applies config-driven POD fallback (routePodMap) and manual overrides (routeManual),
     4. prints a DISCOVERY REPORT of cross-station codes it could NOT map (with names), for admin tagging.
 
-  Source ERP is READ-ONLY; all writes go to pgsops. Two-server aware (mirrors seed-alerts.ps1).
+  Source ERP is READ-ONLY; all writes go to erpops. Two-server aware (mirrors seed-alerts.ps1).
   Usage: .\seed-station-map.ps1 [-ConfigPath .\ops.config.json] [-Mode Sea|Air|Both]
 #>
 param(

@@ -387,7 +387,7 @@ function refreshAll() { loadWorklist(); loadTasks(); loadInbound(); }
 
 // ---------- inbound cross-station bookings (pre-arrival) ----------
 // Shown on the Import bound only: bookings created at OTHER stations whose destination is OUR station,
-// so we coordinate from booking -> delivery. Reads only the pgsops feed; assign locally to an operator.
+// so we coordinate from booking -> delivery. Reads only the erpops feed; assign locally to an operator.
 // Grouped by booking STAGE (what the origin has done so far), not urgency — so the operator sees what is coming
 // before it is EDI'd to them: a fresh booking (no schedule) vs one where the vessel/flight is already arranged.
 const IB_STAGES = [

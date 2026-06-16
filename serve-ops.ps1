@@ -1,6 +1,6 @@
 ﻿<#
   serve-ops.ps1  — Control Tower web service (HttpListener + JSON API + static files).
-  Reads ONLY the small pgsops tables (shipment_alerts) — never the ERP on a request path.
+  Reads ONLY the small erpops tables (shipment_alerts) — never the ERP on a request path.
   Lifts serve-dashboard.ps1's proven plumbing: Send-Json/Send-File (no-store), RunQ retry,
   the follow-up subsystem (here keyed by job_no), and the SQL-free-endpoints-before-$cn rule.
 
@@ -17,7 +17,7 @@ function EnvOrConfig($n,$v){ $e=[Environment]::GetEnvironmentVariable($n); if($e
 $server=EnvOrConfig "DB_SERVER" $cfg.server; $auth=EnvOrConfig "DB_AUTH" $cfg.auth
 $user=EnvOrConfig "DB_USER" $cfg.user; $password=EnvOrConfig "DB_PASSWORD" $cfg.password; $opsDb=EnvOrConfig "DB_OPS_DB" $cfg.opsDb
 if($Port -le 0){ if($env:DB_PORT -and $env:DB_PORT.Trim()){ $Port=[int]$env:DB_PORT } else { $Port=[int]$cfg.port } }
-# the web service reads ONLY pgsops, so it connects to the OPS server (may differ from the source ERP; falls back to source)
+# the web service reads ONLY erpops, so it connects to the OPS server (may differ from the source ERP; falls back to source)
 $opsServer=EnvOrConfig "DB_OPS_SERVER" $cfg.opsServer; if(-not ("$opsServer".Trim())){ $opsServer=$server }
 $opsAuth=EnvOrConfig "DB_OPS_AUTH" $cfg.opsAuth; if(-not ("$opsAuth".Trim())){ $opsAuth=$auth }
 $opsUser=EnvOrConfig "DB_OPS_USER" $cfg.opsUser; if(-not ("$opsUser".Trim())){ $opsUser=$user }
@@ -382,7 +382,7 @@ function Test-JobScope($row){
   $true
 }
 
-# ---------------- SQL handlers (read only the small pgsops tables) ----------------
+# ---------------- SQL handlers (read only the small erpops tables) ----------------
 function Handle-Roster($cn){
   if($script:AuthOn){
     # auth mode: roster = the app's credential list. Operators see only colleagues sharing >=1 team
@@ -407,7 +407,7 @@ function Handle-Companies($cn){
   $rows=@(RunQ $cn "SELECT c.code, c.name FROM dbo.company_dim c WHERE EXISTS (SELECT 1 FROM dbo.shipment_alerts a WHERE a.job_status='active' AND c.code IN (a.cust_code,a.shipper_code,a.consignee_code,a.agent_code,a.ctrl_code) $sc) ORDER BY CASE WHEN NULLIF(c.name,'') IS NULL THEN 1 ELSE 0 END, c.name, c.code" $p)
   @{ companies=@($rows|ForEach-Object{ [pscustomobject]@{ code=[string]$_.code; name=$(if("$($_.name)".Trim()){"$($_.name)".Trim()}else{"$($_.code)"}) } }) }
 }
-# Port pickers: the FULL port/airport master (pgsops.port_dim, ~5k rows with names/countries) so the client
+# Port pickers: the FULL port/airport master (erpops.port_dim, ~5k rows with names/countries) so the client
 # can type-ahead by name OR code, plus the distinct ACTIVE pol/pod codes (ranked first by the picker).
 # The serialized payload is cached 15 min ($script:PortsJson) and hand-built with a StringBuilder —
 # ConvertTo-Json over 5k objects takes seconds in PS 5.1 and this server is single-threaded.
@@ -435,7 +435,7 @@ function Send-Ports($ctx,$cn){
   $script:PortsJson=$sb.ToString(); $script:PortsAt=Get-Date
   Send-JsonRaw $ctx $script:PortsJson
 }
-# Inbound cross-station bookings destined to THIS station (reads only the small pgsops feed; no ERP/cross-DB).
+# Inbound cross-station bookings destined to THIS station (reads only the small erpops feed; no ERP/cross-DB).
 # Station = config stationCode, with an optional ?station= override (HQ/testing). Ordered by urgency then ETD.
 function Handle-Inbound($cn,$qs){
   $p=@{}
@@ -653,7 +653,7 @@ function Handle-Shipment($cn,$qs){
 # ---------------- /api-ops/erp-detail — the ONE sanctioned ERP-on-request-path exception ----------------
 # Explicit, user-clicked deep-dive: a single keyed header SELECT (PK ref / indexed jobn) + a TOP-10 child read
 # on the station ERP, bounded by Connect Timeout=15 / CommandTimeout=8 so the single-threaded listener can't be
-# held long. Display-only — nothing is written back (the next listener pass refreshes the pgsops snapshot).
+# held long. Display-only — nothing is written back (the next listener pass refreshes the erpops snapshot).
 $SrcAuthClause= if($auth -eq 'sql'){"User ID=$user;Password=$password"}else{"Integrated Security=True"}
 $DbByStation=@{}; foreach($s in @($cfg.stations)){ if($s -and $s.code -and $s.database){ $DbByStation["$($s.code)".Trim().ToUpper()]="$($s.database)".Trim() } }
 $script:ErpCols=@{}   # per (db|table) Filter-Cols cache so repeat clicks skip INFORMATION_SCHEMA
@@ -1189,7 +1189,7 @@ function Save-MilestoneClose($cn,$ctx,$me){
 #  Staff create a draft from the shipment snapshot (+ a bounded ERP enrichment read at creation time only),
 #  send the customer a tokenized link (/bl-review/<token>, no login), the customer edits the on-screen bill
 #  and submits; staff diff/correct/resend until both sides agree, then erp-doc-api.ps1 issues the official
-#  document. All state in pgsops doc_* tables; every action appended to doc_event_log. Raw tokens are never
+#  document. All state in erpops doc_* tables; every action appended to doc_event_log. Raw tokens are never
 #  stored (SHA-256 at rest); every send revokes prior tokens; issue revokes all.
 #  Status machine:
 #    DRAFT -send-> SENT -submit-> CUSTOMER_SUBMITTED -staff save-> DRAFT (resend v+1)
@@ -1337,7 +1337,7 @@ function Doc-HeadProj($cn,$h){
 # the 'back to editing' status: plain DRAFT before first issue, AMEND_DRAFT once an amendment cycle started
 function Doc-DraftState($h){ if([int]$h.amend_count -gt 0){ 'AMEND_DRAFT' } else { 'DRAFT' } }
 
-# seed from the pgsops shipment snapshot (always available; no ERP touch)
+# seed from the erpops shipment snapshot (always available; no ERP touch)
 function Doc-SaSeed($a,$type){
   $f=@{}
   if($type -eq 'HBL'){
@@ -2073,7 +2073,7 @@ function Handle-OpsAdmin($ctx,$sess,$path){
       $users.RemoveAt($idx); $script:Users=@($users); Save-Users; Audit $sess.username "delete user $un"
       Send-Json $ctx @{ ok=$true }
     }
-    # ---- milestone & alert config (milestone_def in pgsops; the only admin endpoints that need SQL).
+    # ---- milestone & alert config (milestone_def in erpops; the only admin endpoints that need SQL).
     # Edits drive the traffic lights every operator sees; they apply to a shipment at its NEXT evaluation
     # run (listener / seed-alerts), not retroactively.
     "/api-ops/admin/milestones" {

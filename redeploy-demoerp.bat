@@ -3,9 +3,9 @@ REM redeploy-demoerp.bat - minimal-effort redeploy of the demoerp IIS site after
 REM Drops app_offline.htm (ANCM stops the app + releases Ops.dll), re-publishes in place, removes it, recycles the pool.
 REM Run from an elevated prompt if your account can't recycle the pool otherwise.
 setlocal
-set REPO=C:\Users\mandy\pgs-operation
+set REPO=C:\Users\mandy\erp-operation
 set PUB=%REPO%\server\publish
-set POOL=pgsops-demoerp
+set POOL=erpops-demoerp
 set APPCMD=%windir%\System32\inetsrv\appcmd.exe
 
 echo offline > "%PUB%\app_offline.htm"

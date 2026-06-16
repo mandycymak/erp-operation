@@ -5,7 +5,7 @@ something" alerts. The alert function evaluates each live shipment against the s
 step **Amber** (70–90% of the way to its due date) then **Red** (overdue) when the data or file that
 proves the step is done is still missing.
 
-> Source of truth: `pgsops` tables `milestone_def` (the steps + timing) and `milestone_evidence_map`
+> Source of truth: `erpops` tables `milestone_def` (the steps + timing) and `milestone_evidence_map`
 > (which documents/EDI satisfy a step). Everything here is editable on the **Admin → Milestones & alerts**
 > tab. Reflects the demoerp config as of 2026-06-15.
 

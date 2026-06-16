@@ -3,11 +3,11 @@
 
   Reads the origin ERP's OUTBOUND shipments (blhead/awbhead bound='O' — no bill/awb-type filter; the destination
   office decides what's cross-station, not the doc stage) that are destined to ANOTHER group station, resolves
-  the destination station via pgsops.station_route_map (built from fm3kco.site.owncode), and UPSERTs
-  one denormalized row per booking into pgsops.inbound_booking_feed. The destination station's app then reads
+  the destination station via erpops.station_route_map (built from fm3kco.site.owncode), and UPSERTs
+  one denormalized row per booking into erpops.inbound_booking_feed. The destination station's app then reads
   ONLY feed rows addressed to it (no station ever queries another station's ERP). Incremental via feed_watermark.
 
-  Source ERP is READ-ONLY; all writes go to pgsops. Two-server aware (mirrors seed-alerts.ps1).
+  Source ERP is READ-ONLY; all writes go to erpops. Two-server aware (mirrors seed-alerts.ps1).
   Usage: .\publish-bookings.ps1 -Station <originDb> -StationCode <ORIGIN> -Mode Sea|Air [-Since yyyy-mm-dd] [-Limit 500]
 #>
 param(

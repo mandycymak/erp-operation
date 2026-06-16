@@ -5,7 +5,7 @@ namespace Ops;
 public static partial class Handlers
 {
     // ---- /api-ops/inbound (serve-ops.ps1 440-495) ----
-    // cross-station bookings destined to THIS station (reads only the small pgsops feed; no ERP/cross-DB).
+    // cross-station bookings destined to THIS station (reads only the small erpops feed; no ERP/cross-DB).
     public static object Inbound(SqlConnection cn, Qs q, ReqState rs)
     {
         var p = new Dictionary<string, object?>();

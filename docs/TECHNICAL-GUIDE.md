@@ -4,22 +4,29 @@
 **You do not need to be a programmer** to follow this — every task is a copy-paste PowerShell command.
 
 > ⚠️ **This system reads live operational data from the station ERP databases and writes a small operational
-> state DB (`pgsops`).** Several config files hold credentials or the ERP bearer token and are **never
+> state DB (`erpops`).** Several config files hold credentials or the ERP bearer token and are **never
 > committed to git**. See [§8 Files that must never leave the server](#8-files-that-must-never-leave-the-server).
 
 ---
 
 ## 1. What this is (in one minute)
 
-A small, self-contained web app. **No IIS, no Node, no build step.** A PowerShell `HttpListener` serves a JSON
-API and static HTML/JS; a separate PowerShell job (the listener/seeder) reads the read-only station ERP DBs,
-scores the milestone matrix, and upserts the small `pgsops` state database the UI reads. The browser only ever
-talks to `pgsops` — never the ERP — so it stays fast.
+A small, self-contained web app. The **web tier is an ASP.NET Core (.NET 10) app in `server/`** — it serves the
+JSON API and the static HTML/JS client (vanilla JS, **still no Node / no build step on the client**). A separate
+PowerShell job (the listener/seeder) reads the read-only station ERP DBs, scores the milestone matrix, and
+upserts the small `erpops` state database the UI reads. The browser only ever talks to `erpops` — never the ERP —
+so it stays fast.
+
+> 🏗️ **Web tier = `server/` (.NET).** The original single-threaded PowerShell server (`serve-ops.ps1`) is kept
+> **for rollback only**; the .NET app is multi-threaded with per-request scope isolation. The **off-request-path
+> PowerShell jobs** (`seed-alerts.ps1`, `publish-bookings.ps1`, `seed-*`, `register-ops-tasks.ps1`) are unchanged
+> — they only write `erpops`. To **deploy to a real server**, see [§12](#12-deploying-to-a-real-server-iis) and
+> [IIS-DEPLOY.md](IIS-DEPLOY.md).
 
 > 🔑 **`Packet Size=512` is mandatory on every SQL connection string.** The Swivel VPN's small MTU
 > black-holes default 8 KB TDS packets ("semaphore timeout"). It is already in the code — do not remove it.
 
-> 🔑 **The source ERP DBs are READ-ONLY.** All writes go to `pgsops` or the gitignored JSON note store.
+> 🔑 **The source ERP DBs are READ-ONLY.** All writes go to `erpops` or the gitignored JSON note store.
 
 ---
 
@@ -49,7 +56,7 @@ notepad .\ops.config.json
 | Field | What to put |
 |---|---|
 | `server` / `auth` / `user` / `password` | the source ERP SQL host + login |
-| `opsServer` / `opsAuth` / `opsDb` | the **ops DB** host (omit to use the source server). Two-server mode reads the ERP remotely and writes `pgsops` locally on `localhost\SQLEXPRESS` |
+| `opsServer` / `opsAuth` / `opsDb` | the **ops DB** host (omit to use the source server). Two-server mode reads the ERP remotely and writes `erpops` locally on `localhost\SQLEXPRESS` |
 | `masterDb` | the master DB (`fm3kco`) for the intercompany convention |
 | `port` | the web port (e.g. `8079`) |
 | `stationCode` / `stations[]` | the local station + the picker list |
@@ -59,7 +66,7 @@ notepad .\ops.config.json
 > 🔐 **`ops.config.json`, `ops.config.*.json`, `users.json`, `.env*`, `ops-lists/`, `*.log` are gitignored.**
 > Only `*.example.json` is tracked. Check `git status` before every commit.
 
-### Step 2 — build the `pgsops` schema (idempotent, safe to re-run)
+### Step 2 — build the `erpops` schema (idempotent, safe to re-run)
 
 ```powershell
 .\setup-ops.ps1                                   # default config
@@ -83,18 +90,26 @@ feature — just re-run `setup-ops.ps1`.)
 `seed-alerts.ps1` is the **listener stand-in** — a one-shot evaluator/upsert. Loop it over all stations (see
 [§5](#5-refreshing-the-data)).
 
-### Step 4 — start the web service
+### Step 4 — start the web service (.NET)
 
 ```powershell
-.\serve-ops.ps1 -ConfigPath .\ops.config.demoerp.json -Port 8079     # http://localhost:8079/
+cd server
+$env:OPS_CONFIG='ops.config.demoerp.json'; $env:OPS_HTTP_PORT='8079'
+dotnet run -c Release                                 # http://localhost:8079/   (or: start-dotnet.bat)
 ```
 
-Or double-click the matching **restart bat** (`restart-ops-demoerp.bat` / `restart-ops-network.bat` /
-`restart-ops-local.bat`) — it stops any instance on that port (excluding itself) and starts a fresh one.
+`OPS_CONFIG` picks the tenant config; `OPS_HTTP_PORT` overrides the config `port`. For a compiled run use
+`dotnet publish -c Release -o publish` then `dotnet publish\Ops.dll`. **For a real server (IIS + HTTPS) see
+[§12](#12-deploying-to-a-real-server-iis).**
 
-> ⚡ The server is **single-threaded** (one `HttpListener` request at a time). Every query is bounded by
-> `CommandTimeout`; the UI reads only the small `pgsops` tables, never the ERP, so one request can't stall the
-> rest.
+> 🔁 **Legacy fallback.** The old PowerShell server still works for rollback:
+> `.\serve-ops.ps1 -ConfigPath .\ops.config.demoerp.json -Port 8079` (or the `restart-ops-*.bat`). It reads the
+> same `erpops` DB, so you can switch back at any time. **Do not run both on the same port.**
+
+> ⚡ The .NET server is multi-threaded with a **`dbGate`** (default 16) bounding concurrent SQL so a burst can't
+> stampede the small-MTU VPN box; every query is bounded by `CommandTimeout`; the UI reads only the small
+> `erpops` tables, never the ERP, so one request can't stall the rest. (The legacy PowerShell server was
+> single-threaded — that shared-scope race is the structural reason for the .NET port.)
 
 ---
 
@@ -103,7 +118,7 @@ Or double-click the matching **restart bat** (`restart-ops-demoerp.bat` / `resta
 The network ERP login cannot `CREATE DATABASE`, so the ops DB is created **locally**:
 
 - Read the `fm3k*` ERP on `192.168.5.2` (login `dashboard`, read-only).
-- Write `pgsops` on `localhost\SQLEXPRESS`.
+- Write `erpops` on `localhost\SQLEXPRESS`.
 
 Set `opsServer`/`opsAuth`/`opsDb` in the config. All scripts route `master` + the ops DB to the ops server and
 everything else to the source. **For office use**, point `opsServer` at an office-reachable SQL instance and
@@ -152,8 +167,11 @@ Sign in as an **admin** and open the **Admin** link (admins only). `admin-ops.ht
 - **Milestones & alerts** — CRUD over `milestone_def`: name, mode/bound/seq/phase, active, and the **alert
   timing** (`baseline` / fixed offset / `none`) that drives every operator's Green/Amber/Red. Edits apply at
   a shipment's **next evaluation run**, not retroactively.
-- **Documents** — CRUD over the `milestone_evidence_map` doctype rows (the **ERP Document Type codes** that, when
-  uploaded against a shipment, clear a milestone). Keep these matched to the ERP master.
+- **Documents** — CRUD over the `milestone_evidence_map` doctype rows (the **ERP Document Type codes**). These
+  populate the drawer's **ERP-files upload** picker: an operator can upload **any** of these doctypes to a shipment
+  (the box is always shown when the ERP is live), and the ones that would also **clear a milestone** on that
+  shipment are flagged with a `*`. Keep these matched to the ERP Document Type master, or `/file/upload` is
+  rejected. (If the list is empty the picker falls back to a free-text doctype field.)
 - **ERP API** — the non-secret ERP identity codes in `erp-api-map.json`: **`partyGroupCode`** (the company code,
   e.g. `DEV`) and the fallback **`forwarderCode`** (office owncode). The bearer token is **not** here. See §7.
 
@@ -184,6 +202,28 @@ from the URL **fragment**, POSTs them to `/api-ops/link-oauth-login`, which rede
 (**no client_id/secret — the code self-authenticates**), verifies the echoed `state`, matches `profile.email` to a
 user (**auto-provisions** a `defaultRole` user when none, if `autoProvision`), and mints the app's own session.
 Register this app's redirect origin with Swivel; nothing else is needed to go live.
+
+---
+
+## 6b. Language (i18n) — English / 中文 / 日本語
+
+The operator UI is localized **client-side**; the shipment **data, documents and free-text notes stay as
+typed** (only captions are translated). English is the source-of-truth and the fallback.
+
+- **Per-user default.** Each user record carries a **`language`** field (`""` = follow the browser, then
+  English | `en` | `zh-Hans` | `ja`), set on the admin **Users** form. `/api-ops/me` returns it.
+- **Per-device switch.** A header **language picker** lets anyone switch instantly (stored in `localStorage`,
+  persists per device, overrides the profile default). So documents stay English while a China/Japan operator
+  reads the chrome in their language.
+- **How it works.** `i18n.js` loads `lang/<code>.json` (English source string = key; a missing key falls back
+  to English, never blank) and translates the page. The dictionaries are served statically — the .NET
+  static-secret guard is opened for `lang/*.json` only.
+- **Adding a language** (see [DEVELOPER-GUIDE.md §8](DEVELOPER-GUIDE.md)): drop `lang/<code>.json`, add one line
+  to `SUPPORTED` in `i18n.js`, add a CJK/locale font stack in `styles.css` if needed, and add the code to the
+  server allow-list (`Handlers.Admin.cs` + `serve-ops.ps1`). No other code changes.
+
+> 🈶 **Encoding.** Dictionaries are UTF-8 JSON (served `application/json`). Keep `.ps1` ASCII-only — the
+> dictionaries are external files, so no non-ASCII enters any script. HTML pages already have `<meta charset>`.
 
 ---
 
@@ -304,6 +344,41 @@ False — ICMP is filtered; ignore it.
 .\restart-ops-demoerp.bat
 ```
 
-There is **no build and no deploy pipeline** — "deploying an update" means `git pull` on the host, then
-restart `serve-ops.ps1`. See [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md) for code changes and
-[SQL-README.md](SQL-README.md) for the schema and ERP field map.
+See [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md) for code changes and [SQL-README.md](SQL-README.md) for the schema
+and ERP field map.
+
+---
+
+## 12. Deploying to a real server (IIS)
+
+The web tier is **compiled** (.NET), so deploying an update = **publish + copy + restart the app pool** (not a
+`git pull`). The full step-by-step (prereqs, app pool, HTTPS, env vars, tenancy) is in
+**[IIS-DEPLOY.md](IIS-DEPLOY.md)**; the strangler-flip runbook is [CUTOVER.md](CUTOVER.md). In short:
+
+1. **Build (on a dev box with the .NET 10 SDK):**
+   ```powershell
+   cd server
+   dotnet publish -c Release -o publish        # produces server\publish\ (Ops.dll + web.config)
+   ```
+2. **On the server (once):** install **IIS** + the **ASP.NET Core 10 Hosting Bundle** (gives ANCM); create an
+   app pool (**No Managed Code**) and a site whose physical path is the `publish` folder; bind **443** with a
+   TLS cert.
+3. **Point it at the config + client files** via env vars on the app pool (they survive re-publish, unlike
+   `web.config`): **`OPS_ROOT`** = the folder holding `ops.config.*.json` + the client files + `lang/`,
+   **`OPS_CONFIG`** = the tenant config, **`OPS_HTTPS=1`** (Secure cookies + HSTS), `OPS_IFRAME=1` only for the
+   L!NK iframe. `DB_*` env vars can override the config.
+4. **The app-pool identity needs** read/write on `OPS_ROOT`, network to the `erpops` DB + the source ERP over
+   the VPN, and (for integrated `opsAuth`) a SQL login + `db_owner` on the ops DB.
+5. **Redeploy later** = re-`dotnet publish` to the same folder (drop `app_offline.htm` first so the running app
+   releases `Ops.dll`) and recycle the pool.
+6. **Verify:** `https://<host>/` loads; `https://<host>/ops.config.json` → **404** (secret blocked); the
+   language picker works; reconcile a milestone light against a direct ERP SQL query.
+
+> 🧪 **Rehearse locally first.** `deploy-local-iis-demoerp.ps1` (run **elevated**, once) stands the *published*
+> app up under IIS on this PC pointed at `ops.config.demoerp.json` — IIS features, Hosting-Bundle check, app
+> pool + env vars, the SQL login/grant for the pool identity, and an `http://localhost:8080` site.
+> `redeploy-demoerp.bat` is the minimal-effort redeploy. The real-server steps above are the same shape, plus a
+> TLS binding. (Both helper scripts contain paths only — no secrets.)
+
+> 🌐 **Public review surface.** If customers reach the draft-review page, expose only `/bl-review/*` + `/api-doc/*`
+> (+ the review assets) and set `publicBaseUrl` to the internet-facing HTTPS host so review links are correct.

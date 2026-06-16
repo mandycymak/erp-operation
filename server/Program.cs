@@ -29,7 +29,7 @@ var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = null, WriteInd
 // ---- concurrency lever: the single SQL server over a small-MTU VPN is the real ceiling, so bound the number of
 // in-flight DB ops (Kestrel is multi-threaded; 500 users must not stampede the box). OPS_DB_GATE tunes it.
 // NOTE on response caching: unlike the read-mostly dashboard (which caches unrestricted reads in a shared
-// MemoryCache), pgs-operation deliberately has NO generic cross-user response cache. Almost every ops read is
+// MemoryCache), erp-operation deliberately has NO generic cross-user response cache. Almost every ops read is
 // per-user (worklist/my-tasks/roster key off rs.Me even for admins) or write-volatile (the worklist changes on
 // every milestone tick), so a shared cache would risk serving one user's scope/identity to another - the exact
 // cross-scope leak this migration exists to remove. The one large reference read (ports, ~5k rows, identical for

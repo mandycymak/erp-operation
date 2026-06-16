@@ -4,7 +4,7 @@
   "auth": "sql",
   "user": "(only if auth=sql)",
   "password": "(only if auth=sql)",
-  "opsDb": "pgsops",
+  "opsDb": "erpops",
   "appName": "Control Tower",
   "instanceName": "ERP Group",
   "appSubtitle": "Operational control tower — live shipment milestones, worklist & cash-leak alerts",
