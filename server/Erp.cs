@@ -1,0 +1,350 @@
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+
+namespace Ops;
+
+// Swivel 3rd-party ERP API client (port of erp-doc-api.ps1, file-enquiry/download/upload + the master-code patch
+// push). Spec: https://documents.swivelsoftware.com/3rd-erpapi.html (bearer auth, POST JSON).
+//
+// Live-call rules learned on demoerp (DO NOT REGRESS):
+//   - 3rdBookingID is a shipment LOOKUP key (our booking number = the ERP's external reference), never our ids.
+//   - read-merge-write: /booking/update is "New Booking / Update Booking" - a key mismatch CREATES a duplicate,
+//     so EditPush does /booking/get first and ABORTS if the booking is absent.
+//   - serviceCode/commodity/POL/POD are NewBooking-required; the operator rarely edits them, so read-merge them
+//     from the live booking for any key the patch doesn't already carry (so editing one field never blanks the rest).
+//   - bookingParty.forwarderPartyCode (= owncode) is REQUIRED and routes the write to the right office.
+//   - Invoke-RestMethod returns a JSON array as ONE object - mirrored here by AsArray over the parsed node.
+//
+// MOCK MODE (default when no baseUrl/token, or erpApi.mock=true): builds the same payloads and writes
+// erp-mock/*.json instead of calling out. The bearer token lives in ops.config.json (gitignored); the non-secret
+// deployment codes (partyGroupCode/forwarderCode/...) live in erp-api-map.json (ErpMap).
+public static partial class Erp
+{
+    // dedicated client: 60s timeout like the PS Invoke-RestMethod calls (longer than the shared 30s L!NK client).
+    static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) };
+
+    public sealed class ErpException : Exception { public ErpException(string m) : base(m) { } }
+
+    public static bool MockMode() => Config.ErpBaseUrl.Trim() == "" || Config.ErpToken.Trim() == "" || Config.ErpMock;
+
+    // ---- low-level POST: bearer auth, JSON body, parsed JsonNode back; throws ErpException carrying the ERP's
+    // own validation message on a non-2xx (ErpErr - so "Invalid carrier code" reaches the user, not just "(422)"). ----
+    public static JsonNode? Call(string path, JsonObject payload)
+    {
+        var baseUrl = Config.ErpBaseUrl.Trim().TrimEnd('/');
+        var tok = Regex.Replace(Config.ErpToken.Trim(), @"^(?i:Bearer\s+)", "").Trim();   // tolerate a pasted 'Bearer ' prefix
+        using var req = new HttpRequestMessage(HttpMethod.Post, baseUrl + path);
+        req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + tok);
+        req.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+        using var r = _http.Send(req);
+        string body;
+        using (var sr = new StreamReader(r.Content.ReadAsStream(), Encoding.UTF8)) body = sr.ReadToEnd();
+        if (!r.IsSuccessStatusCode) throw new ErpException(BuildErr((int)r.StatusCode, r.ReasonPhrase, body));
+        if (string.IsNullOrWhiteSpace(body)) return null;
+        try { return JsonNode.Parse(body); } catch { return null; }
+    }
+
+    static string BuildErr(int code, string? reason, string body)
+    {
+        var msg = $"({code}) {reason}";
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            try { var ee = PropCI(PropCI(JsonNode.Parse(body), "error"), "error"); if (ee != null && ee.ToString() != "") return $"{msg} - {ee}"; } catch { }
+            return $"{msg} - {body}";
+        }
+        return msg;
+    }
+
+    static void MockWrite(string name, JsonObject obj)
+    {
+        var dir = Path.Combine(Config.RepoRoot, "erp-mock");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, name), obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
+    }
+
+    // ---- helpers over a parsed JSON response (PSCustomObject access is case-insensitive; mirror that) ----
+    static JsonNode? PropCI(JsonNode? n, string name)
+    {
+        if (n is not JsonObject o) return null;
+        foreach (var kv in o) if (string.Equals(kv.Key, name, StringComparison.OrdinalIgnoreCase)) return kv.Value;
+        return null;
+    }
+    static string StrProp(JsonNode? n, string name) => PropCI(n, name)?.ToString() ?? "";
+    static IEnumerable<JsonNode?> AsArray(JsonNode? n) => n switch { JsonArray a => a, null => Array.Empty<JsonNode?>(), _ => new[] { n } };
+    static List<JsonObject> ObjItems(JsonNode? c)
+    {
+        var list = new List<JsonObject>();
+        if (c is JsonArray a) { foreach (var x in a) if (x is JsonObject xo) list.Add(xo); }
+        else if (c is JsonObject o) list.Add(o);
+        return list;
+    }
+
+    // Fetch the current booking (POST /booking/get). The same bookingNo can exist once per module, so filter by
+    // moduleTypeCode. Returns null on any error / no hit (the existence guard then aborts the update).
+    public static JsonNode? BookingGet(string bookingNo, string module, string forwarderCode)
+    {
+        try
+        {
+            var fwd = forwarderCode.Trim(); if (fwd == "") fwd = ErpMap.Str("forwarderCode").Trim();
+            var resp = Call("/booking/get", new JsonObject { ["partyGroupCode"] = ErpMap.Str("partyGroupCode").Trim(), ["forwarderCode"] = fwd, ["bookingNo"] = bookingNo });
+            foreach (var el in AsArray(resp)) if (el is JsonObject && StrProp(el, "moduleTypeCode") == module) return el;
+            return null;
+        }
+        catch { return null; }
+    }
+
+    // Normalize a /file/enquiry response (bare array or enveloped {message:{message:[...]}}) into projected file
+    // rows {fileName,documentTypeCode,remark}. Mirrors Erp-FileArray.
+    static List<object> FileArray(JsonNode? resp)
+    {
+        var outl = new List<object>();
+        if (resp == null) return outl;
+        List<JsonObject>? arr = null;
+        foreach (var c in new[] { resp, PropCI(PropCI(resp, "message"), "message"), PropCI(resp, "message"), PropCI(resp, "data") })
+        {
+            if (c == null) continue;
+            var items = ObjItems(c);
+            if (items.Count > 0 && PropCI(items[0], "fileName") != null) { arr = items; break; }
+        }
+        if (arr == null) return outl;
+        foreach (var it in arr)
+            outl.Add(new { fileName = StrProp(it, "fileName").Trim(), documentTypeCode = StrProp(it, "documentTypeCode").Trim(), remark = StrProp(it, "remark").Trim() });
+        return outl;
+    }
+
+    public sealed record FileEnquiryResult(List<object> Files, string KeyUsed, string KeyKind, string KeyField, bool Mock, string Error);
+
+    // List the files the ERP holds for a shipment. /file/enquiry filters by 3rdBookingID OR bookingNo only; try
+    // each candidate identifier as 3rdBookingID first, then bookingNo, returning the first hit. Mirrors
+    // Invoke-ErpFileEnquiry. candidates = ordered (kind,val) identifier list (Air HAWB->Booking->MAWB, Sea Booking->HBL).
+    public static FileEnquiryResult FileEnquiry(string module, List<(string Kind, string Val)> candidates, string forwarderCode)
+    {
+        if (MockMode()) return new(new(), "", "", "", true, "");
+        var cands = candidates.Where(c => c.Val.Trim() != "").ToList();
+        if (cands.Count == 0) return new(new(), "", "", "", false, "no booking/bill number on this shipment");
+        var fwd = forwarderCode.Trim(); if (fwd == "") fwd = ErpMap.Str("forwarderCode").Trim();
+        var pg = ErpMap.Str("partyGroupCode").Trim();
+        var lastErr = "";
+        foreach (var field in new[] { "3rdBookingID", "bookingNo" })
+            foreach (var c in cands)
+            {
+                var val = c.Val.Trim();
+                try
+                {
+                    var files = FileArray(Call("/file/enquiry", new JsonObject { ["partyGroupCode"] = pg, ["forwarderCode"] = fwd, ["moduleTypeCode"] = module, [field] = val }));
+                    if (files.Count > 0) return new(files, val, c.Kind, field, false, "");
+                }
+                catch (Exception ex) { if (!ex.Message.Contains("No corresponding data")) lastErr = ex.Message; }   // "No corresponding data" = ERP has no files here, not an error
+            }
+        return new(new(), cands[0].Val.Trim(), cands[0].Kind, "", false, lastErr);
+    }
+
+    public sealed record FileDownloadResult(byte[]? Bytes, string FileName, bool Mock, string Error);
+
+    // Download one ERP-held file's bytes. Same candidate/field order as enquiry; picks the item matching fileName
+    // (or the first with content) and decodes its base64. Mirrors Invoke-ErpFileDownload.
+    public static FileDownloadResult FileDownload(string module, List<(string Kind, string Val)> candidates, string fileName, string forwarderCode)
+    {
+        if (MockMode()) return new(null, fileName, true, "");
+        var cands = candidates.Where(c => c.Val.Trim() != "").ToList();
+        if (cands.Count == 0) return new(null, fileName, false, "no booking/bill number on this shipment");
+        var want = fileName.Trim();
+        var fwd = forwarderCode.Trim(); if (fwd == "") fwd = ErpMap.Str("forwarderCode").Trim();
+        var pg = ErpMap.Str("partyGroupCode").Trim();
+        var lastErr = "";
+        foreach (var field in new[] { "3rdBookingID", "bookingNo" })
+            foreach (var c in cands)
+            {
+                var val = c.Val.Trim();
+                try
+                {
+                    var payload = new JsonObject { ["partyGroupCode"] = pg, ["forwarderCode"] = fwd, ["moduleTypeCode"] = module, [field] = val };
+                    if (want != "") payload["fileName"] = want;
+                    var resp = Call("/file/download", payload);
+                    List<JsonObject>? items = null;
+                    foreach (var cc in new[] { resp, PropCI(PropCI(resp, "message"), "message"), PropCI(resp, "message"), PropCI(resp, "data") })
+                    {
+                        if (cc == null) continue;
+                        var lst = ObjItems(cc);
+                        if (lst.Count > 0 && PropCI(lst[0], "base64") != null) { items = lst; break; }
+                    }
+                    if (items != null)
+                    {
+                        var pick = want != "" ? items.FirstOrDefault(it => StrProp(it, "fileName").Trim() == want) : null;
+                        pick ??= items[0];
+                        var b64 = StrProp(pick, "base64").Trim();
+                        if (b64 != "") return new(Convert.FromBase64String(b64), StrProp(pick, "fileName").Trim(), false, "");
+                    }
+                }
+                catch (Exception ex) { if (!ex.Message.Contains("No corresponding data")) lastErr = ex.Message; }
+            }
+        return new(null, want, false, lastErr != "" ? lastErr : "file not found in the ERP");
+    }
+
+    public sealed record UploadResult(bool Ok, bool Mock, string Error);
+
+    // Upload ONE file via /file/upload (one attachment per call: bounded body, attributable failure). Keyed by
+    // houseNo+bookingNo. Mirrors Invoke-ErpFileUpload.
+    public static UploadResult FileUpload(string module, string houseNo, string bookingNo, string doctype, string fileName, string base64, string remark, string forwarderCode)
+    {
+        if (MockMode())
+        {
+            try
+            {
+                MockWrite($"upload-{Guid.NewGuid():N}.json", new JsonObject
+                {
+                    ["at"] = DateTime.Now.ToString("o"), ["module"] = module, ["houseNo"] = houseNo, ["bookingNo"] = bookingNo,
+                    ["documentTypeCode"] = doctype, ["fileName"] = fileName, ["bytes"] = (int)Math.Ceiling(base64.Length * 0.75), ["remark"] = remark,
+                });
+            }
+            catch { }
+            return new(true, true, "");
+        }
+        var fwd = forwarderCode.Trim(); if (fwd == "") fwd = ErpMap.Str("forwarderCode").Trim();
+        var up = new JsonObject
+        {
+            ["partyGroupCode"] = ErpMap.Str("partyGroupCode").Trim(), ["forwarderCode"] = fwd, ["moduleTypeCode"] = module,
+            ["houseNo"] = houseNo, ["bookingNo"] = bookingNo,
+            ["attachments"] = new JsonArray(new JsonObject { ["documentTypeCode"] = doctype, ["fileName"] = fileName, ["base64"] = base64, ["remark"] = remark }),
+        };
+        try { Call("/file/upload", up); return new(true, false, ""); }
+        catch (Exception ex) { return new(false, false, ex.Message); }
+    }
+
+    // ============================================================================================================
+    // ERP MASTER-CODE CORRECTION patch build + push (staff-internal). Build a MINIMAL /booking/update payload that
+    // carries the booking identity keys + ONLY the fields the operator changed (mapped by each dict field's
+    // writeKey). Party-prefixed writeKeys nest inside bookingParty; flexData.* nest inside flexData; everything
+    // else is top-level. Mirrors Build-ErpPatchPayload + Invoke-ErpEditPush.
+    // ============================================================================================================
+    public sealed record PatchIdent(string BookingNo, string Module, string Bound, string ForwarderCode);
+
+    static string RowV(IDictionary<string, object?> r, string k) => r.TryGetValue(k, out var v) ? (v?.ToString() ?? "") : "";
+    static IEnumerable<IDictionary<string, object?>> AsRows(object? v)
+    {
+        if (v is System.Collections.IEnumerable en && v is not string)
+            foreach (var x in en) if (x is IDictionary<string, object?> d) yield return d;
+    }
+
+    public static (JsonObject Payload, List<object> Sent) BuildPatchPayload(IDictionary<string, object?> changed, List<FieldDef> defs, PatchIdent ident, IDictionary<string, object?> all)
+    {
+        var p = new JsonObject
+        {
+            ["partyGroupCode"] = ErpMap.Str("partyGroupCode").Trim(),
+            ["bookingNo"] = ident.BookingNo.Trim(),
+            ["moduleTypeCode"] = ident.Module,
+            ["boundTypeCode"] = ident.Bound == "Import" ? "I" : "O",
+        };
+        var defByCode = new Dictionary<string, FieldDef>(); foreach (var d in defs) defByCode[d.Code] = d;
+        var party = new JsonObject(); var flex = new JsonObject(); var sent = new List<object>();
+        foreach (var code in changed.Keys)
+        {
+            if (!defByCode.TryGetValue(code, out var d)) continue;
+            var wk = d.WriteKey.Trim(); if (wk == "") continue;   // read-only field (no write key) - never pushed
+            var val = changed[code];
+            if (d.Kind == "table")
+            {
+                var bc = new JsonArray();
+                foreach (var r in AsRows(val))
+                {
+                    var cno = RowV(r, "container_no").Trim(); var tp = RowV(r, "cont_type").Trim();
+                    if (cno == "" && tp == "") continue;   // need a container no. OR a type (booking-stage count row)
+                    var item = new JsonObject();
+                    if (cno != "") item["containerNo"] = cno;
+                    if (tp != "") item["containerTypeCode"] = tp;
+                    var sl = RowV(r, "seal_no").Trim(); if (sl != "") item["sealNo"] = sl;
+                    if (int.TryParse(RowV(r, "qty").Trim(), out var q) && q > 0) item["quantity"] = q;
+                    var u = RowV(r, "qty_unit").Trim(); if (u != "") item["quantityUnit"] = u;
+                    if (double.TryParse(RowV(r, "weight").Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var w) && w > 0) item["weight"] = w;
+                    if (double.TryParse(RowV(r, "cbm").Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var cb) && cb > 0) item["cbm"] = cb;
+                    bc.Add(item);
+                }
+                p[wk] = bc;
+                sent.Add(new { field = code, writeKey = wk, value = $"{bc.Count} container row(s)" });
+                continue;
+            }
+            // ETD + flight time fold into one departureDateEstimated datetime "<yyyy-mm-dd>T<hh:mm>"
+            if (wk == "departureDateEstimated")
+            {
+                if (p.ContainsKey("departureDateEstimated")) continue;
+                string dt = "", tm = "";
+                if (all != null) { if (all.TryGetValue("etd", out var ev)) dt = (ev?.ToString() ?? "").Trim(); if (all.TryGetValue("flight_time", out var fv)) tm = (fv?.ToString() ?? "").Trim(); }
+                if (dt == "") dt = (val?.ToString() ?? "").Trim();
+                var dval = dt != "" && tm != "" ? $"{dt}T{tm}" : dt;
+                p["departureDateEstimated"] = dval;
+                sent.Add(new { field = code, writeKey = wk, value = dval });
+                continue;
+            }
+            if (d.Kind == "bool")
+            {
+                var bv = new[] { "true", "1", "y", "yes" }.Contains((val?.ToString() ?? "").Trim().ToLowerInvariant());
+                if (Regex.IsMatch(wk, "Party")) party[wk] = bv; else p[wk] = bv;
+                sent.Add(new { field = code, writeKey = wk, value = bv ? "True" : "False" });
+                continue;
+            }
+            if (d.Kind == "number")
+            {
+                var sv = (val?.ToString() ?? "").Trim(); JsonNode? num = null;
+                if (sv != "" && double.TryParse(sv, NumberStyles.Any, CultureInfo.InvariantCulture, out var dd))
+                    num = dd == Math.Floor(dd) ? (JsonNode)(long)dd : (JsonNode)dd;
+                if (Regex.IsMatch(wk, "Party")) party[wk] = num; else p[wk] = num;
+                sent.Add(new { field = code, writeKey = wk, value = num?.ToString() ?? "" });
+                continue;
+            }
+            if (wk.StartsWith("bookingReference#"))
+            {
+                var refName = wk.Substring("bookingReference#".Length);
+                p["bookingReference"] = new JsonArray(new JsonObject { ["refName"] = refName, ["refDescription"] = val?.ToString() ?? "" });
+                sent.Add(new { field = code, writeKey = wk, value = val?.ToString() ?? "" });
+                continue;
+            }
+            var svs = val?.ToString() ?? "";
+            var fm = Regex.Match(wk, @"^flexData\.(.+)$");
+            if (fm.Success) { flex[fm.Groups[1].Value] = svs; sent.Add(new { field = code, writeKey = wk, value = svs }); continue; }
+            if (Regex.IsMatch(wk, "Party")) party[wk] = svs; else p[wk] = svs;
+            sent.Add(new { field = code, writeKey = wk, value = svs });
+        }
+        // forwarderPartyCode (owncode) is REQUIRED by the NewBooking schema and routes the write to the right
+        // office - always send it, even when no party field was edited.
+        var fwd = ident.ForwarderCode.Trim(); if (fwd == "") fwd = ErpMap.Str("forwarderCode").Trim();
+        if (fwd != "") { party["forwarderPartyCode"] = fwd; sent.Add(new { field = "_forwarder", writeKey = "bookingParty.forwarderPartyCode", value = fwd }); }
+        if (party.Count > 0) p["bookingParty"] = party;
+        if (flex.Count > 0) p["flexData"] = flex;
+        return (p, sent);
+    }
+
+    public sealed record PushResult(bool Ok, bool Mock, bool Rejected, List<string> Steps, string Error);
+
+    // Push the prebuilt patch payload. Read-merge-write existence guard (/booking/get first, abort if absent so the
+    // update can never CREATE a duplicate), read-merge the NewBooking-required keys the patch omits, then update.
+    // Honors bookingUpdateMode (best-effort logs an ERP rejection; strict reports it). Mirrors Invoke-ErpEditPush.
+    public static PushResult EditPush(JsonObject payload, string bookingNo, string module, string by, string forwarderCode)
+    {
+        if (MockMode())
+        {
+            try
+            {
+                MockWrite($"erp-edit-{Regex.Replace(bookingNo, @"[^A-Za-z0-9_-]", "_")}-{DateTime.Now:yyyyMMddHHmmss}.json",
+                    new JsonObject { ["at"] = DateTime.Now.ToString("o"), ["editedBy"] = by, ["booking"] = payload.DeepClone() });
+                return new(true, true, false, new() { "booking/update (mock)" }, "");
+            }
+            catch (Exception ex) { return new(false, true, false, new(), "mock edit failed: " + ex.Message); }
+        }
+        var cur = BookingGet(bookingNo, module, forwarderCode);
+        if (cur == null) return new(false, false, false, new(), $"booking '{bookingNo}' ({module}) not found via /booking/get - aborting so the update cannot create a new booking. Check partyGroupCode/forwarderCode (owncode) in erp-api-map.json and the booking number.");
+        var bestEffort = ErpMap.Str("bookingUpdateMode").Trim().ToLowerInvariant() == "best-effort";
+        var steps = new List<string> { "booking/get ok (exists)" };
+        foreach (var k in new[] { "serviceCode", "commodity", "portOfLoadingCode", "portOfLoadingName", "portOfDischargeCode", "portOfDischargeName" })
+            if (!payload.ContainsKey(k)) { var v = StrProp(cur, k).Trim(); if (v != "") payload[k] = v; }
+        try { Call("/booking/update", payload); steps.Add("booking/update ok"); return new(true, false, false, steps, ""); }
+        catch (Exception ex)
+        {
+            var msg = ex.Message;
+            if (bestEffort) { steps.Add("booking/update REJECTED by ERP validation (best-effort): " + msg); return new(true, false, true, steps, ""); }
+            return new(false, false, false, steps, "booking/update failed: " + msg);
+        }
+    }
+}

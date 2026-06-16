@@ -20,6 +20,12 @@ user-lists/
 data.js
 erp-mock/
 
+# .NET build artifacts (the ASP.NET Core port lives in server/)
+server/bin/
+server/obj/
+server/publish/
+*.user
+
 # Local Claude Code workspace (skills, scheduled-task lock) - keep local
 .claude/
 

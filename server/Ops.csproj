@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Ops</RootNamespace>
+    <AssemblyName>Ops</AssemblyName>
+    <!-- Use Windows NLS collation (not ICU) so culture-aware string sorts match serve-ops.ps1 / PS 5.1
+         Sort-Object exactly (e.g. the @-mention roster's punctuation ordering of system accounts). The app
+         is Windows-only (IIS + the VPN'd SQL host), so NLS is the faithful, native choice. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.Globalization.UseNls" Value="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.2" />
+  </ItemGroup>
+
+</Project>

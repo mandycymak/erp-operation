@@ -11,13 +11,56 @@ when resuming. Operator-memory notes also live under `.claude/projects/.../memor
 [SQL-README.md](docs/SQL-README.md) (`pgsops` schema + the verified ERP field map). This file remains the
 session log / status snapshot.
 
-## Status: working app — arrival-driven worklist, filters, multi-station, cross-station feed; Sea **and** Air
+## Status: working app — arrival-driven worklist, filters, multi-station, cross-station feed; Sea **and** Air. **Web tier now ported to ASP.NET Core (.NET 10) — `server/`.**
 
 A clickable, end-to-end worklist app runs against real data on two test environments. The scheduled
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-15c — ERP-API routing identity made per-station (not hard-coded) + Save-data-to-ERP works live + login by email + SWIVEL L!NK OAuth seam. RESUME HERE).**
+**Latest session (2026-06-16 — web tier migrated from `serve-ops.ps1` to an ASP.NET Core .NET 10 app in `server/`; all 7 stages built + verified live against demoerp. RESUME HERE).**
+The single-threaded PowerShell `HttpListener` (`serve-ops.ps1`, ~2,288 lines, 44 routes) is **reimplemented as a
+multi-threaded ASP.NET Core minimal-API** (`server/`, `net10.0`, one NuGet: `Microsoft.Data.SqlClient`, **raw ADO,
+no Dapper**), mirroring the completed sibling migration at `..\erp-dashboard\server`. **Strangler, web tier only** —
+the vanilla-JS client (`index.html`/`ops.js`/`admin-ops.html`/`bl-*`), every `/api-ops/*` + `/api-doc/*` JSON
+contract, the `pgsops` schema, and the off-request-path PowerShell jobs (`seed-alerts`/`publish-bookings`/etc.,
+Task Scheduler) are **unchanged**. Plan: `.claude/plans/…single-effervescent-forest.md`.
+- **Why .NET.** The PS server was single-threaded **for correctness, not just speed**: the current user's row-level
+  scope lived in shared `$script:` state (`Cur-Stations`/`Cur-Pairs`/`Test-JobScope`/…), so serving requests
+  concurrently would leak one user's data scope into another's query — an **authorization bypass**. The .NET port
+  resolves scope into a **per-request `ReqState`** (never shared), the structural fix. Multi-customer = **config-driven
+  deploy-per-customer** (one IIS site + `ops.config.<tenant>.json` + own `pgsops` DB per customer; nothing hardcoded).
+- **What's in `server/` (~40 `.cs` files, one area per file).** `Config.cs`/`Auth.cs`/`Sql.cs` (raw-ADO `Db.RunQ`/
+  `RunMulti` reader loop, `Packet Size=512`, two-server source-ERP conn, transient retry)/`Filter.cs` (scope/where
+  port)/`Program.cs` (no-store+CORS, ForwardedHeaders, HSTS, **static-secret guard**, `MapData`/`MapAuthed`,
+  **`dbGate` SemaphoreSlim** default 16). Handlers: `Worklist`/`Shipment`/`Notes`/`Tasks`/`Inbound`/`Erp*`/`Doc`/
+  `Public`/`Admin`/`Misc`. Net-new: **`Erp.cs`/`ErpDoc.cs`** (Swivel `HttpClient`: booking get/update, file
+  enquiry/download/upload, event/update, read-merge-write guard, mock mode, per-station `forwarderCode`/owncode
+  routing, all the live-call gotchas ported with comments), **`Pdf.cs`** (headless Edge/Chrome `--print-to-pdf`),
+  **`Doc*.cs`** (draft-doc review + public token endpoints + `varbinary` attachments + SHA-256 tokens).
+- **Faithful-to-PS decisions baked in:** **verbatim JSON casing** (`PropertyNamingPolicy = null` — the client reads
+  exact keys); **no generic cross-user cache** (ops reads are per-scope/write-volatile — only the big `ports` ref read
+  self-caches 15 min); **NLS collation** (`InvariantGlobalization=false` + `System.Globalization.UseNls=true` in the
+  csproj) so culture-aware sorts match PS 5.1 `Sort-Object` exactly (the @-mention roster's punctuation order);
+  **CRLF asymmetry** (seed returns raw ERP `\r\n`, save normalizes to `\n`) preserved; **CHIPS cookie**
+  (`SameSite=None; Secure; Partitioned`) for the cross-site L!NK iframe; source-ERP reads bounded `CommandTimeout=8`.
+- **Verified LIVE end-to-end against demoerp + live `fm3k*` (192.168.5.2) + `pgsops_net`** (NOT the frozen fibsbkk —
+  fibsbkk lacks columns fm3k has): **Stage 4b** `erp-edit-save` did a real `/booking/get`→`/booking/update` on
+  `HKG-S-R23474`, read-merge preserved POL/POD/service, **no duplicate created**, then restored. **Stage 5** full
+  draft-doc lifecycle (create→send→public view/submit→approve→agree→issue **with headless-Edge PDF**→amend; attachments
+  up/download). **Stage 6** concurrency isolation — **60 concurrent disjoint-scope requests, 0 cross-scope bleed**.
+  **Stage 7** parity harness **16/16 MATCH** (after the NLS fix caught a real roster sort DIFF) + **route coverage
+  44/44**. All builds 0 errors/0 warnings.
+- **New tracked files:** `server/` (the whole project), **`docs/IIS-DEPLOY.md`** (IIS/ANCM/HTTPS deploy + tenancy),
+  **`docs/CUTOVER.md`** (the strangler flip runbook), **`tools/parity-check.ps1`** (coercion-tolerant JSON differ),
+  **`start-dotnet.bat`**; `.gitignore` adds `server/bin|obj|publish/` + `*.user`. **Run:** from `server/`,
+  `start-dotnet.bat` (or `OPS_CONFIG=ops.config.network.json OPS_HTTP_PORT=8079 dotnet run -c Release`) → Kestrel on
+  the config port; **production = `dotnet publish -c Release` behind IIS** (the app is compiled, unlike the `.ps1`).
+- **Remaining (operational, done in the deployment env — see `docs/CUTOVER.md`):** click-test each screen on the .NET
+  port, stand it up on IIS/HTTPS, point the SWIVEL L!NK iframe URL + `publicBaseUrl` at the new host, retire
+  `serve-ops.ps1` (left in-repo for rollback; off-path PowerShell jobs keep running). The .NET server was left
+  **running live on http://localhost:8079** (auth mode, live demoerp) for hands-on testing at session end.
+
+**Previous session (2026-06-15c — ERP-API routing identity made per-station (not hard-coded) + Save-data-to-ERP works live + login by email + SWIVEL L!NK OAuth seam).**
 Two threads: getting the ERP `/booking/update` + file calls to route to the right office, and reworking sign-in.
 - **ERP routing identity, resolved per station (never hard-coded).** Every Swivel call now carries the right
   `partyGroupCode` (the company/customer group = **`DEV`** on demoerp; now editable in the admin **ERP API** tab,
