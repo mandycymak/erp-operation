@@ -707,6 +707,47 @@ foreach ($code in $stations.Keys) {
 # Switching machines/DBs: copy a config to ops.config.<env>.json and point a bat (or -ConfigPath) at it; env DB_* override too.
 ```
 
+## Deploy: ASP.NET Core (.NET 10) to demoerp on IIS
+
+The web tier is ported to ASP.NET Core (`server/`, project `Ops.csproj`, `net10.0`, in-process ANCM). demoerp is
+the IIS-hosted target: `server\publish\` served by IIS site/pool **`erpops-demoerp`** on **http://localhost:8080**
+(8079 is the dev PS HttpListener instance; the `port` in config is informational for a self-hosted run only).
+
+**Readiness (verified 2026-06-16):** code is publish-ready — `dotnet publish -c Release -o publish` builds clean
+(exit 0) and emits a valid IIS artifact: `Ops.dll`, `Microsoft.Data.SqlClient.dll`, locale satellites, and a
+`web.config` with the `AspNetCoreModuleV2` in-process handler. `.NET 10 SDK 10.0.301` + ASP.NET Core runtime
+`10.0.9` are installed.
+
+**Config — two-server split** (`ops.config.demoerp.json`, gitignored; pool sets `OPS_CONFIG` to it):
+- **Ops DB** `demoerp` on `localhost\SQLEXPRESS`, `opsAuth=integrated` — no password; the deploy script grants
+  `db_owner` on `demoerp` to the pool identity `IIS APPPOOL\erpops-demoerp`.
+- **Source ERP** `fm3k*` on the VPN'd SQL host, `auth=sql` (read-only) — set `user`/`password` before go-live.
+- Fill in real `stations[].database` names and confirm `stationCode`; `erpApi.mock=true` keeps doc-issue offline
+  until a token is set. `Config.cs` resolves the repo root from `OPS_ROOT` (the pool env), else walks up to find
+  the config file.
+
+**Prerequisites / blockers on a fresh machine:**
+- **IIS + ASP.NET Core Hosting Bundle (ANCM)** must be installed, and the `erpops-demoerp` site/pool created — run
+  the one-time, **elevated** `deploy-local-iis-demoerp.ps1` (enables IIS features, installs the Hosting Bundle via
+  winget, grants the pool SQL `db_owner` + NTFS rights, creates the pool/site on 8080). `redeploy-demoerp.bat` does
+  **not** bootstrap these — it assumes they exist.
+- **`ops.config.demoerp.json`** must exist in the repo root (gitignored → absent on a fresh clone; the app throws
+  `FileNotFoundException` at startup without it).
+- **`setup-ops.ps1`** must have created the `demoerp` schema on `localhost\SQLEXPRESS`.
+- **`users.json`** absent → app runs in **open/no-auth mode** (anyone auto-sessioned); add it for real auth.
+  (`roles.json` is not used — roles live inline on each user record.)
+
+```powershell
+# --- demoerp: ONE-TIME IIS bootstrap (elevated PowerShell) ---
+powershell -ExecutionPolicy Bypass -File .\deploy-local-iis-demoerp.ps1   # IIS + Hosting Bundle + pool/site on 8080
+.\setup-ops.ps1 -ConfigPath .\ops.config.demoerp.json                     # create the demoerp schema (idempotent)
+
+# --- demoerp: REDEPLOY after a code change ---
+.\redeploy-demoerp.bat        # app_offline -> dotnet publish -c Release -o publish -> recycle pool -> http://localhost:8080/
+# Secrets check: http://localhost:8080/ops.config.json must return 404.  HTTP 500.3x/500.19 => Hosting Bundle
+# installed before IIS: run dotnet-hosting...exe /repair (or re-run deploy-local-iis-demoerp.ps1). VPN must be up.
+```
+
 ## Constraints (do not violate)
 
 - **`Packet Size=512`** on every SQL connection string (VPN MTU).
