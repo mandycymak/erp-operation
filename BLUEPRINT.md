@@ -20,6 +20,9 @@ operational state in a **new `erpops` database** — never altering core ERP tab
 **Decisions locked with the user:**
 1. **Stack = reuse.** PowerShell HttpListener + vanilla JS, new `erpops` MSSQL DB on the same server. No build
    step; the follow-up/auth/ETL/scheduling code lifts over. ("JSONB" in the spec → MSSQL `NVARCHAR(MAX)` + `OPENJSON`.)
+   **BUILD NOTE (post-design):** the web tier was later **ported to ASP.NET Core (.NET 10) in `server/`** (multi-threaded,
+   per-request scope — the structural fix for the single-threaded auth-bypass risk); `serve-ops.ps1` is kept for rollback.
+   The vanilla-JS client, the `erpops` schema, and the off-request-path PowerShell jobs are unchanged.
 2. **Field mapping = config-driven + admin screen.** The milestone matrix is data (rules), shipped with the
    spec's field names as defaults; an admin screen maps real ERP columns/doc-types — so a later-created document
    type can auto-close a milestone retroactively.
@@ -89,7 +92,10 @@ state. The UI and KPI queries read **only this table** — never the ERP, never 
 ```sql
 IF OBJECT_ID('dbo.shipment_alerts') IS NULL
 CREATE TABLE dbo.shipment_alerts (
-  job_no          nvarchar(24) NOT NULL,    -- station+blno/hawb composite (stable key)
+  -- BUILD NOTE: job_no is the synthetic per-shipment key <STN>-<S|A>-R<ref> keyed on the immutable ERP `ref`
+  -- (the original station+blno/hawb composite collapsed distinct shipments: a raw `jobn` is blank at booking
+  -- stage and non-unique once issued). The raw human job number is carried separately in column `erp_job_no`.
+  job_no          nvarchar(24) NOT NULL,    -- synthetic <STN>-<S|A>-R<ref> (stable, per-shipment)
   station         nvarchar(8)  NOT NULL,
   mode            char(3)      NOT NULL,     -- 'Sea'|'Air'
   cargo_type      nvarchar(8)  NULL,         -- 'FCL'|'LCL'|'Consol'
@@ -529,9 +535,19 @@ built. Lift it wholesale, keyed by `job_no` instead of company code:
    user's inbox badge increments, and the milestone shows `bypassed` with `done_by/done_at`.
 
 ## Open items / to confirm during build
-- Real ERP table/column names for every ⚠ field, and where the **PIC table / print_log / sendlog / EDI log /
-  event file** actually live (drives the alias + evidence maps).
-- The stable `job_no` key across stations (the dashboard notes switch-bill shipments have **no shared key**
-  across station DBs — operations tracking is per-station-leg, same limitation).
-- Free-time days & daily rates per destination port × carrier for detention/demurrage.
-- Whether `erp-operation` shares the dashboard's `users.json`/`roles.json` or maintains its own.
+
+> **Status note (post-build):** most of these are resolved — see PROJECT-SUMMARY.md for the live record.
+
+- ~~Real ERP table/column names for every ⚠ field, and where the **PIC table / print_log / sendlog / EDI log /
+  event file** actually live~~ — **RESOLVED.** The verified ERP `table.column` map lives in `docs/SQL-README.md`
+  (Sea `blhead`/`blcont`/`blitem` + PIC; Air `awbhead`/`awbdetl`). Evidence now keys on the ERP `documentTypeCode`
+  via the PIC/`milestone_evidence_map` store, maintained from the admin **Documents** tab.
+- ~~The stable `job_no` key across stations~~ — **RESOLVED** by the synthetic `<STN>-<S|A>-R<ref>` key (see §1.2
+  build note). Tracking remains per-station-leg (switch-bill shipments still have no shared cross-station key).
+- Free-time days & daily rates per destination port × carrier for detention/demurrage — **still open** (the
+  `detention_watch` table + config exist; live free-time data not yet wired).
+- ~~Whether `erp-operation` shares the dashboard's `users.json`/`roles.json`~~ — **RESOLVED.** It maintains its own
+  `users.json`; **`roles.json` is not used** (roles live inline on each user record). Sign-in is by email, with a
+  SWIVEL L!NK OAuth seam.
+- **Not yet built:** scheduled `listener-engine.ps1` (`seed-alerts.ps1 -Mode Sea|Air` is the one-shot stand-in) and
+  `baseline-refresh.ps1` (so `baseline`-timed milestones fall back to fixed/none).

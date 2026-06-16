@@ -1,14 +1,20 @@
 # CLAUDE.md — project context for Claude Code (erp-operation)
 
-Read this first, then read **`BLUEPRINT.md`** — that is the authoritative, approved design for this entire
-project. This file gives you the hard constraints and the orientation; `BLUEPRINT.md` gives you the what and the
-how, section by section.
+Read this first, then read **`PROJECT-SUMMARY.md`** — that is the live status anchor (what is actually built and
+proven, plus the session log). **`BLUEPRINT.md`** is the original approved design-of-record (the what/how, section
+by section); where the build diverged, PROJECT-SUMMARY is authoritative. This file gives you the hard constraints
+and the orientation.
 
-## Status: greenfield
+## Status: working app (built, in deployment)
 
-**No code exists yet.** This repo currently contains only documentation. Every `.ps1` / `.js` / `.html` file
-named below is *to be built*, following `BLUEPRINT.md`. Do not assume any handler, table, or endpoint exists
-until you've created it. Build in the order in §"First build steps" below.
+**The app is fully built and runs against live data.** A clickable end-to-end worklist app works on two test
+environments (Network `fm3k*` + demoerp); the web tier has been **ported from PowerShell `serve-ops.ps1` to an
+ASP.NET Core (.NET 10) app in `server/`**, and a demoerp IIS deploy path exists. Do **not** treat this as
+greenfield. Before changing anything, read PROJECT-SUMMARY.md for current state, then confirm the specific
+handler/table/endpoint exists rather than assuming.
+
+**Still not built (per PROJECT-SUMMARY):** the scheduled `listener-engine.ps1` (the one-shot `seed-alerts.ps1`
+stands in for it) and `baseline-refresh.ps1` (so `baseline`-timed milestones fall back to fixed/none).
 
 ## What this is
 
@@ -30,26 +36,43 @@ station ERP DBs (READ-ONLY)  --listener-engine.ps1 (Air 2h / Sea 3x day)-->  erp
    baseline-refresh.ps1 (monthly, 3-yr averages) --> erpops.milestone_baselines (reference only)
 ```
 
-**Stack** (deliberately identical to erp-dashboard so patterns lift over): PowerShell 5.1 + .NET
-SqlClient/HttpListener (server) · vanilla JS (client, no build step / no framework / no package manager) · SQL
-Server (`18.136.126.101,1438`, reached over the Swivel VPN). "JSONB" in the original spec → MSSQL
-`NVARCHAR(MAX)` + `OPENJSON`.
+**Stack.** Server tier = **ASP.NET Core (.NET 10) minimal API in `server/`** (one NuGet: `Microsoft.Data.SqlClient`,
+raw ADO, no Dapper) — the multi-threaded replacement for the original single-threaded PowerShell HttpListener
+(`serve-ops.ps1`, kept in-repo for rollback). Client = **vanilla JS** (no build step / no framework / no package
+manager). Off-request-path jobs (`seed-alerts.ps1`, `publish-bookings.ps1`, seeders, Task Scheduler) remain
+**PowerShell 5.1**. Data store = the **ops DB** on SQL Server — `erpops` / `erpops_net` (local `localhost\SQLEXPRESS`)
+or `demoerp`, with the **read-only source ERP `fm3k*` reached over the Swivel VPN at `192.168.5.2`** (two-server
+mode: read remote ERP, write local ops DB). "JSONB" in the original spec → MSSQL `NVARCHAR(MAX)` + `OPENJSON`.
+(The old `18.136.126.101,1438` pgs env is retired.)
 
-## Planned repo map (build per BLUEPRINT.md)
+## Repo map (built — see PROJECT-SUMMARY.md "What's built" for status detail)
 
-- `setup-ops.ps1` — create the `erpops` schema (6 tables) idempotently. **Build first.**
-- `listener-engine.ps1 -Mode <Sea|Air>` — the listener; pulls active jobs, evaluates milestones, upserts `shipment_alerts`, appends `milestone_event_log`.
-- `baseline-refresh.ps1` — monthly rebuild of `milestone_baselines` over 3 years.
-- `register-ops-tasks.ps1` — schedule Air-2h / Sea-3×day / baseline-monthly (Windows Task Scheduler).
-- `seed-station-map.ps1` / `publish-bookings.ps1` — **cross-station inbound booking feed** (key finding 5): the
-  station identity directory (`station_dim`/`station_route_map`) + the per-origin publisher that fans booking
-  rows (destined to another station) into the central `inbound_booking_feed`. The importer reads only its own
-  rows (`dest_station=stationCode`); served by `/api-ops/inbound` + `/api-ops/inbound-assign` (local assignment).
-- `serve-ops.ps1` — the web service: auth, JSON API (worklist, alerts, KPIs, notes/roster/my-tasks, admin), static files.
-- `index.html` / `ops.js` / `styles.css` — the UI (worklist, manager weekly plan, detention/demurrage listing, my-tasks inbox).
-- `admin-ops.html` — admin-only milestone-def / evidence-map / field-alias-map editors.
-- `ops.config.json` (gitignored) — server/auth/`erpops` name/station list; copy from `ops.config.example.json`; env `DB_*` override.
-- `users.json` / `roles.json` (gitignored) — auth + row-level scope; may be shared/copied from erp-dashboard.
+**Web tier (current) — `server/` (ASP.NET Core .NET 10):** `Program.cs` (routing, no-store/CORS, static-secret
+guard, `dbGate` semaphore), `Config.cs`/`Auth.cs`/`Sql.cs`/`Source.cs`/`Filter.cs` (plumbing, per-request `ReqState`
+scope), `Handlers.*.cs` (Worklist/Shipment/Notes/Tasks/Inbound/Erp*/Doc*/Public/Admin/Misc/Writes), `Erp.cs`/
+`ErpDoc.cs` (Swivel ERP API client), `Pdf.cs`, `Doc*.cs`, `OpsEval.cs`, `Milestones.cs`. Build/run: `start-dotnet.bat`
+or `dotnet run -c Release`; production = `dotnet publish` behind IIS. `serve-ops.ps1` is the **legacy** PowerShell
+HttpListener server, kept for rollback only.
+
+**Client (static):** `index.html` / `ops.js` / `styles.css` (worklist, manager plan, det/dem, my-tasks),
+`login.html`, `admin-ops.html` (4 tabs: Users / Milestones / Documents / ERP API), `erp-edit.{html,js}` +
+`erp-edit-fields.json` (staff ERP data-correction editor), `doc-editor.{html,js}` + `bl-review.{html,js}` +
+`bl-form.js` + `doc-fields.json` (draft HBL/HAWB customer-review loop), `i18n.js` + `lang/{zh-Hans,ja}.json`
+(English/SC/JP localization).
+
+**Schema + listener stand-in + feed (PowerShell):** `setup-ops.ps1` (creates the **~18-table** `erpops` schema
+idempotently, two-server aware), `seed-milestone-config.ps1` (37 `milestone_def` rows), `ops-eval.ps1` (Sea+Air
+evaluator), `seed-alerts.ps1 -Mode Sea|Air` (**listener stand-in** — the scheduled `listener-engine.ps1` is not yet
+built), `eval-shipment.ps1`, `seed-ports.ps1`, `erp-doc-api.ps1` (ERP push payload builders), `seed-station-map.ps1`
++ `publish-bookings.ps1` (cross-station inbound feed → `inbound_booking_feed`, served by `/api-ops/inbound` +
+`/api-ops/inbound-assign`), `register-ops-tasks.ps1` (Task Scheduler). `baseline-refresh.ps1` is not yet built.
+
+**Config / secrets (gitignored):** `ops.config.json` + `ops.config.<env>.json` (network/demoerp), `users.json`
+(`roles.json` is not used — roles live inline per user); copy from `ops.config.example.json` / `users.example.json`;
+env `DB_*`/`OPS_*` override. `erp-api-map.json` (tracked) holds non-secret ERP deployment codes.
+
+**Deploy / ops:** `deploy-local-iis-demoerp.ps1` (one-time elevated IIS bootstrap), `redeploy-demoerp.bat`,
+`restart-ops-{network,local,demoerp}.bat`, `docs/` (BUSINESS/TECHNICAL/DEVELOPER-GUIDE, SQL-README, IIS-DEPLOY, CUTOVER).
 
 ## Reuse, don't reinvent (sibling: `..\erp-dashboard`)
 
@@ -65,7 +88,7 @@ These are proven and lift over almost verbatim — read them in `..\erp-dashboar
 ## CRITICAL gotchas (carried from erp-dashboard — they caused real outages there)
 
 - **`Packet Size=512` on every SQL connection string.** The VPN's small MTU black-holes default 8 KB TDS packets ("semaphore timeout"). Mandatory, no exceptions.
-- **The server is single-threaded** (one `HttpListener` request at a time). A slow query blocks everything. Bound every query with `CommandTimeout`; the UI must read only the small `erpops` tables, never the ERP on a request path.
+- **Request-path discipline.** The UI must read only the small `erpops` tables, never the ERP on a request path; bound every query with `CommandTimeout`. The .NET `server/` is **multi-threaded** with a `dbGate` semaphore (default 16) and **per-request `ReqState`** for row-level scope (the structural fix for the auth-bypass risk that forced the legacy PS server to be single-threaded). The legacy `serve-ops.ps1` was single-threaded (one `HttpListener` request at a time) — a slow query blocked everything; that constraint applies only if you run the legacy server.
 - **`ConvertTo-Json` mangles 0- and 1-row arrays** in PS 5.1 (empty → `{}`, single → bare object). The client must coerce every list field back to an array (`arr()`); a `|| []` guard is *not* enough.
 - **API + static responses are `no-store`** (`Cache-Control` / `Pragma` / `Expires`) — the app may run in a cross-site iframe; stale `ops.js`/data otherwise silently "don't take".
 - **Cross-DB collation:** the reporting/ops DB is Latin1, station DBs are Chinese_HK. Text joins across DBs need `COLLATE DATABASE_DEFAULT`.
@@ -82,12 +105,18 @@ These are proven and lift over almost verbatim — read them in `..\erp-dashboar
   ASCII-only.
 - **The source station ERP DBs are READ-ONLY.** All writes go to `erpops` only. Never `INSERT`/`UPDATE`/`ALTER` an ERP table.
 
-## How to run (once built; mirrors erp-dashboard)
+## How to run (see PROJECT-SUMMARY.md "How to run" + docs/TECHNICAL-GUIDE.md for the full matrix)
 
-1. **VPN must be up** — the SQL host is only reachable through the Swivel OpenVPN connection. If queries time out, check the VPN first.
-2. Copy `ops.config.example.json` → `ops.config.json`, set server/SQL credentials + `erpops` name + station list (env `DB_*` override for headless).
-3. Run `setup-ops.ps1` once to create the schema. Then run the listener / start `serve-ops.ps1`.
-4. Test server-side changes on a **temp port** so you don't disturb a running instance; syntax-check with `[PSParser]::Tokenize` (PS) and `node --check ops.js` (JS).
+1. **VPN must be up** — the source ERP (`192.168.5.2`) is only reachable through the Swivel OpenVPN connection. If
+   queries time out, check the VPN first (see the `swivel-vpn` skill for the Surfshark route conflict fix).
+2. Copy `ops.config.example.json` → `ops.config.<env>.json`, set source-ERP + ops-DB connection (two-server keys
+   `opsServer`/`opsAuth`/…), `erpops` name + station list (env `DB_*`/`OPS_*` override for headless).
+3. One-time: `setup-ops.ps1 -ConfigPath …` (schema), `seed-milestone-config.ps1`, then `seed-alerts.ps1 -Mode Sea|Air`
+   per station to populate `shipment_alerts`.
+4. **Run the web tier from `server/`**: `start-dotnet.bat` (or `OPS_CONFIG=… OPS_HTTP_PORT=8079 dotnet run -c Release`)
+   → Kestrel on the config port. Production = `dotnet publish -c Release` behind IIS (`redeploy-demoerp.bat`).
+5. Syntax/sanity checks before declaring done: `.cs` → `dotnet build` (0 warnings); `.ps1` → `[PSParser]::Tokenize`;
+   `.js` → `node --check ops.js`. Test on a **temp port** so you don't disturb a running instance.
 
 ## Conventions (house rules — match erp-dashboard)
 
@@ -100,9 +129,13 @@ These are proven and lift over almost verbatim — read them in `..\erp-dashboar
 - **Dates are ISO `yyyy-mm-dd` everywhere** (e.g. `2023-12-31`) — display, input, and storage. This is the house standard; the locale-driven `mm/dd/yyyy` is wrong. **Do not use native `<input type="date">`** (it renders in the browser locale and forces a calendar popup the operators don't want) — use a plain `<input type="text">` with `placeholder="yyyy-mm-dd"` and a `^\d{4}-\d{2}-\d{2}$` guard. Server dates are emitted with `CONVERT(varchar(10), col, 23)` (ISO) and PowerShell with `.ToString('yyyy-MM-dd')`.
 - Commit only when asked; never commit secrets.
 
-## First build steps (the unblocking order)
+## Where to start (resuming work)
 
-1. `setup-ops.ps1` → create the 6 `erpops` tables (see BLUEPRINT §1, §2, §4); confirm via `INFORMATION_SCHEMA`; re-run to prove idempotency.
-2. **Resolve the ⚠ fields first** (BLUEPRINT "Open items"): map each logical field (`epdate`, `pdate`, `eta`, `atd`, `ddate`, `ad_date`, `comp_date`, `hbl_status`, `broker_name`, `trucker_name`, `wh_code`, …) and the **PIC / print_log / sendlog / EDI-log** tables to their **real** ERP `table.column` for one pilot station, verified by direct SQL. This is the project's main unknown — nothing downstream is trustworthy until it's done.
-3. `listener-engine.ps1 -Mode Sea` on a temp DB/port for the pilot station → reconcile computed lights & auto-closes against hand SQL on 3 known shipments (mid-flight / departed / delivered).
-4. `serve-ops.ps1` + UI → worklist reads only `shipment_alerts`; Tick & Confirm loop end-to-end.
+The app is built; there is no greenfield build order. To resume:
+1. Read **`PROJECT-SUMMARY.md`** (latest-session block at the top = current focus / "RESUME HERE").
+2. The ⚠ ERP field map that BLUEPRINT flagged as the main unknown is **resolved** — the verified ERP `table.column`
+   map lives in **`docs/SQL-README.md`**. Reconcile any new field against live SQL before trusting it (house rule).
+3. Most work now happens in the .NET `server/`; the client is static (reload, no rebuild). Restart the server after
+   a `.cs` change (`restart-ops-*.bat` / `redeploy-demoerp.bat`).
+4. Largest remaining gaps: the scheduled `listener-engine.ps1` and `baseline-refresh.ps1` (see PROJECT-SUMMARY
+   "Not yet built").
