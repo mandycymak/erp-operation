@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MasterLookup - standalone demo (no backend)</title>
+<link rel="stylesheet" href="master-lookup.css">
+<style>
+  /* a minimal theme so the chip/dropdown have colours; the widget reads these CSS vars (with its own fallbacks). */
+  :root { --line:#d2d6dd; --bg:#f4f5f7; --card:#fff; --fg:#1c2330; --mut:#6b7280; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --line:#3a4252; --bg:#1b2230; --card:#222b3a; --fg:#e7ebf2; --mut:#94a0b4; --accent:#6ea8fe; }
+    body { background:#141a24; }
+  }
+  body { font:14px system-ui,Segoe UI,Arial,sans-serif; color:var(--fg); margin:0; padding:24px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--mut); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; max-width:560px; margin-bottom:16px; }
+  .cap { font-size:10px; text-transform:uppercase; letter-spacing:.03em; color:var(--mut); font-weight:700; display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:4px; }
+  .field { margin-bottom:16px; }
+  .field:last-child { margin-bottom:0; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; }
+  .row .field { flex:1 1 220px; }
+  pre#state { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; font:12px ui-monospace,Consolas,monospace; color:var(--fg); white-space:pre-wrap; margin:0; }
+  .hintline { font-size:11px; color:var(--mut); }
+</style>
+</head>
+<body>
+  <h1>MasterLookup &mdash; standalone demo</h1>
+  <p class="sub">No backend. The <code>search()</code> below is an in-memory mock; the dropdown, positioning and
+  chip behaviour are the real widget. Click the <b>...</b> button on any chip, type a code or name, pick a row.</p>
+
+  <div class="card">
+    <div class="row">
+      <div class="field" id="f-shipper"></div>
+      <div class="field" id="f-consignee"></div>
+    </div>
+    <div class="row">
+      <div class="field" id="f-pol"></div>
+      <div class="field" id="f-pod"></div>
+    </div>
+    <div class="row">
+      <div class="field" id="f-liner"></div>
+      <div class="field" id="f-service"></div>
+      <div class="field" id="f-incoterm"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="cap">Live state (changes as you edit / pick)</div>
+    <pre id="state">{}</pre>
+  </div>
+
+  <script src="master-lookup.js"></script>
+  <script>
+  'use strict';
+
+  // ---- in-memory mock masters (stand in for the ERP custsub / portmstr / linermstr / servmstr) ----
+  const MASTERS = {
+    custsub: [
+      { code: 'ACME01',  name: 'ACME TRADING CO LTD',      loc: 'Hong Kong, HK' },
+      { code: 'BLUEOX',  name: 'BLUE OCEAN EXPORTS',        loc: 'Singapore, SG' },
+      { code: 'DUMMY',   name: 'DUMMY (placeholder code)',  loc: '' },
+      { code: 'NIPPON7', name: 'NIPPON LOGISTICS KK',       loc: 'Tokyo, JP' },
+      { code: 'TACOMA2', name: 'TACOMA IMPORTERS INC',      loc: 'Tacoma, US' },
+    ],
+    port: [
+      { code: 'HKHKG', name: 'HONG KONG' },
+      { code: 'SGSIN', name: 'SINGAPORE' },
+      { code: 'JPTYO', name: 'TOKYO' },
+      { code: 'USTIW', name: 'TACOMA, WA' },
+      { code: 'CNSHA', name: 'SHANGHAI' },
+    ],
+    liner: [
+      { code: 'APLU', name: 'APL CO PTE LTD' },
+      { code: 'MAEU', name: 'MAERSK LINE' },
+      { code: 'OOLU', name: 'ORIENT OVERSEAS CONTAINER LINE' },
+    ],
+    service: [
+      { code: 'FCL', name: 'Full Container Load' },
+      { code: 'LCL', name: 'Less than Container Load' },
+      { code: 'AIR', name: 'Air Freight' },
+    ],
+    // incoterm is served by the widget/server's built-in list in the real app; here we mock it for the demo.
+    incoterm: [
+      { code: 'FOB', name: 'Free On Board' },
+      { code: 'CIF', name: 'Cost, Insurance and Freight' },
+      { code: 'EXW', name: 'Ex Works' },
+      { code: 'DAP', name: 'Delivered At Place' },
+    ],
+  };
+
+  // a mock search(kind, q) - same contract the real httpSearch / server returns: { results:[{code,name,loc?}] }.
+  // Simulates network latency so you can see the "searching..." state.
+  function mockSearch(kind, q) {
+    return new Promise(resolve => setTimeout(() => {
+      const rows = MASTERS[kind] || [];
+      const ql = q.toLowerCase();
+      const results = rows.filter(r => !ql || r.code.toLowerCase().includes(ql) || (r.name || '').toLowerCase().includes(ql)).slice(0, 20);
+      resolve({ kind, results });
+    }, 180));
+  }
+
+  // ---- build the chips ----
+  const state = {};
+  const stateEl = document.getElementById('state');
+  const dump = () => { stateEl.textContent = JSON.stringify(state, null, 2); };
+
+  function addChip(hostId, label, kind, value) {
+    const host = document.getElementById(hostId);
+    const cap = document.createElement('div'); cap.className = 'cap';
+    cap.appendChild(document.createTextNode(label));
+    const c = MasterLookup.chip({
+      kind: kind,
+      value: value,
+      search: mockSearch,
+      onChange: (code) => { state[kind + ':' + label] = { code: code, changed: c.changed }; dump(); },
+      onSelect: (code, row) => { /* onChange also fires; row is the full master row if you need name/loc */ },
+    });
+    cap.appendChild(c.el);
+    host.appendChild(cap);
+    host.appendChild(c.hintEl);
+    state[kind + ':' + label] = { code: value, changed: false };
+  }
+
+  addChip('f-shipper',   'Shipper',         'custsub',  'DUMMY');
+  addChip('f-consignee', 'Consignee',       'custsub',  'TACOMA2');
+  addChip('f-pol',       'Port of Loading', 'port',     'HKHKG');
+  addChip('f-pod',       'Port of Discharge','port',    'USTIW');
+  addChip('f-liner',     'Liner / Carrier', 'liner',    '');
+  addChip('f-service',   'Service type',    'service',  'FCL');
+  addChip('f-incoterm',  'Incoterm',        'incoterm', 'FOB');
+  dump();
+  </script>
+</body>
+</html>

@@ -17,7 +17,30 @@ A clickable, end-to-end worklist app runs against real data on two test environm
 `listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
 so the UI and Tick-&-Confirm loop can be exercised now.
 
-**Latest session (2026-06-16c — UI internationalization (i18n): English + Simplified Chinese + Japanese; plus always-on ERP document upload. RESUME HERE).**
+**Latest session (2026-06-18 — extracted the ERP master-lookup (port/customer/liner/service/incoterm) into a standalone, drop-in module for reuse in other projects. RESUME HERE).**
+Pulled the master code-lookup out of the **Edit ERP data** editor into a self-contained kit under **`reusable/master-lookup/`**
+(no framework, no build step) so it lifts cleanly into a sibling project. Two layers, sharing one `kind` contract
+(`custsub`=customer · `port` · `liner` · `service` · `incoterm`) and the on-wire shape
+`{ kind, results:[{code,name,loc?}] }`.
+- **Source seams.** Client = `erp-edit.js` (`codeChip` / `openLookup` / `fmtMaster`) + the `erp-edit.html` chip/dropdown
+  styles; server = `server/Handlers.Erp.cs` (`ErpMaster` + the fixed Incoterms-2020 list). Both lifted **verbatim** in
+  behaviour; only the host coupling was stripped.
+- **`master-lookup.js`** (`window.MasterLookup`): `chip()` (the editable `( CODE ) ...` chip → `{el,hintEl,value,changed}`),
+  `open()` (the viewport-pinned + clamped type-ahead dropdown, preserved exactly — `position:fixed`, flips up near the
+  bottom, focuses with `preventScroll`), `httpSearch()` (GET helper), `fmtMaster()`. **Transport-agnostic** — caller
+  supplies `search(kind,q)`, so it works against the real API, a mock, or an in-memory list.
+- **`MasterLookup.cs`** (`MasterLookup.Search(conn, kind, term, isAir)`): the same bounded `TOP 20` LIKE seek (8s),
+  but **scope coupling removed** — no `shipment_alerts`/`ReqState`/`TestJobScope`/`Source`; takes an already-open
+  source-ERP connection and inlines its own raw-ADO reader, so the **only** dependency is `Microsoft.Data.SqlClient`.
+  Auth/scope is the caller's job in the endpoint wrapper (flagged in the README). Verbatim JSON casing via `JsonOpts`.
+- **`master-lookup.css`** (chip + `.lookbox` styles, themed via CSS vars with standalone fallbacks), **`demo.html`**
+  (every chip kind wired to an in-memory mock `search()` — opens in a browser, no backend), **`README.md`** (wiring for
+  both ends + the `position:fixed` rationale). The widget's table/column names match the Swivel `fm3k*` masters — adjust
+  the SQL strings if a target schema differs.
+- **Note:** node/dotnet weren't on this session's PATH, so the automated `node --check` / build weren't run; the code is
+  a faithful lift of already-live code. New files only (`reusable/master-lookup/*`); nothing in the running app changed.
+
+**Previous session (2026-06-16c — UI internationalization (i18n): English + Simplified Chinese + Japanese; plus always-on ERP document upload).**
 Added a lightweight, **no-build-step** localization layer so station staff can use the UI in their own language while
 English stays the source-of-truth and one-click fallback. **Client-side captions only** (data, documents and user
 notes stay as-is); scope = the operator-facing pages (`index.html`/`ops.js`/`login.html`). Verified live on :8079 via

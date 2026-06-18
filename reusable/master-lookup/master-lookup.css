@@ -1,0 +1,27 @@
+/* master-lookup.css - styles for the MasterLookup chip + dropdown. Extracted from erp-edit.html.
+   Colours come from CSS custom properties so it inherits the host app's theme; the fallbacks make it work
+   standalone with no theme defined. Override the vars (or these rules) to match your app. */
+.codechip {
+  --ml-line: var(--line, #d2d6dd);
+  --ml-bg: var(--bg, #f4f5f7);
+  --ml-card: var(--card, #fff);
+  --ml-fg: var(--fg, #1c2330);
+  --ml-mut: var(--mut, #6b7280);
+  --ml-accent: var(--accent, #2563eb);
+}
+
+.codechip { display: inline-flex; align-items: center; gap: 2px; color: var(--ml-mut); font-weight: 700; text-transform: none; }
+.codechip input { border: 1px solid var(--ml-line); background: var(--ml-bg); border-radius: 5px; width: 66px; font: 700 11px ui-monospace, Consolas, monospace; color: var(--ml-accent); padding: 1px 5px; text-align: center; }
+.codechip input:disabled { color: var(--ml-mut); background: transparent; border-color: transparent; }
+.codechip input.chg { outline: 2px solid var(--ml-accent); outline-offset: 0; }
+
+.findbtn { border: 0; background: transparent; cursor: pointer; font-size: 11px; padding: 0 1px; color: var(--ml-mut); }
+.ml-hint { font-size: 11px; color: var(--mut, #6b7280); min-height: 13px; }
+
+/* the type-ahead dropdown. The JS sets position:fixed + top/left/maxHeight at open time; these are the
+   visual defaults (and a sane fallback if the JS positioning is ever skipped). */
+.lookbox { position: absolute; z-index: 40; left: 0; top: 100%; min-width: 230px; background: var(--card, #fff); border: 1px solid var(--line, #d2d6dd); border-radius: 6px; margin-top: 3px; max-height: 240px; overflow: auto; box-shadow: 0 6px 20px rgba(0, 0, 0, .20); }
+.lookbox .lq { width: 100%; border: 0; border-bottom: 1px solid var(--line, #d2d6dd); border-radius: 6px 6px 0 0; padding: 6px 8px; background: var(--card, #fff); color: var(--fg, #1c2330); font: inherit; }
+.lookbox .li { padding: 6px 9px; cursor: pointer; border-top: 1px solid var(--line, #d2d6dd); font-size: 13px; }
+.lookbox .li:hover { background: var(--bg, #f4f5f7); }
+.lookbox .li b { font-family: ui-monospace, Consolas, monospace; }
