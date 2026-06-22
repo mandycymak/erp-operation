@@ -128,7 +128,40 @@ The **My Tasks** panel (badge in the header) collects everything waiting on you:
 
 ---
 
-## 8. Inbound bookings (pre-arrival)
+## 8. Find — search by typing what you remember
+
+The header **🔎 Find** button opens a search page where you describe the shipment in **plain language** — you
+don't need to know which field, and you don't even need to remember whether it was **Air or Sea** (Find covers
+both). It searches your shipments **and** the notes/messages on them, and includes **recently-closed** files,
+not just active ones — so a delivered shipment whose booking number you've forgotten is still findable.
+
+Type what you remember; Find pulls out the clues and shows you an **"Looking for:"** line so you can see what it
+understood (edit your text and it re-runs — a misread is corrected, never silently wrong). Examples:
+
+- *"from hong kong, bike, last week"* — a lane + a commodity + a date window.
+- *"shipper abc shipped footwear to me"* — a company + a commodity + a message that mentions you.
+- *"I contacted Rainbow Transportation to arrange shipment but forgot which booking"* — the **contact/company you
+  recorded on the shipment** (e.g. in an arrangement note), even when you can't recall the booking number.
+- *"Leo dropped me a message about hong kong bike, customs ready"* — who messaged you, and roughly what they said.
+- *"booking SO12345"* / *"HBL ABC123"* — an exact identifier (this finds **any** file, ignoring the "mine" default).
+
+**By default Find shows shipments you're involved in** — ones you're the PIC of, created, updated, or were
+@-mentioned in / wrote a note on (the same "My work" notion as the worklist). Say **"anyone"** (or "all",
+"everyone") to widen the search to everything you're allowed to see. Either way Find **never shows shipments
+outside your station / mode access** — your role scope always applies.
+
+Click any result to open the shipment in the usual drawer.
+
+> ℹ️ If a phrasing is too unusual for the built-in parser, an administrator can optionally enable an **AI
+> assist** that re-interprets your wording (off by default). When it's used, the result is flagged **✨
+> AI-assisted** — it only re-reads your text; it never widens what you're allowed to see.
+
+**CTA:** Reach for Find when you remember *something* about a shipment but not its number — a customer, a port,
+a commodity, or a message a colleague sent you.
+
+---
+
+## 9. Inbound bookings (pre-arrival)
 
 The **📥 Inbound bookings** panel (Import view) shows shipments **another station has booked to you** before
 any bill exists — led by the consignee, with cargo-ready / ETD dates and the source station. No station ever
@@ -140,7 +173,7 @@ pre-arrival prep starts before the cargo lands.
 
 ---
 
-## 9. Draft House BL / Air Waybill — the customer-agreement workflow
+## 10. Draft House BL / Air Waybill — the customer-agreement workflow
 
 This is how you get a customer to **agree** the bill before it is issued, and then push the agreed result
 back to the ERP.
@@ -182,7 +215,7 @@ Confirm in the ERP backend that the **Transport Bill Confirm** event and the **B
 
 ---
 
-## 10. Edit ERP data — fixing bad source data
+## 11. Edit ERP data — fixing bad source data
 
 Operators routinely spot **wrong data in the ERP** they can't fix from the ERP UI — a `DUMMY` party code, a
 `ZZZ`/`ZZZZZ` incoterm or port code, a wrong address, date, carrier, or container count. These silently corrupt
@@ -215,7 +248,7 @@ fix it, and **Save changes to ERP** — don't let bad source data flow into the 
 
 ---
 
-## 11. Day-to-day playbook (quick CTAs)
+## 12. Day-to-day playbook (quick CTAs)
 
 - **Start of day:** This-week / your station / your mode → work **Red** groups first.
 - **My Tasks badge lit:** clear **Draft reviews**, then reminders.
@@ -228,7 +261,7 @@ fix it, and **Save changes to ERP** — don't let bad source data flow into the 
 
 ---
 
-## 12. Good to know
+## 13. Good to know
 
 - **Language.** The screen can be shown in **English, 中文 (Simplified Chinese), or 日本語 (Japanese)** — use the
   **language picker** in the top bar (next to the theme button). Your admin can set your **default** language on

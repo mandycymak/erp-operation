@@ -274,3 +274,18 @@ button:hover{filter:brightness(1.08)}
   .lens{gap:6px}
   .lens .seg{flex-wrap:wrap}
 }
+
+/* ---------- natural-language Find overlay (mode-agnostic, separate from the working panel) ---------- */
+.find-view{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:5vh 12px}
+.find-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:760px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+.find-top{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.find-box>input{margin:12px 14px 4px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:15px}
+#findSummary{padding:2px 16px 8px}
+.find-feed{overflow:auto;padding:4px 10px 12px}
+.find-row{padding:9px 10px;border:1px solid var(--line);border-radius:8px;margin:6px 4px;cursor:pointer;background:var(--panel)}
+.find-row:hover{border-color:var(--accent);background:var(--panel2)}
+.find-row .find-h{display:flex;align-items:center;gap:7px;margin-bottom:2px}
+.sm{font-size:11.5px}
+.badge.nb{background:var(--accent)}
+.badge.cl{background:var(--mut)}
+@media (max-width:560px){ .find-view{padding:2vh 6px} }

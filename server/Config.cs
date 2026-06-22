@@ -58,6 +58,18 @@ public static class Config
     public static string PublicBaseUrl { get; private set; } = "";   // customer-review link prefix (doc-send, Stage 5)
     public static string? PdfEngine { get; private set; }            // headless Edge/Chrome override (Stage 5)
 
+    // ---- Optional LLM fallback for natural-language Find (the `llm` config block). OFF by default; the
+    // rule-based parser ships first and always runs. When enabled, a low-confidence / no-result Find may call
+    // POST /api-ops/parse-find, which asks the chosen provider to re-extract the SAME clue object — the LLM never
+    // sees DB rows and never bypasses scope. Provider-pluggable: the user picks claude | openai | deepseek. ----
+    public static bool LlmEnabled { get; private set; }
+    public static string LlmProvider { get; private set; } = "claude";   // claude | openai | deepseek
+    public static string LlmApiKey { get; private set; } = "";
+    public static string LlmModel { get; private set; } = "";            // e.g. claude-haiku-4-5 / gpt-4o-mini / deepseek-chat
+    public static string LlmBaseUrl { get; private set; } = "";          // override (DeepSeek / self-host / proxy)
+    public static int LlmMaxTokens { get; private set; } = 400;
+    public static int LlmTimeoutMs { get; private set; } = 8000;
+
     // In a cross-site L!NK iframe the session cookie must be SameSite=None; Secure. Set OPS_IFRAME=1 there.
     public static bool IframeCookie { get; private set; }
     public static bool Https { get; private set; }
@@ -139,6 +151,16 @@ public static class Config
 
         PublicBaseUrl = ((string?)cfg["publicBaseUrl"] ?? "").Trim();
         PdfEngine = (string?)cfg["pdfEngine"];
+
+        var llm = cfg["llm"]?.AsObject();
+        LlmProvider = NonEmpty(((string?)llm?["provider"] ?? "").Trim().ToLowerInvariant(), "claude");
+        LlmApiKey = EnvOrConfig("OPS_LLM_API_KEY", (string?)llm?["apiKey"]).Trim();
+        LlmModel = ((string?)llm?["model"] ?? "").Trim();
+        LlmBaseUrl = ((string?)llm?["baseUrl"] ?? "").Trim();
+        LlmMaxTokens = (int?)llm?["maxTokens"] ?? 400;
+        LlmTimeoutMs = (int?)llm?["timeoutMs"] ?? 8000;
+        // enabled only when the flag is on AND a key is present — a missing key keeps the seam inert.
+        LlmEnabled = ((bool?)llm?["enabled"] ?? false) && LlmApiKey != "";
 
         IframeCookie = Environment.GetEnvironmentVariable("OPS_IFRAME") == "1";
         Https = Environment.GetEnvironmentVariable("OPS_HTTPS") == "1" || IframeCookie;

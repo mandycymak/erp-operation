@@ -145,6 +145,28 @@ as the agree flow).
 > `custsub`/`portmstr`/`servmstr`/`linermstr` masters exist in **both** the station DB (`fm3k<code>`) and corporate
 > `fm3kco`; the editor reads the **station** DB.
 
+### Operator notes, arrangements & reminders (`job_note`)
+
+Per-shipment notes, arrangement records, and reminders — **migrated from the old shared JSON file
+`ops-lists/job-notes.json` into SQL** (2026-06-22) so they're queryable like every other entity (the
+natural-language **Find** tab searches them under role scope). `server/Notes.cs` is the only accessor; its
+`NoteRec` shape and method signatures are unchanged, so My-Tasks, the worklist chat-dot, and note-add/note-done
+were untouched by the move.
+
+| Table | Grain | Purpose |
+|---|---|---|
+| `job_note` | one row per note / arrangement / reminder (keyed `id`, GUID) | `job_no` (the shipment), `[user]` = author (**bracketed — reserved word**), `kind` (`note`/`bypass`/`reopen`/…), `note` text, **`mentions`** = comma-delimited `@`-usernames (clean `(','+mentions+',') LIKE '%,me,%'` for mention search), `status` (`open`/`done`) + `done_by`/`done_at`, the arrangement fields `arr_type`/**`party`**/`contact`/`arr_status`, `remind_on` (yyyy-mm-dd), `silent` (bit, nullable), `created` (ISO-8601 string — preserves the file ordering). Indexes on `job_no`, `[user]`, `created`. |
+
+> ℹ️ **One-time import.** `setup-ops.ps1` §2.9 creates the table and, **only when it's empty**, imports any
+> existing `ops-lists/job-notes.json` (the file is kept as a backup, not deleted). A fresh install simply starts
+> with an empty table.
+>
+> ℹ️ **Find's note search is scope-safe.** `job_note` has no scope columns of its own; the Find endpoint
+> (`/api-ops/find`) gates every note hit with `EXISTS (SELECT 1 FROM dbo.shipment_alerts s WHERE s.job_no =
+> n.job_no <Scope.StationClause + Scope.PairClause>)`, so a note is only visible when its **parent shipment** is
+> in the caller's station/mode scope. The arrangement `party`/`contact` columns are also what lets Find match a
+> free-text contact like *"Rainbow Transportation"* to the shipment it was recorded on.
+
 ---
 
 ## 3. ERP source field map — Sea (`blhead` + `blcont` + `blitem`)

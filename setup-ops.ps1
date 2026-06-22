@@ -35,6 +35,12 @@ function ExecSql($db, $sql) {
   $cn = New-Object System.Data.SqlClient.SqlConnection (ConnStr $db); $cn.Open()
   try { $c = $cn.CreateCommand(); $c.CommandText = $sql; $c.CommandTimeout = 120; [void]$c.ExecuteNonQuery() } finally { $cn.Close() }
 }
+function ScalarSql($db, $sql) {
+  $cn = New-Object System.Data.SqlClient.SqlConnection (ConnStr $db); $cn.Open()
+  try { $c = $cn.CreateCommand(); $c.CommandText = $sql; return $c.ExecuteScalar() } finally { $cn.Close() }
+}
+# map a missing/empty value to DBNull for parameterised inserts (used by the one-time job_note import)
+function DbVal($v) { if ($null -eq $v -or "$v".Trim() -eq "") { [DBNull]::Value } else { $v } }
 
 Write-Host "Creating operational database [$opsDb] on $opsServer ..." -ForegroundColor Cyan
 ExecSql "master" "IF DB_ID('$opsDb') IS NULL CREATE DATABASE [$opsDb]"
@@ -211,6 +217,83 @@ CREATE TABLE dbo.company_dim (
   CONSTRAINT PK_company_dim PRIMARY KEY (code)
 );
 "@
+
+# --- 2.9 job_note — operator notes / arrangements / reminders, keyed by job_no (was ops-lists/job-notes.json).
+#     Moved into SQL so the natural-language Find can search authors/body/mentions with a scoped EXISTS and so
+#     notes are queryable like every other entity. NoteRec (server/Notes.cs) maps 1:1 to these columns. `user`
+#     is bracketed everywhere (reserved word). `mentions` is a comma-delimited username list so an @-mention
+#     search is a simple ( ','+mentions+',' LIKE '%,me,%' ). `created` stays an ISO-8601 'o' string (verbatim
+#     from the old file) so ordering/format are unchanged. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.job_note') IS NULL
+CREATE TABLE dbo.job_note (
+  id             nvarchar(40)  NOT NULL,
+  job_no         nvarchar(24)  NULL,
+  [user]         nvarchar(40)  NULL,        -- author (app username)
+  milestone_code nvarchar(12)  NULL,
+  kind           nvarchar(12)  NOT NULL DEFAULT 'note',
+  note           nvarchar(max) NULL,
+  mentions       nvarchar(max) NULL,        -- comma-delimited usernames
+  status         nvarchar(8)   NOT NULL DEFAULT 'open',
+  done_by        nvarchar(40)  NULL,
+  done_at        nvarchar(40)  NULL,
+  arr_type       nvarchar(20)  NULL,
+  party          nvarchar(120) NULL,        -- arrangement counterparty / free-text contact (e.g. 'Rainbow Transportation')
+  contact        nvarchar(120) NULL,
+  arr_status     nvarchar(20)  NULL,
+  remind_on      nvarchar(10)  NULL,        -- yyyy-mm-dd
+  silent         bit           NULL,
+  created        nvarchar(40)  NOT NULL,    -- ISO-8601 'o' timestamp (string, preserves the file format)
+  CONSTRAINT PK_job_note PRIMARY KEY (id)
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_job_note_job'  AND object_id=OBJECT_ID('dbo.job_note'))
+  CREATE INDEX IX_job_note_job  ON dbo.job_note(job_no);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_job_note_user' AND object_id=OBJECT_ID('dbo.job_note'))
+  CREATE INDEX IX_job_note_user ON dbo.job_note([user]);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_job_note_created' AND object_id=OBJECT_ID('dbo.job_note'))
+  CREATE INDEX IX_job_note_created ON dbo.job_note(created);
+"@
+
+# --- one-time data migration: import legacy ops-lists/job-notes.json into dbo.job_note. Runs ONLY when the
+#     table is empty, so re-running setup never double-imports. The JSON file is left in place as a backup. ---
+$notesFile = Join-Path $PSScriptRoot "ops-lists\job-notes.json"
+if (Test-Path $notesFile) {
+  $existing = [int](ScalarSql $opsDb "SELECT COUNT(*) FROM dbo.job_note")
+  if ($existing -eq 0) {
+    $recs = @(([IO.File]::ReadAllText($notesFile) | ConvertFrom-Json)) | Where-Object { $_.id }
+    if ($recs.Count -gt 0) {
+      Write-Host "Importing $($recs.Count) legacy notes from job-notes.json into dbo.job_note ..." -ForegroundColor Cyan
+      $cn = New-Object System.Data.SqlClient.SqlConnection (ConnStr $opsDb); $cn.Open()
+      try {
+        foreach ($r in $recs) {
+          $c = $cn.CreateCommand()
+          $c.CommandText = "INSERT INTO dbo.job_note (id,job_no,[user],milestone_code,kind,note,mentions,status,done_by,done_at,arr_type,party,contact,arr_status,remind_on,silent,created) VALUES (@id,@job,@usr,@ms,@kind,@note,@ment,@st,@db,@da,@at,@pty,@ct,@as,@ro,@sil,@cr)"
+          $ment = if ($r.mentions) { (@($r.mentions) -join ',') } else { '' }
+          $sil  = if ($null -ne $r.silent) { [bool]$r.silent } else { [DBNull]::Value }
+          [void]$c.Parameters.AddWithValue("@id",   [string]$r.id)
+          [void]$c.Parameters.AddWithValue("@job",  (DbVal $r.job_no))
+          [void]$c.Parameters.AddWithValue("@usr",  (DbVal $r.user))
+          [void]$c.Parameters.AddWithValue("@ms",   (DbVal $r.milestone_code))
+          [void]$c.Parameters.AddWithValue("@kind", (DbVal $(if ($r.kind) { $r.kind } else { 'note' })))
+          [void]$c.Parameters.AddWithValue("@note", (DbVal $r.note))
+          [void]$c.Parameters.AddWithValue("@ment", (DbVal $ment))
+          [void]$c.Parameters.AddWithValue("@st",   (DbVal $(if ($r.status) { $r.status } else { 'open' })))
+          [void]$c.Parameters.AddWithValue("@db",   (DbVal $r.doneBy))
+          [void]$c.Parameters.AddWithValue("@da",   (DbVal $r.doneAt))
+          [void]$c.Parameters.AddWithValue("@at",   (DbVal $r.arr_type))
+          [void]$c.Parameters.AddWithValue("@pty",  (DbVal $r.party))
+          [void]$c.Parameters.AddWithValue("@ct",   (DbVal $r.contact))
+          [void]$c.Parameters.AddWithValue("@as",   (DbVal $r.arr_status))
+          [void]$c.Parameters.AddWithValue("@ro",   (DbVal $r.remind_on))
+          [void]$c.Parameters.AddWithValue("@sil",  $sil)
+          [void]$c.Parameters.AddWithValue("@cr",   (DbVal $(if ($r.created) { $r.created } else { (Get-Date).ToString('o') })))
+          [void]$c.ExecuteNonQuery()
+        }
+        Write-Host "  imported $($recs.Count) notes." -ForegroundColor Green
+      } finally { $cn.Close() }
+    }
+  }
+}
 
 # --- 2.1 milestone_def — config-driven matrix: qualify/complete rules + SLA per [milestone x bound] ---
 ExecSql $opsDb @"

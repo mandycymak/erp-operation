@@ -56,7 +56,7 @@ actually built and proven; update it when you ship something.
 | `eval-shipment.ps1` | read-only one-shot card for one shipment (diagnostic) |
 | `seed-station-map.ps1` / `publish-bookings.ps1` | the cross-station inbound feed (identity directory + publisher) |
 | `register-ops-tasks.ps1` | Task Scheduler registration |
-| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`), `Auth.cs`, `Config.cs`, `Sql.cs`, `Filter.cs`, and `Handlers.*.cs` (one area per file: Worklist/Shipment/Notes/Tasks/Inbound/Erp*/Doc/Admin/Misc). `dotnet publish -c Release` to deploy |
+| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`), `Auth.cs`, `Config.cs`, `Sql.cs`, `Filter.cs`, and `Handlers.*.cs` (one area per file: Worklist/Shipment/**Find**/Notes/Tasks/Inbound/Erp*/Doc/Admin/Misc). `Notes.cs` backs the SQL `job_note` store; **`Llm.cs`** is the optional, flag-gated Find fallback adapter. `dotnet publish -c Release` to deploy |
 | `serve-ops.ps1` | the **legacy** web service (rollback) — same routes/contract as `server/`; keep in parity when a shared contract changes |
 | **`i18n.js`** | the client localization layer — `tr(en, ctx?)`, `applyDom()`, `boot()`, `setLang()`, the `SUPPORTED` language list |
 | **`lang/<code>.json`** | UI translation dictionaries (English source string = key). `lang/zh-Hans.json`, `lang/ja.json` |
@@ -126,6 +126,36 @@ federates on `profile.email`, auto-provisions via `Provision-LinkUser` when enab
 by `$LinkEnabled` (env `SWIVEL_OAUTH_PROFILE_URL`/`SWIVEL_OAUTH_XSYSTEM` or the `swivelLink` config block);
 `/api-ops/config` exposes `linkEnabled`. Frontend `linkBoot()` (runs before `init()`) reads `mode`/`site` +
 `#code&state`, redeems, then scrubs the fragment.
+
+### Natural-language Find (`.NET only` — `Handlers.Find.cs`) + optional LLM seam
+
+A feature added **after** the .NET port, so it has **no `serve-ops.ps1` parity** (don't back-port it). The
+parser is **rule-based and client-side** (`parseOpsQuery` in `ops.js` — ports quotation's `parseDateWindow` /
+`stripPlaceNoise` / stop-word approach, no LLM); the server just receives the extracted clue params.
+
+- **`GET /api-ops/find` (`Handlers.Find`).** A scoped `shipment_alerts` query (party / lane / commodity /
+  carrier / the existing identifier field→column map, **plus** an `EXISTS dbo.job_note` branch so the "who" clue
+  also matches a note's arrangement `party`/`contact`) **merged** with a `job_note` search (author / body /
+  `@`-mention), deduped by `job_no`, recency-sorted, `TOP 60`. Searches **active + recently-closed** (closed gated
+  to ~6 months when no date window). **Involvement ("mine") is the default** — it reuses the **worklist lens**
+  (`Scope.ErpAliases` pic/created/updated + `Notes.MyNoteJobs` + `Scope.SysExprs` broadcast); a **note-only**
+  query (note clues, no shipment clue) **skips that lens** so system-broadcast rows don't drown the message; an
+  explicit identifier **bypasses** it. **Scope is the security boundary** — `Scope.StationClause` +
+  `Scope.PairClause` exactly as the worklist, and the note search inherits it via a scoped `EXISTS` on the parent
+  shipment (`job_note` has no scope columns of its own). `Scope.PairClause` took an optional column-alias arg
+  (backward-compatible) so it can be aliased (`s.mode`/`s.bound`) inside that subquery.
+- **`POST /api-ops/parse-find` (`Llm.cs`) — optional, OFF by default.** Returns **501** unless `Config.LlmEnabled`
+  (the `llm.enabled` flag **and** an API key, env `OPS_LLM_API_KEY`). When on, it re-interprets the free text into
+  the **same clue object** and the client re-runs `/api-ops/find` — the LLM **never** touches the DB or scope.
+  Provider-pluggable (`llm.provider` = **claude | openai | deepseek**) via one raw-HTTP adapter (Claude = Messages
+  API `output_config.format`, default `claude-haiku-4-5`; OpenAI/DeepSeek = chat-completions). Fails **open** (any
+  error → `null` → client falls back to the rule parse). The client (`opsFindLlmFallback`) calls it **only** on a
+  zero-result rule parse and flags the result **✨ AI-assisted**. Shared prompt/clue-schema intent mirrors
+  quotation's `/api-quote/parse-shipment` so both apps parse to one contract.
+
+> ⚠️ **Don't apply the involvement lens to a note-only query** without the broadcast-skip — `Scope.SysExprs`
+> broadcasts API/EDI/QUOTATION-created rows into everyone's "mine", which silently floods a "Leo messaged me…"
+> search with dozens of unrelated shipments. `noteOnly` (note clue present, no shipment clue) gates this.
 
 ### The draft-document subsystem
 
@@ -205,6 +235,11 @@ So your SQL is correct, read [SQL-README.md](SQL-README.md): the `erpops` tables
 fields (`onboard2`/`departure2`/`vessel_2`), and the verified Air field map (`to1`/`deli`/`to3` routing,
 `dest_name`, `desc2` goods, `mark2` marks, `dimension`, `handling`, `t_rece_qty`, `wgt_unit`, the PPD/COLL
 terms). New HTML pages need `<meta charset="utf-8">`.
+
+Note **`job_note`** (operator notes/arrangements/reminders) is now a **SQL table**, not the old
+`ops-lists/job-notes.json` file — accessed only via `Notes.cs` (`[user]` is bracketed; `mentions` is
+comma-delimited; `created` is an ISO string). It carries no scope columns, so any cross-shipment read of it
+**must** gate on the parent shipment's scope (see the Find note search). See [SQL-README.md §2](SQL-README.md).
 
 ---
 

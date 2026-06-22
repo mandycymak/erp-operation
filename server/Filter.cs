@@ -36,8 +36,10 @@ public static class Scope
         return $" AND {col} IN ({string.Join(",", ins)}) ";
     }
 
-    // " AND ((mode=@scpm0 AND bound=@scpb0) OR ...) " over the user's mode-bound pairs, or "".
-    public static string PairClause(ReqState rs, Dictionary<string, object?> p)
+    // " AND ((mode=@scpm0 AND bound=@scpb0) OR ...) " over the user's mode-bound pairs, or "". The column names
+    // are overridable so the clause can be aliased inside a correlated subquery (e.g. s.mode/s.bound in Find's
+    // note EXISTS); defaults keep every existing caller unchanged.
+    public static string PairClause(ReqState rs, Dictionary<string, object?> p, string modeCol = "mode", string boundCol = "bound")
     {
         var prs = CurPairs(rs);
         if (prs.Length == 0) return "";
@@ -45,7 +47,7 @@ public static class Scope
         for (int i = 0; i < prs.Length; i++)
         {
             var parts = prs[i].Split('-');
-            ors.Add($"(mode=@scpm{i} AND bound=@scpb{i})");
+            ors.Add($"({modeCol}=@scpm{i} AND {boundCol}=@scpb{i})");
             p[$"scpm{i}"] = parts[0]; p[$"scpb{i}"] = parts[1];
         }
         return $" AND ({string.Join(" OR ", ors)}) ";

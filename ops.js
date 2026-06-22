@@ -95,8 +95,24 @@ async function init() {
   };
   $('#tasksBtn').onclick = () => $('#tasksPanel').scrollIntoView({ behavior: 'smooth' });
   $('#closeDrawer').onclick = closeDrawer; $('#drawerBg').onclick = closeDrawer;
+  wireFind();
   refreshAll();
 }
+
+// ---------- natural-language Find (dedicated, mode-agnostic page) ----------
+function wireFind() {
+  const fb = $('#findBtn'); if (fb) fb.onclick = openFind;
+  const fc = $('#findClose'); if (fc) fc.onclick = closeFind;
+  const ft = $('#findText');
+  if (ft) {
+    const deb = debounce(runOpsFind, 350);
+    ft.addEventListener('input', deb);
+    ft.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runOpsFind(); } else if (e.key === 'Escape') closeFind(); });
+  }
+  const fv = $('#findView'); if (fv) fv.addEventListener('click', e => { if (e.target === fv) closeFind(); });
+}
+function openFind() { const v = $('#findView'); if (!v) return; v.style.display = 'flex'; const i = $('#findText'); if (i) { i.focus(); i.select(); } }
+function closeFind() { const v = $('#findView'); if (v) v.style.display = 'none'; }
 function buildUserPicker() {
   const sel = $('#userPicker'); sel.innerHTML = '';
   state.roster.forEach(u => { const o = el('option'); o.value = u; o.textContent = u; if (u === state.user) o.selected = true; sel.appendChild(o); });
@@ -1347,6 +1363,181 @@ function taskCard(t, fromOthers, today) {
   d.onclick = () => openShipment(t.job_no);   // whole card opens the shipment
   d.querySelector('.tk-done').onclick = async e => { e.stopPropagation(); await api('/api-ops/note-done', { method: 'POST', body: { id: t.id, done: true } }); loadTasks(); };
   return d;
+}
+
+/* ============================================================================
+   Natural-language Find — rule-based parser (no LLM). Adapted from erp-quotation's parseCustomerQuery:
+   subtract the known clues (date / mode / bound / identifiers / lane / note author+body+mention / "who"),
+   the significant leftover is the company/contact. Everything shows in an editable "Looking for:" summary so a
+   misparse is corrected, not silently wrong. An LLM fallback is a documented future seam (Part 4) — not wired.
+   ============================================================================ */
+// drop noise words but KEEP unknown words (a place name or a commodity) so the server LIKE can try them.
+var OPS_PLACE_NOISE = /\b(by|air|airfreight|sea|seafreight|ocean|oceanfreight|freight|fcl|lcl|vessel|liner|carrier|flight|booking|bookings|shipment|shipments|file|files|job|jobs|cargo|container|containers|please|pls|thanks|thank|you|find|me|get|got|want|need|needed|looking|look|check|show|ship|shipped|shipping|send|sent|only|just|with|via|on|the|some|for|of|to|from|that|this|about|customs|cleared|ready|arrived|arriving|delivered|pickup)\b/gi;
+function opsStripNoise(s) { var x = ' ' + ('' + s).toLowerCase() + ' '; x = x.replace(/[?.,;!]/g, ' '); x = x.replace(OPS_PLACE_NOISE, ' '); return x.replace(/\s+/g, ' ').trim(); }
+// command / grammar / ops-vocabulary stop-words: whatever survives is the company/contact name.
+var OPS_FIND_STOP = /\b(find|search|show|tell|give|get|got|list|fetch|pull|look|looking|lookup|locate|check|want|wanted|need|needed|see|view|just|only|kindly|what|whats|who|whose|which|when|where|me|us|my|mine|our|own|team|teams|the|a|an|any|all|recent|recently|latest|last|new|old|message|messages|note|notes|msg|chat|activity|activities|history|anything|everything|something|about|re|regarding|saying|says|said|with|for|to|from|of|on|by|at|in|and|or|please|pls|do|does|did|you|know|i|we|remember|recall|forgot|forget|forgotten|help|that|this|these|those|has|have|had|is|was|are|were|been|be|prepared|made|create|created|raise|raised|handle|handled|arrange|arranged|arranging|contact|contacted|contacting|update|updated|name|air|sea|ocean|freight|fcl|lcl|vessel|liner|flight|booking|bookings|shipment|shipments|shipped|shipping|ship|file|files|job|jobs|cargo|but|anyone|everyone|everybody|customer|client|account|consignee|shipper|agent|carrier|today|yesterday|week|weeks|month|months|day|days|year|years|ago|few|couple|previous|since|import|imports|export|exports|inbound|outbound|customs|cleared|clearance|ready|arrived|arriving|delivered|delivery|pickup|hbl|hawb|house|mbl|mawb|master|container|containers|po|so|sono|id|number|no|ref)\b/gi;
+// relative date phrases -> {from,to,label}. Ported verbatim from erp-quotation (Monday-based ISO weeks).
+function parseDateWindow(text) {
+  var t = (' ' + ('' + (text || '')).toLowerCase() + ' ');
+  var now = new Date();
+  function z(n) { return (n < 10 ? '0' : '') + n; }
+  function iso(d) { return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()); }
+  function addDays(d, n) { var x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  function startOfWeek(d) { var x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+  var m;
+  if (m = t.match(/\b(?:last|past|previous|recent)\s+(\d+)\s+(day|days|week|weeks|month|months)\b/)) {
+    var n = +m[1], u = m[2], days = u.indexOf('day') === 0 ? n : u.indexOf('week') === 0 ? n * 7 : n * 30;
+    return { from: iso(addDays(now, -days)), to: iso(now), label: 'last ' + n + ' ' + u.replace(/s$/, '') + (n > 1 ? 's' : '') };
+  }
+  if (/\btoday\b/.test(t)) return { from: iso(now), to: iso(now), label: 'today' };
+  if (/\byesterday\b/.test(t)) { var y = addDays(now, -1); return { from: iso(y), to: iso(y), label: 'yesterday' }; }
+  if (/\bthis week\b/.test(t)) return { from: iso(startOfWeek(now)), to: iso(now), label: 'this week' };
+  if (/\b(?:last|past|previous) week\b/.test(t)) { var sow = startOfWeek(now); return { from: iso(addDays(sow, -7)), to: iso(addDays(sow, -1)), label: 'last week' }; }
+  if (/\bthis month\b/.test(t)) return { from: iso(new Date(now.getFullYear(), now.getMonth(), 1)), to: iso(now), label: 'this month' };
+  if (/\b(?:last|past|previous) month\b/.test(t)) { var ft = new Date(now.getFullYear(), now.getMonth(), 1), lme = addDays(ft, -1); return { from: iso(new Date(lme.getFullYear(), lme.getMonth(), 1)), to: iso(lme), label: 'last month' }; }
+  if (/\bthis year\b/.test(t)) return { from: iso(new Date(now.getFullYear(), 0, 1)), to: iso(now), label: 'this year' };
+  if (/\b(?:last|past|previous) year\b/.test(t)) return { from: iso(new Date(now.getFullYear() - 1, 0, 1)), to: iso(new Date(now.getFullYear() - 1, 11, 31)), label: 'last year' };
+  if (/\b(?:last|past)\s+(?:few|couple of?)\s+(?:days|weeks)\b/.test(t)) return { from: iso(addDays(now, -7)), to: iso(now), label: 'last few days' };
+  return null;
+}
+function parseOpsQuery(text) {
+  var raw = ('' + (text || '')).replace(/\s+/g, ' ').trim();
+  var work = ' ' + raw.replace(/\s*(->|→|—>|-->)\s*/g, ' to ') + ' ';
+  var out = { who: '', pol: '', pod: '', commodity: '', mode: '', bound: '', ref: '', refField: '', noteAuthor: '', noteText: '', tome: false, mine: true, from: '', to: '', dateLabel: '' };
+  var dw = parseDateWindow(raw); if (dw) { out.from = dw.from; out.to = dw.to; out.dateLabel = dw.label; }
+  if (/\bby air\b|\bair\s?freight\b|\bairfreight\b|\bawb\b|\bmawb\b|\bhawb\b|\bflight\b|\bflew\b|\bair\b/i.test(work)) out.mode = 'Air';
+  else if (/\bby sea\b|\bsea\s?freight\b|\bocean\b|\bfcl\b|\blcl\b|\bvessel\b|\bsea\b/i.test(work)) out.mode = 'Sea';
+  if (/\bimport\b|\binbound\b|\bincoming\b|\barriv\w*\b/i.test(work)) out.bound = 'Import';
+  else if (/\bexport\b|\boutbound\b|\boutgoing\b/i.test(work)) out.bound = 'Export';
+  // ownership: default to "mine" (the shipment an operator wants is one they handle/are mentioned in); widen on "anyone".
+  if (/\banyone\b|\beveryone\b|\beverybody\b|\bany (?:operator|one|user|colleague)\b|\ball (?:shipments|files|jobs|operators?)\b|\bentire (?:team|office)\b|\bwhole (?:team|office)\b/i.test(work)) out.mine = false;
+  // explicit identifier (field + value). "forgot the booking number" sets no value -> ref stays empty (other clues drive it).
+  var idm;
+  if (idm = work.match(/\b(?:booking|bkg|so|sono)\s*#?\s*([a-z0-9][a-z0-9\-\/]{2,})\b/i)) { out.ref = idm[1]; out.refField = 'booking'; work = work.replace(idm[0], ' '); }
+  else if (idm = work.match(/\b(?:po|p\/o|order)\s*#?\s*([a-z0-9][a-z0-9\-\/]{2,})\b/i)) { out.ref = idm[1]; out.refField = 'po'; work = work.replace(idm[0], ' '); }
+  else if (idm = work.match(/\b(?:hbl|hawb|house\s*(?:bill|b\/l|bl|awb)?)\s*#?\s*([a-z0-9][a-z0-9\-\/]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'house'; work = work.replace(idm[0], ' '); }
+  else if (idm = work.match(/\b(?:mbl|mawb|master\s*(?:bill|b\/l|bl|awb)?)\s*#?\s*([a-z0-9][a-z0-9\-\/]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'master'; work = work.replace(idm[0], ' '); }
+  else if (idm = work.match(/\b([A-Z]{4}\d{7})\b/)) { out.ref = idm[1]; out.refField = 'container'; work = work.replace(idm[0], ' '); }
+  else if (idm = work.match(/\b(?:job|file)\s*(?:no\.?|number|#)?\s*([a-z]{2,}[a-z0-9\-]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'job'; work = work.replace(idm[0], ' '); }
+  // an explicit role word pins the company: "shipper ABC", "consignee X", "customer Y".
+  var role = work.match(/\b(?:shipper|consignee|cnee|customer|client|account)\s+([a-z0-9][\w&.\- ]*?)(?=\s+(?:shipped|shipping|sent|ship|to|from|about|by|last|this|please|,|\?)|\s*$)/i);
+  if (role) { var rw = role[1].replace(/[?.,;!]/g, ' ').replace(/\s+/g, ' ').trim(); if (rw) { out.who = rw; work = work.replace(role[0], ' '); } }
+  // lane: "from X to Y"; else "from X" (origin only). Stop at a comma so a trailing commodity/date doesn't leak in.
+  var lane = work.match(/\bfrom\s+([^,?]+?)\s+to\s+([^,?]+?)(?=\s+(?:about|re|regarding|with|for|by|last|this|please|\?)|,|\s*$)/i);
+  if (lane) { out.pol = opsStripNoise(lane[1]); out.pod = opsStripNoise(lane[2]); work = work.replace(lane[0], ' '); }
+  else { var only = work.match(/\bfrom\s+([^,?]+?)(?=\s+(?:about|re|regarding|with|for|by|last|this|please|\?)|,|\s*$)/i); if (only) { out.pol = opsStripNoise(only[1]); work = work.replace(only[0], ' '); } }
+  // note clues: who it's to (me), who wrote it, what it says.
+  if (/\b(?:to|told|sent\s+to|messaged|texted|emailed|dropped|pinged)\s+me\b|\bme\s+(?:about|regarding|a message|a note)\b|\bdropped me\b/i.test(work)) out.tome = true;
+  var av = work.match(/\b([a-z][\w.'-]*)\s+(?:told|said|messaged|texted|emailed|wrote|mentioned|replied|sent|dropped|pinged|noted)\b/i);
+  if (av) { OPS_FIND_STOP.lastIndex = 0; if (!OPS_FIND_STOP.test(' ' + av[1] + ' ')) { out.noteAuthor = av[1]; work = work.replace(av[0], ' '); } OPS_FIND_STOP.lastIndex = 0; }
+  var noteCentric = !!(out.noteAuthor || out.tome);
+  // "about/regarding/saying X" -> note body when note-centric, else the shipment commodity. Stop at a comma.
+  var cm = work.match(/\b(?:about|re|regarding|saying|mentioning)\s+([^,?]+?)(?=\s+(?:from|to|with|for|by|last|this|please|\?)|,|\s*$)/i);
+  if (cm) { OPS_FIND_STOP.lastIndex = 0; var capt = cm[1].replace(OPS_FIND_STOP, ' ').replace(/\s+/g, ' ').trim(); OPS_FIND_STOP.lastIndex = 0; if (noteCentric) out.noteText = capt; else out.commodity = capt; work = work.replace(cm[0], ' '); }
+  // the significant leftover: a company/contact, or (short, when a lane is already set, or a bare token) a commodity.
+  OPS_FIND_STOP.lastIndex = 0;
+  var leftover = work.replace(/'s\b/gi, ' ').replace(/[?.,;!']/g, ' ').replace(OPS_FIND_STOP, ' ').replace(/\s+/g, ' ').trim();
+  OPS_FIND_STOP.lastIndex = 0;
+  if (leftover) {
+    var words = leftover.split(' ').length;
+    if (!out.who && !((out.pol || out.pod) && words <= 2)) out.who = leftover;
+    else if (!out.commodity) out.commodity = leftover;
+    else if (!out.who) out.who = leftover;
+  }
+  if (out.ref) out.mine = false;   // an explicit identifier finds any file (matches the server bypassing the lens)
+  return out;
+}
+// clue object (from parseOpsQuery OR the LLM fallback — same shape) -> /api-ops/find query params.
+function opsFindParams(p) {
+  var params = {};
+  if (p.who) params.who = p.who;
+  if (p.pol) params.pol = p.pol;
+  if (p.pod) params.pod = p.pod;
+  if (p.commodity) params.commodity = p.commodity;
+  if (p.mode) params.mode = p.mode;
+  if (p.bound) params.bound = p.bound;
+  if (p.ref) { params.ref = p.ref; params.refField = p.refField; }
+  if (p.noteAuthor) params.noteauthor = p.noteAuthor;
+  if (p.noteText) params.notetext = p.noteText;
+  if (p.tome) params.tome = 1;
+  if (p.mine) params.mine = 1;
+  if (p.from) params.from = p.from;
+  if (p.to) params.to = p.to;
+  return params;
+}
+// editable "Looking for:" summary — fix any clue by editing the box; it re-runs. `aiNote` flags an AI-assisted parse.
+function opsFindSummary(p, aiNote) {
+  var bits = [];
+  bits.push(p.mine ? '<b>' + esc(tr('mine only')) + '</b>' : "<span class='muted'>" + esc(tr('anyone')) + '</span>');
+  if (p.who) bits.push('<b>' + esc(p.who) + '</b>');
+  if (p.noteAuthor) bits.push('💬 ' + esc(tr('from')) + ' <b>' + esc(p.noteAuthor) + '</b>');
+  if (p.tome) bits.push('💬 ' + esc(tr('to me')));
+  if (p.noteText) bits.push('💬 “' + esc(p.noteText) + '”');
+  if (p.pol || p.pod) bits.push(esc(p.pol || '…') + ' → ' + esc(p.pod || '…'));
+  if (p.commodity) bits.push(esc(tr('commodity')) + ': ' + esc(p.commodity));
+  if (p.ref) bits.push(esc(p.refField || 'ref') + ' ' + esc(p.ref));
+  if (p.bound) bits.push(esc(p.bound));
+  bits.push(p.mode ? esc(p.mode) : "<span class='muted'>" + esc(tr('Air + Sea')) + '</span>');
+  if (p.dateLabel) bits.push('📅 ' + esc(p.dateLabel));
+  return (aiNote ? '✨ ' + esc(tr('AI-assisted')) + ' · ' : '') + esc(tr('Looking for:')) + ' ' + bits.join(' · ');
+}
+async function runOpsFind() {
+  var box = $('#findText'); var text = box ? box.value : '';
+  var feed = $('#findFeed'), sum = $('#findSummary');
+  if (!('' + text).trim()) { if (sum) sum.innerHTML = ''; if (feed) feed.innerHTML = "<div class='empty'>" + esc(tr('Type what you remember — a company, lane, commodity, who messaged you, or a date.')) + '</div>'; return; }
+  var p = parseOpsQuery(text);
+  if (sum) sum.innerHTML = opsFindSummary(p, false);
+  if (feed) feed.innerHTML = "<div class='empty'>" + esc(tr('Searching…')) + '</div>';
+  try {
+    var res = await api('/api-ops/find?' + new URLSearchParams(opsFindParams(p)).toString());
+    var items = arr(res.items);
+    // Optional LLM fallback (Part 4): only when the rule parse found nothing. Inert unless enabled server-side
+    // (the endpoint returns 501) — a misparse stays visible + editable; the LLM only re-suggests clues.
+    if (!items.length && await opsFindLlmFallback(text)) return;
+    renderOpsFindFeed(items);
+  } catch (e) { if (feed) feed.innerHTML = "<div class='empty'>" + esc(tr('Search failed')) + ': ' + esc((e && e.message) || e) + '</div>'; }
+}
+// Ask the (flag-gated) LLM to re-interpret the text, then re-run Find with its clues. Returns true if it rendered
+// results. Fails silently (returns false) when the endpoint is disabled (501) or errors — never throws to the caller.
+async function opsFindLlmFallback(text) {
+  try {
+    var r = await api('/api-ops/parse-find', { method: 'POST', body: { text: text } });
+    if (!r || !r.clue) return false;
+    var c = r.clue;
+    var res = await api('/api-ops/find?' + new URLSearchParams(opsFindParams(c)).toString());
+    var items = arr(res.items);
+    if (!items.length) return false;
+    var sum = $('#findSummary'); if (sum) sum.innerHTML = opsFindSummary(c, true);
+    renderOpsFindFeed(items);
+    return true;
+  } catch (e) { return false; }
+}
+function findNameOf(u) { var m = state.rosterMeta && state.rosterMeta[u]; return (m && m.name) || u || ''; }
+function renderOpsFindFeed(items) {
+  var feed = $('#findFeed'); if (!feed) return;
+  if (!items.length) { feed.innerHTML = "<div class='empty'>" + esc(tr('Nothing matched — try fewer words, a different name, or turn off “mine only” (say “anyone”).')) + '</div>'; return; }
+  feed.innerHTML = items.map(function (it) {
+    if (it.type === 'note') {
+      var who = findNameOf(it.author);
+      var ctx = [it.lane, it.consigneeName || it.shipperName].filter(Boolean).join(' · ');
+      return "<div class='find-row' data-job='" + esc(it.jobNo) + "' data-label='" + esc(it.humanId) + "'>" +
+        "<div class='find-h'><span class='badge nb'>💬 " + esc(tr('note')) + '</span> <b>' + esc(who) + "</b> <span class='muted sm'>" + esc(('' + (it.created || '')).slice(0, 10)) + '</span></div>' +
+        '<div>' + esc(('' + (it.note || '')).slice(0, 160)) + '</div>' +
+        "<div class='muted sm'>" + esc(it.humanId) + (ctx ? ' · ' + esc(ctx) : '') + '</div></div>';
+    }
+    var lane = it.lane || it.routeSummary || '';
+    var party = it.bound === 'Import' ? (it.consigneeName || it.shipperName) : (it.shipperName || it.consigneeName);
+    var meta = [it.mode, it.bound, it.cargoType].filter(Boolean).join('/');
+    var dates = []; if (it.etd) dates.push('ETD ' + it.etd); if (it.eta) dates.push('ETA ' + it.eta); if (it.ata) dates.push('ATA ' + it.ata);
+    var tags = []; if (it.carrier) tags.push(esc(it.carrier)); if (it.commodity) tags.push(esc(it.commodity)); if (it.hasNote) tags.push('💬');
+    var closed = it.jobStatus && it.jobStatus !== 'active' ? " <span class='badge cl'>" + esc(it.jobStatus) + '</span>' : '';
+    return "<div class='find-row' data-job='" + esc(it.jobNo) + "' data-label='" + esc(it.humanId) + "'>" +
+      "<div class='find-h'><span class='dot " + esc(it.worst || 'G') + "'></span> <b>" + esc(it.humanId) + "</b> <span class='muted sm'>" + esc(meta) + '</span>' + closed + '</div>' +
+      '<div>' + esc(party || '') + " <span class='muted'>· " + esc(lane) + '</span></div>' +
+      (tags.length ? "<div class='muted sm'>" + tags.join(' · ') + '</div>' : '') +
+      (dates.length ? "<div class='muted sm'>" + esc(dates.join(' · ')) + '</div>' : '') + '</div>';
+  }).join('');
+  feed.querySelectorAll('.find-row').forEach(function (row) { row.onclick = function () { closeFind(); openShipment(row.dataset.job, row.dataset.label); }; });
 }
 
 linkBoot().then(init);

@@ -292,7 +292,25 @@ MapData("/api-ops/ports", Handlers.Ports);
 MapData("/api-ops/inbound", Handlers.Inbound);
 MapData("/api-ops/my-tasks", Handlers.MyTasks);
 MapData("/api-ops/worklist", Handlers.Worklist);
+MapData("/api-ops/find", Handlers.Find);
 MapData("/api-ops/shipment", Handlers.Shipment);
+
+// POST /api-ops/parse-find — OPTIONAL LLM fallback for Find (Part 4). Inert (501) unless Config.LlmEnabled
+// (the `llm.enabled` flag + an API key). Auth required; NO DB. Returns the LLM-suggested clue object (same shape
+// as the client rule parser) so the client can re-run /api-ops/find with it. The LLM never touches the DB or
+// scope — all security stays in the find SQL + Scope.* clauses.
+app.MapPost("/api-ops/parse-find", async (HttpContext ctx) =>
+{
+    var sess = GetSession(ctx);
+    if (sess == null) { await Json(ctx, new { error = "Authentication required" }, 401); return; }
+    var rs = await Resolve(ctx, sess); if (rs == null) return;
+    if (!Config.LlmEnabled) { await Json(ctx, new { error = "LLM fallback is not enabled on this instance", enabled = false }, 501); return; }
+    var body = await ReadBody(ctx);
+    var text = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("text", out var t) ? (t.GetString() ?? "") : "";
+    var clue = await Llm.ParseFind(text, http);
+    if (clue == null) { await Json(ctx, new { error = "parse failed", provider = Config.LlmProvider }, 502); return; }
+    await Json(ctx, new { clue, provider = Config.LlmProvider, source = "llm" });
+});
 // ---- Stage 3: writes + admin + feed-assign ----
 // notes: GET = file-store list; POST = save (both file-only, no DB).
 MapAuthed("/api-ops/notes", new[] { "GET", "POST" }, async (ctx, sess, rs) =>
