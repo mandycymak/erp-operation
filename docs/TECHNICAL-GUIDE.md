@@ -152,8 +152,16 @@ foreach ($code in $stations.Keys) {
 **Automating it (Windows Task Scheduler):**
 
 ```powershell
-.\register-ops-tasks.ps1     # publish per station (Sea 3x/day, Air 2h, staggered) + weekly map refresh
+# Run from an ELEVATED (Administrator) PowerShell — the script exits early otherwise.
+.\register-ops-tasks.ps1 -ConfigPath .\ops.config.<env>.json   # [-WorklistLimit 120]
 ```
+
+This registers, per configured station: **`Ops Publish Sea/Air`** (cross-station feed, Sea 3x/day · Air every 2h,
+staggered) **and `Ops Worklist Sea/Air`** (worklist refresh via `seed-alerts.ps1`, same cadence, +3 min after the
+publisher — its `-AsOf` is computed at run time so it always seeds "today"), plus weekly `Ops Station Map Refresh`
+and `Ops Port Dim Refresh`. The station set is taken from `stations[]` in the config, so N stations → N task sets.
+**These jobs run on whatever host you schedule them on and write the ops DB directly — in production that is the
+server (with the VPN up), not a workstation; the IIS app only reads the same DB.**
 
 ---
 

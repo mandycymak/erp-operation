@@ -143,7 +143,12 @@ understood (edit your text and it re-runs — a misread is corrected, never sile
 - *"I contacted Rainbow Transportation to arrange shipment but forgot which booking"* — the **contact/company you
   recorded on the shipment** (e.g. in an arrangement note), even when you can't recall the booking number.
 - *"Leo dropped me a message about hong kong bike, customs ready"* — who messaged you, and roughly what they said.
-- *"booking SO12345"* / *"HBL ABC123"* — an exact identifier (this finds **any** file, ignoring the "mine" default).
+- *"booking SO12345"* / *"HBL ABC123"* / *"ship-id 12008"* / *"vessel YM WISH"* / a bare container no (`COSU8778988`)
+  — an exact identifier (these find **any** file, ignoring the "mine" default).
+
+Each result is shown as a **full card** — the same detail as a worklist row: incoterm, cargo (containers or
+pieces/weight), commodity, ship-id / PO, booking, master bill, ETD/ETA/ATA, lane, job no, and the shipper /
+consignee / agent — so you can pick the right shipment without opening each one.
 
 **By default Find shows shipments you're involved in** — ones you're the PIC of, created, updated, or were
 @-mentioned in / wrote a note on (the same "My work" notion as the worklist). Say **"anyone"** (or "all",
@@ -167,6 +172,10 @@ The **📥 Inbound bookings** panel (Import view) shows shipments **another stat
 any bill exists — led by the consignee, with cargo-ready / ETD dates and the source station. No station ever
 queries another station's ERP; each origin publishes its cross-station bookings into a shared feed and you
 read only the rows addressed to you.
+
+Use the **ETD `from → to` date boxes** in the panel header (next to **show all**) to focus a departure window —
+they default to the **last 100 days → today**; clear a side for open-ended, or click **show all** to drop the
+date window entirely. The number beside the title is a live count of the bookings currently listed.
 
 **CTA:** **Assign** an inbound booking to a colleague — it threads a task into their My-Tasks inbox so the
 pre-arrival prep starts before the cargo lands.

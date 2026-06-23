@@ -14,7 +14,7 @@ const plural = (n, word) => tr(word) + (n !== 1 && curLang() === 'en' ? 's' : ''
 
 const state = { user: localStorage.getItem('opsUser') || '', roster: [], lens: 'mine', teammate: '', bound: localStorage.getItem('opsBound') || 'Import', tmode: localStorage.getItem('opsMode') || 'Sea',
   from: '', to: '', company: '', searchField: 'company', ref: '', alertsOnly: false, notesOnly: false, pols: [], pods: [], station: localStorage.getItem('opsStation') || '', _companies: [], _portDim: [], _activePorts: { pol: [], pod: [] }, _stations: [],
-  ib: { origin: '', party: '', q: '', pols: [], pods: [] } };   // inbound (pre-arrival) panel search
+  ib: { origin: '', party: '', q: '', pols: [], pods: [], from: '', to: '' } };   // inbound (pre-arrival) panel search
 let allCollapsed = false;   // collapse-all toggle for vessel groups
 
 let ME = null;   // /api-ops/me payload; ME.authOn = real login mode (identity from the session, not the picker)
@@ -419,8 +419,12 @@ function buildInboundShell(panel) {
   if (panel.dataset.built) return;
   panel.dataset.built = '1';
   panel.innerHTML =
-    '<div class="ib-head">' + esc(tr('Inbound bookings (pre-arrival)')) + '<span class="ib-station"></span> <span class="cnt ib-count"></span>' +
-      '<button class="ghost ib-alltoggle"></button><button class="ghost ib-collapse" title="' + esc(tr('Collapse')) + '">▾</button></div>' +
+    '<div class="ib-head">' + esc(tr('Inbound bookings (pre-arrival)')) + ' <span class="cnt ib-count"></span>' +
+      '<button class="ghost ib-alltoggle"></button>' +
+      '<label class="fl" title="' + esc(tr('ETD on/after (yyyy-mm-dd) — blank = open-ended')) + '"><input type="text" id="ibFrom" class="datebox" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off"></label>' +
+      '<span class="fl">→</span>' +
+      '<label class="fl" title="' + esc(tr('ETD on/before (yyyy-mm-dd) — blank = open-ended')) + '"><input type="text" id="ibTo" class="datebox" placeholder="yyyy-mm-dd" maxlength="10" inputmode="numeric" autocomplete="off"></label>' +
+      '<button class="ghost ib-collapse" title="' + esc(tr('Collapse')) + '">▾</button></div>' +
     '<div class="ib-search">' +
       '<select id="ibOrigin" title="' + esc(tr('Origin office that received the booking')) + '"><option value="">' + esc(tr('All origins')) + '</option></select>' +
       '<input type="text" id="ibParty" placeholder="' + esc(tr('shipper / consignee / customer')) + '" autocomplete="off" title="' + esc(tr('Match a party name or code in any role')) + '">' +
@@ -437,6 +441,16 @@ function buildInboundShell(panel) {
   qIn.addEventListener('input', debounce(() => { state.ib.q = qIn.value.trim(); loadInbound(); }));
   state._ibPolChips = makePortChips('#ibPolChips', { kind: 'pol', get: () => state.ib.pols, set: v => { state.ib.pols = v; }, onChange: loadInbound });
   state._ibPodChips = makePortChips('#ibPodChips', { kind: 'pod', get: () => state.ib.pods, set: v => { state.ib.pods = v; }, onChange: loadInbound });
+  // ETD date-range filter (compact from → to, like the worklist date window): blank = open-ended on that side;
+  // a typed range bypasses the recent/upcoming clip so historical ranges work. Same yyyy-mm-dd / .bad pattern.
+  // Default window = last 100 days -> today (set once when the shell is first built).
+  const ibFrom = panel.querySelector('#ibFrom'), ibTo = panel.querySelector('#ibTo');
+  const ibToday = (ME && ME.today) ? ME.today : fmtDate(new Date());
+  state.ib.to = ibToday; state.ib.from = shiftYmd(ibToday, -100);
+  ibFrom.value = state.ib.from; ibTo.value = state.ib.to;
+  const applyIbDate = (inp, key) => { const v = inp.value.trim(); if (v === '' || isYmd(v)) { inp.classList.remove('bad'); state.ib[key] = v; loadInbound(); } else { inp.classList.add('bad'); } };
+  ibFrom.onchange = () => applyIbDate(ibFrom, 'from');
+  ibTo.onchange = () => applyIbDate(ibTo, 'to');
   panel.querySelector('.ib-collapse').onclick = () => { const b = panel.querySelector('.ib-body'), s = panel.querySelector('.ib-search'); const hide = b.style.display !== 'none'; b.style.display = hide ? 'none' : ''; s.style.display = hide ? 'none' : ''; };
   panel.querySelector('.ib-alltoggle').onclick = () => { state.ibShowAll = !state.ibShowAll; loadInbound(); };
 }
@@ -449,21 +463,26 @@ async function loadInbound() {
   const tg = panel.querySelector('.ib-alltoggle');
   tg.textContent = state.ibShowAll ? tr('recent only') : tr('show all');
   tg.title = state.ibShowAll ? tr('Showing all — click to show only recent/upcoming') : tr('Showing recent + upcoming — click to show all');
-  let q = '/api-ops/inbound?mode=' + encodeURIComponent(state.tmode) + (state.ibShowAll ? '&showAll=1' : '');
+  // a typed ETD range bypasses the recent/upcoming window (so a historical range isn't clipped to 0).
+  const ibFromOk = isYmd(state.ib.from) && state.ib.from, ibToOk = isYmd(state.ib.to) && state.ib.to;
+  const ibDateRange = !!(ibFromOk || ibToOk);
+  let q = '/api-ops/inbound?mode=' + encodeURIComponent(state.tmode) + ((state.ibShowAll || ibDateRange) ? '&showAll=1' : '');
   if (state.ib.origin) q += '&origin=' + encodeURIComponent(state.ib.origin);
   if (state.ib.party) q += '&party=' + encodeURIComponent(state.ib.party);
   if (state.ib.q) q += '&q=' + encodeURIComponent(state.ib.q);
   if (state.ib.pols.length) q += '&pol=' + encodeURIComponent(state.ib.pols.join(','));
   if (state.ib.pods.length) q += '&pod=' + encodeURIComponent(state.ib.pods.join(','));
+  if (ibFromOk) q += '&from=' + encodeURIComponent(state.ib.from);
+  if (ibToOk) q += '&to=' + encodeURIComponent(state.ib.to);
   const data = await api(q);
-  const rows = arr(data.rows); const station = data.station || '';
-  panel.querySelector('.ib-station').textContent = station ? ' · ' + station : '';
+  const rows = arr(data.rows);
   panel.querySelector('.ib-count').textContent = rows.length;
   const body = panel.querySelector('.ib-body'); body.innerHTML = '';
-  const searching = !!(state.ib.origin || state.ib.party || state.ib.q || state.ib.pols.length || state.ib.pods.length);
+  const searching = !!(state.ib.origin || state.ib.party || state.ib.q || state.ib.pols.length || state.ib.pods.length || ibDateRange);
   if (!rows.length) {
-    const base = state.ibShowAll ? tr('Nothing in the feed') : tr('Nothing recent/upcoming in the feed');
-    body.appendChild(el('div', 'bh', base + (searching ? ' ' + tr('matching the search') : '') + (state.ibShowAll ? '' : ' ' + tr('— try “show all”'))));
+    const wide = state.ibShowAll || ibDateRange;   // a typed ETD range already widens past the recent/upcoming window
+    const base = wide ? tr('Nothing in the feed') : tr('Nothing recent/upcoming in the feed');
+    body.appendChild(el('div', 'bh', base + (searching ? ' ' + tr('matching the search') : '') + (wide ? '' : ' ' + tr('— try “show all”'))));
     body.firstChild.style.opacity = '.7';
     return;
   }
@@ -1417,6 +1436,8 @@ function parseOpsQuery(text) {
   else if (idm = work.match(/\b(?:po|p\/o|order)\s*#?\s*([a-z0-9][a-z0-9\-\/]{2,})\b/i)) { out.ref = idm[1]; out.refField = 'po'; work = work.replace(idm[0], ' '); }
   else if (idm = work.match(/\b(?:hbl|hawb|house\s*(?:bill|b\/l|bl|awb)?)\s*#?\s*([a-z0-9][a-z0-9\-\/]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'house'; work = work.replace(idm[0], ' '); }
   else if (idm = work.match(/\b(?:mbl|mawb|master\s*(?:bill|b\/l|bl|awb)?)\s*#?\s*([a-z0-9][a-z0-9\-\/]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'master'; work = work.replace(idm[0], ' '); }
+  else if (idm = work.match(/\b(?:ship-?\s?id|shipid|spot-?\s?id|spotid|spot)\s*#?\s*([a-z0-9][a-z0-9\-\/:_]{1,})\b/i)) { out.ref = idm[1]; out.refField = 'shipid'; work = work.replace(idm[0], ' '); }
+  else if (idm = work.match(/\b(?:vessel|vsl|m\/?v|voyage)\s+#?\s*([a-z0-9][\w\-\/]*(?:\s+(?!to\b|from\b|about\b|last\b|this\b|please\b)[a-z0-9][\w\-\/]*){0,3})/i)) { out.ref = idm[1].trim(); out.refField = 'conv'; work = work.replace(idm[0], ' '); }
   else if (idm = work.match(/\b([A-Z]{4}\d{7})\b/)) { out.ref = idm[1]; out.refField = 'container'; work = work.replace(idm[0], ' '); }
   else if (idm = work.match(/\b(?:job|file)\s*(?:no\.?|number|#)?\s*([a-z]{2,}[a-z0-9\-]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'job'; work = work.replace(idm[0], ' '); }
   // an explicit role word pins the company: "shipper ABC", "consignee X", "customer Y".
@@ -1475,7 +1496,7 @@ function opsFindSummary(p, aiNote) {
   if (p.noteText) bits.push('💬 “' + esc(p.noteText) + '”');
   if (p.pol || p.pod) bits.push(esc(p.pol || '…') + ' → ' + esc(p.pod || '…'));
   if (p.commodity) bits.push(esc(tr('commodity')) + ': ' + esc(p.commodity));
-  if (p.ref) bits.push(esc(p.refField || 'ref') + ' ' + esc(p.ref));
+  if (p.ref) { var rfL = { conv: 'vessel', vessel: 'vessel', shipid: 'ship-id', booking: 'booking', po: 'PO', house: 'HBL', master: 'MBL', container: 'container', liner: 'liner SO', job: 'job' }; bits.push(esc(rfL[p.refField] || p.refField || 'ref') + ' ' + esc(p.ref)); }
   if (p.bound) bits.push(esc(p.bound));
   bits.push(p.mode ? esc(p.mode) : "<span class='muted'>" + esc(tr('Air + Sea')) + '</span>');
   if (p.dateLabel) bits.push('📅 ' + esc(p.dateLabel));
@@ -1513,6 +1534,39 @@ async function opsFindLlmFallback(text) {
   } catch (e) { return false; }
 }
 function findNameOf(u) { var m = state.rosterMeta && state.rosterMeta[u]; return (m && m.name) || u || ''; }
+// Find shipment card — mirrors the worklist mini-card (incoterm, cargo, ship-id, booking, dates, parties) so the
+// operator has enough to pick the right file. Reuses cargoProfile / compName / arrivalChip; data from /api-ops/find.
+function findShipRow(it) {
+  var isImport = (it.bound || 'Import') === 'Import';
+  var isAir = it.mode === 'Air';
+  var who = (it.ctrlCode ? compName(it.ctrlCode) : '') || (isImport ? (it.consigneeName || it.custCode) : (it.shipperName || it.custCode));
+  var cargo = cargoProfile(it);   // already escaped
+  var diff = it.containerNo
+    ? tr('ctr') + ' ' + esc(it.containerNo) + (it.containerCount > 1 ? ' +' + (it.containerCount - 1) : '')
+    : (it.linerSo ? tr('SO') + ' ' + esc(it.linerSo) : '');
+  var commod = it.commodity ? '<span title="' + esc(it.commodity) + '">' + esc(it.commodity.length > 28 ? it.commodity.slice(0, 28) + '…' : it.commodity) + '</span>' : '';
+  var po = it.custRef ? (isAir ? 'PO ' : tr('ship-id') + ' ') + esc(it.custRef) : '';
+  var bkg = (it.sono && it.sono !== it.humanId) ? tr('bkg') + ' ' + esc(it.sono) : '';
+  var otherBill = (isImport && it.masterBill) ? ((isAir ? 'MAWB' : 'MBL') + ' ' + esc(it.masterBill)) : '';
+  var dates = []; if (it.etd) dates.push('ETD ' + esc(it.etd)); if (it.eta) dates.push('ETA ' + esc(it.eta)); if (it.ata) dates.push('ATA ' + esc(it.ata));
+  var jobTag = (it.erpJobNo && it.erpJobNo !== it.humanId) ? tr('job') + ' ' + esc(it.erpJobNo) : '';
+  var lane = esc(it.routeSummary || it.lane || '');
+  var sub = [diff, cargo, commod, po, bkg, otherBill, dates.join(' · '), lane, jobTag].filter(Boolean).join('  ·  ');
+  var mkPty = function (lbl, nm, code) { var v = nm || (code ? compName(code) : ''); return v ? '<span class="pty">' + tr(lbl) + ' ' + esc(v) + '</span>' : ''; };
+  var pty = [mkPty('shpr', it.shipperName, it.shipperCode), mkPty('cgne', it.consigneeName, it.consigneeCode), mkPty('agnt', '', it.agentCode)].filter(Boolean).join('  ·  ');
+  var inco = it.incoterm ? '<span class="minco" title="' + esc(tr('Incoterm — your delivery responsibility')) + '">' + esc(it.incoterm) + '</span>' : '';
+  var status = arrivalChip(it);
+  var meta = [it.mode, it.bound].filter(Boolean).join('/');
+  var closed = (it.jobStatus && it.jobStatus !== 'active') ? " <span class='badge cl'>" + esc(it.jobStatus) + '</span>' : '';
+  var note = it.hasNote ? ' <span class="note-ind" title="' + esc(tr('has a remark / note')) + '">💬</span>' : '';
+  return "<div class='find-row' data-job='" + esc(it.jobNo) + "' data-label='" + esc(it.humanId) + "'>" +
+    "<div class='find-h'><span class='dot " + esc(it.worst || 'G') + "'></span> <b>" + esc(it.humanId) + '</b> ' + inco +
+      " <span class='mwho'>" + esc(who || '') + '</span>' + note +
+      " <span class='muted sm'>" + esc(meta) + '</span> ' + status + closed + '</div>' +
+    (sub ? "<div class='muted sm'>" + sub + '</div>' : '') +
+    (pty ? "<div class='muted sm pty-row'>" + pty + '</div>' : '') +
+    '</div>';
+}
 function renderOpsFindFeed(items) {
   var feed = $('#findFeed'); if (!feed) return;
   if (!items.length) { feed.innerHTML = "<div class='empty'>" + esc(tr('Nothing matched — try fewer words, a different name, or turn off “mine only” (say “anyone”).')) + '</div>'; return; }
@@ -1525,17 +1579,7 @@ function renderOpsFindFeed(items) {
         '<div>' + esc(('' + (it.note || '')).slice(0, 160)) + '</div>' +
         "<div class='muted sm'>" + esc(it.humanId) + (ctx ? ' · ' + esc(ctx) : '') + '</div></div>';
     }
-    var lane = it.lane || it.routeSummary || '';
-    var party = it.bound === 'Import' ? (it.consigneeName || it.shipperName) : (it.shipperName || it.consigneeName);
-    var meta = [it.mode, it.bound, it.cargoType].filter(Boolean).join('/');
-    var dates = []; if (it.etd) dates.push('ETD ' + it.etd); if (it.eta) dates.push('ETA ' + it.eta); if (it.ata) dates.push('ATA ' + it.ata);
-    var tags = []; if (it.carrier) tags.push(esc(it.carrier)); if (it.commodity) tags.push(esc(it.commodity)); if (it.hasNote) tags.push('💬');
-    var closed = it.jobStatus && it.jobStatus !== 'active' ? " <span class='badge cl'>" + esc(it.jobStatus) + '</span>' : '';
-    return "<div class='find-row' data-job='" + esc(it.jobNo) + "' data-label='" + esc(it.humanId) + "'>" +
-      "<div class='find-h'><span class='dot " + esc(it.worst || 'G') + "'></span> <b>" + esc(it.humanId) + "</b> <span class='muted sm'>" + esc(meta) + '</span>' + closed + '</div>' +
-      '<div>' + esc(party || '') + " <span class='muted'>· " + esc(lane) + '</span></div>' +
-      (tags.length ? "<div class='muted sm'>" + tags.join(' · ') + '</div>' : '') +
-      (dates.length ? "<div class='muted sm'>" + esc(dates.join(' · ')) + '</div>' : '') + '</div>';
+    return findShipRow(it);
   }).join('');
   feed.querySelectorAll('.find-row').forEach(function (row) { row.onclick = function () { closeFind(); openShipment(row.dataset.job, row.dataset.label); }; });
 }

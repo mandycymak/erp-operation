@@ -33,8 +33,10 @@ The UI is **localized — English + Simplified Chinese (中文) + Japanese (日�
 one-click switch. Sign-in is **by email**, with a seam for **SWIVEL L!NK** OAuth sign-on.
 
 A **natural-language Find tab** (🔎 in the header) lets an operator locate a shipment by typing what they
-remember — a company, lane, commodity, contact, booking/HBL number, a message someone sent them, or a date —
-across active **and** recently-closed files, always within their role scope. It's a rule-based parser (no LLM)
+remember — a company, lane, commodity, contact, booking/HBL/**ship-id**/**vessel**/container number, a message
+someone sent them, or a date — across active **and** recently-closed files, always within their role scope.
+Each hit is shown as a **full worklist-style card** (incoterm, cargo, commodity, ship-id, parties, dates) so the
+right file can be picked at a glance. It's a rule-based parser (no LLM)
 with an editable "Looking for:" summary; an **optional LLM fallback** (Claude / OpenAI / DeepSeek, **off by
 default**, configured in the gitignored `llm` config block) can re-interpret a query that the rule parser
 can't, without ever bypassing scope. Backing it, operator **notes now live in SQL** (`dbo.job_note`, migrated

@@ -123,6 +123,7 @@ as the agree flow).
 | **Final destination** | `dest`; **Sea falls back to `deli`** (Place of Delivery) when `dest` is blank | `portmstr` | `finalDestinationCode` |
 | Service type | `service` | `servmstr.service → desc1` | `serviceCode` |
 | **Commodity** | **Sea `blitem.commodity`** (no commodity column on `blhead`) · **Air `awbhead.commodity`** (ntext) | — | `commodity` (maxlen 21) |
+> ℹ️ **Worklist/Find commodity chip** (`seed-alerts.ps1`): **Sea** reads **`blitem.commodity`** (the operator-picked code, e.g. `FOOTWEAR`), falling back to the `good_desc1` description only when blank; **Air** reads **`awbdetl.good_desc2`** (unchanged). Earlier the Sea seed read `good_desc1` only, so the Sea commodity chip was blank wherever the description was empty — fixed 2026-06-23; a Sea reseed populates it.
 | **Cargo qty / gross / chargeable / cbm / wt unit** | **Air** `t_rece_qty` / `ttl_gwt` / `ttl_cwt` / `t_rece_cbm` · **Sea** `t_book_*` totals, **wt unit defaults `KGS`** | — | `quantity` / `grossWeight` / `chargeableWeight` / `cbm` / `weightUnit` |
 | **Marks / description** | **Sea `blitem.mark2`(+`mark3`) / `good_desc1`→`desc2`(+`desc3`)** · **Air `awbdetl.mark2` / `desc2`** | — | `shipMarks` / `goodsDescription` |
 | **Air IATA flight legs** | leg 1 `flight1`+`to1` · leg 2 `flight2`+`deli` · leg 3 `flight3`+`to3` | `portmstr` (leg ports) | `voyageFlightNumber`+`portOfDischargeCode`; legs 2-3 → **`flexData.{2nd,3rd}LegFlightNumber` / `…PortOfDischargeCode`** |

@@ -107,14 +107,17 @@ if($Mode -ne 'Air'){
 
 # ---- batch goods-description lines for the selected header refs (sea blitem / air awbdetl; both child
 #      tables key on blh = header.ref with a supporting index). Same chunked IN-seek pattern as below.
-#      Sea commodity lives in good_desc1, air in good_desc2 (per the operations user); capped to 400 chars. ----
+#      Goods DESCRIPTION: sea good_desc1, air good_desc2 (capped 400). COMMODITY (the card chip): SEA reads the
+#      dedicated blitem.commodity code (e.g. FOOTWEAR) with desc as fallback; AIR is UNCHANGED (good_desc2). ----
 $itemByRef=@{}
 $itemTable = if($Mode -eq 'Air'){'awbdetl'}else{'blitem'}
+# commodity column is SEA-only (blitem.commodity); air never reads it, so select NULL to leave awbdetl untouched.
+$commodSel = if($Mode -eq 'Air'){ 'NULL AS commodity' } else { 'CONVERT(nvarchar(120),commodity) AS commodity' }
 $itemRefs=@($ships | ForEach-Object { $_.ref } | Where-Object { $null -ne $_ })
 for($off=0; $off -lt $itemRefs.Count; $off+=500){
   $chunk=@($itemRefs[$off..([Math]::Min($off+499,$itemRefs.Count-1))])
   $p=@{}; $ins=@(); $i=0; foreach($rf in $chunk){ $ins+="@b$i"; $p["b$i"]=$rf; $i++ }
-  $rows = Query $Station "SELECT blh, item_seq, CONVERT(nvarchar(400),good_desc1) AS good_desc1, CONVERT(nvarchar(400),good_desc2) AS good_desc2 FROM dbo.$itemTable WHERE blh IN ($($ins -join ','))" $p
+  $rows = Query $Station "SELECT blh, item_seq, $commodSel, CONVERT(nvarchar(400),good_desc1) AS good_desc1, CONVERT(nvarchar(400),good_desc2) AS good_desc2 FROM dbo.$itemTable WHERE blh IN ($($ins -join ','))" $p
   foreach($d in $rows){ $k="$($d.blh)"; if(-not $itemByRef.ContainsKey($k)){ $itemByRef[$k]=@() }; $itemByRef[$k]+=$d }
 }
 
@@ -287,10 +290,13 @@ foreach($b in $ships){
   $routeSummary = (@($routePts) | ForEach-Object { "$($_.code)" }) -join (' ' + [char]0x2192 + ' ')
   if(-not $routeSummary){ $routeSummary=$null } elseif($routeSummary.Length -gt 120){ $routeSummary=$routeSummary.Substring(0,120) }
   $descField = if($Mode -eq 'Air'){'good_desc2'}else{'good_desc1'}
-  $descLines=@(); foreach($it in @($itemByRef["$($b.ref)"] | Sort-Object { "$($_.item_seq)" })){
+  $descLines=@(); $seaCommod=@(); foreach($it in @($itemByRef["$($b.ref)"] | Sort-Object { "$($_.item_seq)" })){
     $dv=("$($it.$descField)").Trim(); if($dv -and $descLines -notcontains $dv){ $descLines+=$dv }
+    if($Mode -ne 'Air'){ $cv=("$($it.commodity)").Trim(); if($cv -and $seaCommod -notcontains $cv){ $seaCommod+=$cv } }
   }
-  $commod = if($descLines.Count){ $descLines[0] } else { $null }
+  # Card commodity: AIR = goods desc (good_desc2), UNCHANGED; SEA = blitem.commodity code, desc (good_desc1) fallback.
+  $commod = if($Mode -eq 'Air'){ if($descLines.Count){ $descLines[0] } else { $null } }
+            else { if($seaCommod.Count){ $seaCommod[0] } elseif($descLines.Count){ $descLines[0] } else { $null } }
   if($commod -and $commod.Length -gt 120){ $commod=$commod.Substring(0,120) }
   $remark=("$($b.remark)").Trim(); if(-not $remark){ $remark=$null }
   $specialRemark= if($Mode -eq 'Air'){ ("$($b.special_remark)").Trim() } else { '' }; if(-not $specialRemark){ $specialRemark=$null }

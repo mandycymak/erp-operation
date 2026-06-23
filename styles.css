@@ -143,6 +143,8 @@ button:hover{filter:brightness(1.08)}
 .ib-search input,.ib-search select{font-size:12px;padding:4px 8px}
 #ibParty{width:200px}
 #ibQ{width:220px}
+#inboundPanel .fl{display:inline-flex;align-items:center;gap:4px;color:var(--mut);font-weight:400;font-size:12px}
+#inboundPanel .datebox{width:104px;font-variant-numeric:tabular-nums}
 /* air group header route */
 .vroute{color:var(--mut);font-weight:500;font-size:12px;letter-spacing:0}
 /* drawer deep detail (route timeline + cargo + internal remark) */

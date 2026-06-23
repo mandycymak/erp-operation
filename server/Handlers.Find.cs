@@ -59,7 +59,7 @@ public static partial class Handlers
             if (refField == "job") w += " AND (job_no LIKE @ref OR erp_job_no LIKE @ref) ";
             else
             {
-                var map = new Dictionary<string, string> { ["booking"] = "sono", ["po"] = "cust_ref", ["house"] = "house_bill", ["master"] = "master_bill", ["liner"] = "liner_so", ["container"] = "container_no", ["conv"] = "vessel_voyage" };
+                var map = new Dictionary<string, string> { ["booking"] = "sono", ["po"] = "cust_ref", ["shipid"] = "cust_ref", ["house"] = "house_bill", ["master"] = "master_bill", ["liner"] = "liner_so", ["container"] = "container_no", ["conv"] = "vessel_voyage", ["vessel"] = "vessel_voyage" };
                 if (map.TryGetValue(refField, out var col)) w += $" AND {col} LIKE @ref ";
                 else w += " AND (job_no LIKE @ref OR erp_job_no LIKE @ref OR sono LIKE @ref OR house_bill LIKE @ref OR master_bill LIKE @ref OR cust_ref LIKE @ref OR container_no LIKE @ref OR liner_so LIKE @ref) ";
             }
@@ -103,9 +103,10 @@ public static partial class Handlers
         w += Scope.StationClause(rs, p);
         w += Scope.PairClause(rs, p);
 
-        var cols = "job_no,erp_job_no,station,mode,bound,cargo_type,lane,carrier,pol,pod,route_summary,commodity," +
+        var cols = "job_no,erp_job_no,station,mode,bound,cargo_type,lane,carrier,pol,pod,route_summary,commodity,incoterm," +
             "shipper_name,consignee_name,shipper_code,consignee_code,agent_code,ctrl_code,cust_code,cust_contact," +
-            "sono,house_bill,master_bill,cust_ref,container_no,liner_so,vessel_voyage,pic_user,created_by,last_updated_by," +
+            "sono,house_bill,master_bill,cust_ref,container_no,liner_so,vessel_voyage,container_summary,container_count,total_weight,total_cbm," +
+            "pic_user,created_by,last_updated_by," +
             "worst_light,arrival_state,job_status," +
             "CONVERT(varchar(10),anchor_date,23) anchor_date,CONVERT(varchar(10),etd,23) etd," +
             "CONVERT(varchar(10),eta,23) eta,CONVERT(varchar(10),ata,23) ata";
@@ -201,15 +202,26 @@ public static partial class Handlers
         routeSummary = Db.Str(Db.G(r, "route_summary")),
         carrier = Db.Str(Db.G(r, "carrier")),
         commodity = Db.Str(Db.G(r, "commodity")),
+        incoterm = Db.Str(Db.G(r, "incoterm")),
+        erpJobNo = Db.Str(Db.G(r, "erp_job_no")),
         shipperName = Db.Str(Db.G(r, "shipper_name")),
         consigneeName = Db.Str(Db.G(r, "consignee_name")),
+        shipperCode = Db.Str(Db.G(r, "shipper_code")),
+        consigneeCode = Db.Str(Db.G(r, "consignee_code")),
+        agentCode = Db.Str(Db.G(r, "agent_code")),
         ctrlCode = Db.Str(Db.G(r, "ctrl_code")),
+        custCode = Db.Str(Db.G(r, "cust_code")),
         custContact = Db.Str(Db.G(r, "cust_contact")),
         sono = Db.Str(Db.G(r, "sono")),
         houseBill = Db.Str(Db.G(r, "house_bill")),
         masterBill = Db.Str(Db.G(r, "master_bill")),
         custRef = Db.Str(Db.G(r, "cust_ref")),
         containerNo = Db.Str(Db.G(r, "container_no")),
+        containerSummary = Db.Str(Db.G(r, "container_summary")),
+        containerCount = Db.IntOf(Db.G(r, "container_count")),
+        totalWeight = Db.Str(Db.G(r, "total_weight")),
+        totalCbm = Db.Str(Db.G(r, "total_cbm")),
+        linerSo = Db.Str(Db.G(r, "liner_so")),
         vesselVoyage = Db.Str(Db.G(r, "vessel_voyage")),
         picUser = Db.Str(Db.G(r, "pic_user")),
         createdBy = Db.Str(Db.G(r, "created_by")),
