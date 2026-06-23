@@ -76,6 +76,11 @@ $portsScript=Join-Path $PSScriptRoot "seed-ports.ps1"
 $portsTrig=New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At "03:30"
 Register-OpsTask "Ops Port Dim Refresh" "$portsScript`" -ConfigPath `"$ConfigPath`"" $portsTrig
 
+# --- weekly liner-master refresh (Sunday 03:40, after ports; linermstr barely changes) ---
+$linersScript=Join-Path $PSScriptRoot "seed-liners.ps1"
+$linersTrig=New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At "03:40"
+Register-OpsTask "Ops Liner Dim Refresh" "$linersScript`" -ConfigPath `"$ConfigPath`"" $linersTrig
+
 $color = if($script:failCount -gt 0){'Red'}else{'Cyan'}
 Write-Host "Done. $($script:okCount) task(s) registered, $($script:failCount) failed, across $($stations.Count) station(s)." -ForegroundColor $color
 Write-Host "Review in Task Scheduler: 'Ops Publish *' (feed) / 'Ops Worklist *' (worklist refresh) / 'Ops Station Map Refresh' / 'Ops Port Dim Refresh'." -ForegroundColor Cyan

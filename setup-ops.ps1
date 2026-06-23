@@ -218,6 +218,20 @@ CREATE TABLE dbo.company_dim (
 );
 "@
 
+# --- 2.7b liner_dim — carrier/liner code->name lookup (ERP linermstr) so natural-language Find can resolve a
+#     typed carrier NAME (e.g. "ONE", "Maersk") to the code(s) stored in shipment_alerts.carrier (e.g. ONEY,
+#     MAEU). Refreshed weekly by seed-liners.ps1 (off the request path). Sea liners; air carrier codes (CX) are
+#     matched directly. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.liner_dim') IS NULL
+CREATE TABLE dbo.liner_dim (
+  code       nvarchar(12)  NOT NULL,
+  name       nvarchar(120) NULL,
+  updated_at datetime2     NOT NULL,
+  CONSTRAINT PK_liner_dim PRIMARY KEY (code)
+);
+"@
+
 # --- 2.9 job_note — operator notes / arrangements / reminders, keyed by job_no (was ops-lists/job-notes.json).
 #     Moved into SQL so the natural-language Find can search authors/body/mentions with a scoped EXISTS and so
 #     notes are queryable like every other entity. NoteRec (server/Notes.cs) maps 1:1 to these columns. `user`
@@ -615,9 +629,9 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_erpedit_job' AND object_
   CREATE INDEX IX_erpedit_job ON dbo.erp_edit_log(job_no, occurred_at);
 "@
 
-Write-Host "Operational database [$opsDb] ready (16 tables + indexes):" -ForegroundColor Green
+Write-Host "Operational database [$opsDb] ready (17 tables + indexes):" -ForegroundColor Green
 Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
-Write-Host "  milestone_event_log, company_dim, port_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
+Write-Host "  milestone_event_log, company_dim, port_dim, liner_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
 Write-Host "  doc_draft, doc_version, doc_review_token, doc_event_log, doc_attachment (draft document review)" -ForegroundColor Green
 Write-Host "  erp_edit_log (ERP master-code corrections audit)" -ForegroundColor Green
 Write-Host "Next: map the alias/evidence fields to real ERP columns, then run listener-engine.ps1 -Mode Sea on the pilot station." -ForegroundColor Cyan

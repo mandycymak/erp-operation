@@ -50,17 +50,27 @@ if (Config.Https) app.UseHsts();
 // Send-Json / Send-File. Set via OnStarting so it applies even when a later handler writes the body.
 app.Use(async (ctx, next) =>
 {
+    var p = ctx.Request.Path;
+    var isApi = p.StartsWithSegments("/api-ops") || p.StartsWithSegments("/api-doc");
     ctx.Response.OnStarting(() =>
     {
         var h = ctx.Response.Headers;
         h["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
         h["Pragma"] = "no-cache";
         h["Expires"] = "0";
-        var p = ctx.Request.Path;
-        if (p.StartsWithSegments("/api-ops") || p.StartsWithSegments("/api-doc"))
+        if (isApi)
+        {
+            // permissive CORS for third-party callers (bearer-token, no cookies -> '*' is safe). The preflight
+            // needs Allow-Methods/Headers too, else a cross-origin POST with Authorization+JSON is blocked.
             h["Access-Control-Allow-Origin"] = "*";
+            h["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS";
+            h["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Ops-User";
+            h["Access-Control-Max-Age"] = "600";
+        }
         return Task.CompletedTask;
     });
+    // answer the CORS preflight directly (no auth / no body) so browser clients can call the API cross-origin.
+    if (isApi && HttpMethods.IsOptions(ctx.Request.Method)) { ctx.Response.StatusCode = 204; return; }
     await next();
 });
 
@@ -93,10 +103,35 @@ Session? GetSession(HttpContext ctx)
         return new Session { Username = u, Role = "admin", Admin = true, DisplayName = u, Expires = DateTime.Now.AddHours(12) };
     }
     var sid = ctx.Request.Cookies["ops_sid"];
-    if (sid == null || !Auth.Sessions.TryGetValue(sid, out var s)) return null;
-    if (s.Expires < DateTime.Now) { Auth.Sessions.TryRemove(sid, out _); return null; }
-    s.Expires = DateTime.Now.AddHours(12);
-    return s;
+    if (sid != null && Auth.Sessions.TryGetValue(sid, out var s))
+    {
+        if (s.Expires < DateTime.Now) { Auth.Sessions.TryRemove(sid, out _); return null; }
+        s.Expires = DateTime.Now.AddHours(12);
+        return s;
+    }
+    // No cookie session -> try a JWT bearer (third-party API callers: Swivel L!NK / Cargoclip). The token's
+    // email federates to a user; the returned Session is transient (NOT persisted to Auth.Sessions — JWT is
+    // stateless, validated fresh each request). Resolve() then re-reads the UserRec and builds scope as usual.
+    return JwtSession(ctx);
+}
+
+// Build a transient Session from a validated "Authorization: Bearer <jwt>". Returns null (no token / invalid /
+// unknown email with no auto-provision) so the caller emits 401. Fails closed.
+Session? JwtSession(HttpContext ctx)
+{
+    if (!Config.JwtEnabled) return null;
+    var hdr = ctx.Request.Headers["Authorization"].ToString().Trim();
+    if (!hdr.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return null;
+    var id = Jwt.ValidateEmail(hdr.Substring(7).Trim());
+    if (id == null) return null;
+    var u = Auth.FindUserByEmail(id.Value.Email);
+    if (u == null)
+    {
+        if (!Config.JwtAutoProvision) return null;
+        u = Auth.ProvisionLinkUser(id.Value.Email, id.Value.DisplayName);
+    }
+    var dn = string.IsNullOrWhiteSpace(u.DisplayName) ? u.Username : u.DisplayName.Trim();
+    return new Session { Username = u.Username, Role = u.Role, Admin = u.Admin, DisplayName = dn, Expires = DateTime.Now.AddHours(12) };
 }
 
 // Build the per-request ReqState (the migration's core: scope lives here, never in shared state). In auth mode
@@ -310,6 +345,50 @@ app.MapPost("/api-ops/parse-find", async (HttpContext ctx) =>
     var clue = await Llm.ParseFind(text, http);
     if (clue == null) { await Json(ctx, new { error = "parse failed", provider = Config.LlmProvider }, 502); return; }
     await Json(ctx, new { clue, provider = Config.LlmProvider, source = "llm" });
+});
+
+// POST /api-ops/find-text — natural-language Find for third-party API callers (and any client that prefers to
+// send raw text instead of pre-parsed clues). Parses server-side (OpsQuery.Parse), runs the SHARED FindCore
+// under the caller's scope (so data restriction is identical to the worklist), and — when the rule parse finds
+// nothing AND the LLM is enabled — falls back to the LLM parser, exactly like the browser. Auth via GetSession,
+// which now also accepts an "Authorization: Bearer <jwt>" carrying the user's email. Needs a DB connection + the
+// shared HttpClient for the optional LLM. Body: { "text": "...", "useLlm": true|false }.
+app.MapPost("/api-ops/find-text", async (HttpContext ctx) =>
+{
+    var sess = GetSession(ctx);
+    if (sess == null) { await Json(ctx, new { error = "Authentication required" }, 401); return; }
+    var rs = await Resolve(ctx, sess); if (rs == null) return;
+    var body = await ReadBody(ctx);
+    var text = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("text", out var t) ? (t.GetString() ?? "") : "";
+    var useLlm = !(body.ValueKind == JsonValueKind.Object && body.TryGetProperty("useLlm", out var ul) && ul.ValueKind == JsonValueKind.False);
+    await dbGate.WaitAsync();
+    try
+    {
+        using var cn = new SqlConnection(Config.ConnStr);
+        cn.Open();
+        // API default: search everything the user is allowed to see (scope still applies), not just shipments they
+        // personally handle. The caller opts back into the involvement lens by saying "my"/"mine". (The browser
+        // worklist keeps "mine" as its default via the client.)
+        var wantMine = System.Text.RegularExpressions.Regex.IsMatch(text ?? "", @"\b(my|mine)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var clue = OpsQuery.Parse(text);
+        clue.Mine = wantMine && clue.Ref == "";
+        var r = Handlers.FindCore(cn, clue, rs);
+        var source = "rule";
+        if (r.Items.Length == 0 && useLlm && Config.LlmEnabled)
+        {
+            var llm = await Llm.ParseFind(text, http);
+            if (llm != null)
+            {
+                var lclue = Handlers.ClueFromJson(llm);
+                lclue.Mine = wantMine && lclue.Ref == "";
+                var lr = Handlers.FindCore(cn, lclue, rs);
+                if (lr.Items.Length > 0) { r = lr; source = "llm"; }
+            }
+        }
+        await Json(ctx, new { query = text, source, items = r.Items, resolved = r.Resolved });
+    }
+    catch (Exception ex) { await Json(ctx, new { error = ex.Message }, 500); }
+    finally { dbGate.Release(); }
 });
 // ---- Stage 3: writes + admin + feed-assign ----
 // notes: GET = file-store list; POST = save (both file-only, no DB).

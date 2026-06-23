@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Find API - test chat</title>
+<style>
+  :root { --bg:#0f1419; --panel:#1a2027; --line:#2b333d; --txt:#e6e9ed; --mut:#8c97a3; --accent:#3b82f6; --me:#1e3a5f; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,Segoe UI,Arial,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:10px 14px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0 0 8px; }
+  .cfg { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .cfg label { font-size:11px; color:var(--mut); display:block; margin-bottom:2px; }
+  .cfg input[type=text], .cfg textarea { width:100%; background:#0c1116; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:12px monospace; }
+  .cfg textarea { resize:vertical; min-height:46px; grid-column:1/3; }
+  .row2 { grid-column:1/3; display:flex; gap:14px; align-items:center; font-size:12px; color:var(--mut); }
+  #log { padding:14px; max-width:900px; margin:0 auto; }
+  .msg { margin:10px 0; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:var(--panel); }
+  .msg.me { background:var(--me); margin-left:60px; }
+  .msg.sys { border-color:#5a2b2b; background:#2a1717; color:#ffb4b4; }
+  .meta { font-size:11px; color:var(--mut); margin-bottom:6px; }
+  .card { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin:6px 0; background:#0c1116; }
+  .card .hid { font-weight:600; }
+  .card .sub { font-size:12px; color:var(--mut); }
+  .chip { display:inline-block; font-size:10px; padding:1px 6px; border-radius:10px; margin-left:6px; vertical-align:middle; }
+  .G { background:#14532d; color:#bbf7d0; } .A { background:#713f12; color:#fde68a; } .R { background:#7f1d1d; color:#fecaca; }
+  .note { border-left:3px solid var(--accent); }
+  form { position:sticky; bottom:0; display:flex; gap:8px; padding:12px 14px; background:var(--panel); border-top:1px solid var(--line); }
+  form input { flex:1; background:#0c1116; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:14px; }
+  form button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:0 18px; font-size:14px; cursor:pointer; }
+  .hint { color:var(--mut); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Find API - test chat</h1>
+  <div class="cfg">
+    <div><label>API base URL</label><input id="base" type="text" value="http://localhost:8085"></div>
+    <div><label>Endpoint</label><input id="ep" type="text" value="/api-ops/find-text"></div>
+    <div style="grid-column:1/3"><label>Bearer token (JWT)</label><textarea id="tok" placeholder="paste the JWT here"></textarea></div>
+    <div class="row2"><label style="display:flex;gap:6px;align-items:center;margin:0"><input id="llm" type="checkbox"> allow LLM fallback (useLlm)</label>
+      <span class="hint">The token's email decides whose data you see. Results are scoped to that user.</span></div>
+  </div>
+</header>
+
+<div id="log">
+  <div class="msg"><div class="meta">how to use</div>
+    Paste your JWT above, type what you remember about a shipment below, and press Enter.<br>
+    Examples: <i>"everyone air export shipments"</i> &middot; <i>"sea import from Shanghai last month"</i> &middot;
+    <i>"booking HKGLAX000413"</i> &middot; <i>"find my jobs"</i></div>
+</div>
+
+<form id="f">
+  <input id="q" type="text" autocomplete="off" placeholder="Describe the shipment you are looking for...">
+  <button type="submit">Send</button>
+</form>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = $('log');
+function esc(s){ return (''+(s??'')).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function bubble(cls, html){ const d=document.createElement('div'); d.className='msg '+cls; d.innerHTML=html; log.appendChild(d); window.scrollTo(0,document.body.scrollHeight); return d; }
+
+function shipCard(it){
+  const lt = it.worst==='R'?'R':it.worst==='A'?'A':'G';
+  return `<div class="card">
+    <div class="hid">${esc(it.humanId)} <span class="chip ${lt}">${esc(it.worst||'G')}</span>
+      <span class="sub">${esc(it.mode)}-${esc(it.bound)} &middot; ${esc(it.station)}</span></div>
+    <div class="sub">${esc(it.lane||it.routeSummary||'')} ${it.commodity? ' &middot; '+esc(it.commodity.split('\n')[0]):''}</div>
+    <div class="sub">${esc(it.shipperName)} &rarr; ${esc(it.consigneeName)}</div>
+    <div class="sub">ETD ${esc(it.etd||'-')} &middot; ETA ${esc(it.eta||'-')} &middot; ATA ${esc(it.ata||'-')}
+      ${it.masterBill? ' &middot; MBL '+esc(it.masterBill):''}${it.sono? ' &middot; '+esc(it.sono):''}</div>
+  </div>`;
+}
+function noteCard(it){
+  return `<div class="card note">
+    <div class="hid">${esc(it.author)} <span class="sub">on ${esc(it.humanId||it.jobNo)} &middot; ${esc(it.created)}</span></div>
+    <div>${esc(it.note)}</div></div>`;
+}
+
+$('f').addEventListener('submit', async e=>{
+  e.preventDefault();
+  const text = $('q').value.trim(); if(!text) return;
+  const tok = $('tok').value.trim();
+  bubble('me', `<div class="meta">you</div>${esc(text)}`);
+  $('q').value='';
+  if(!tok){ bubble('sys', 'Paste a Bearer token first.'); return; }
+  const url = $('base').value.replace(/\/+$/,'') + $('ep').value;
+  const pending = bubble('', `<div class="meta">Find API</div><span class="hint">searching...</span>`);
+  try{
+    const r = await fetch(url, { method:'POST',
+      headers:{ 'Authorization':'Bearer '+tok, 'Content-Type':'application/json' },
+      body: JSON.stringify({ text, useLlm: $('llm').checked }) });
+    const body = await r.text();
+    let j; try { j = JSON.parse(body); } catch { j = null; }
+    if(!r.ok){
+      pending.className='msg sys';
+      pending.innerHTML = `<div class="meta">Find API - HTTP ${r.status}</div>${esc(j? (j.error||body) : body)}`;
+      return;
+    }
+    const items = j.items||[];
+    const res = j.resolved||{};
+    const summary = Object.entries(res).filter(([k,v])=>v!=='' && v!==false).map(([k,v])=>`${k}=${v}`).join(' &middot; ');
+    let html = `<div class="meta">Find API &middot; source: ${esc(j.source)} &middot; ${items.length} result(s)</div>`;
+    html += `<div class="sub" style="margin-bottom:6px">understood: ${summary||'(nothing - try rephrasing)'}</div>`;
+    html += items.map(it => it.type==='note'? noteCard(it) : shipCard(it)).join('') || '<div class="hint">No matching shipments in your scope.</div>';
+    pending.innerHTML = html;
+  }catch(err){
+    pending.className='msg sys';
+    pending.innerHTML = `<div class="meta">network error</div>${esc(err.message)} <div class="hint">If the API runs on another origin, this is usually CORS or the server being down.</div>`;
+  }
+});
+</script>
+</body>
+</html>

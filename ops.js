@@ -1455,7 +1455,7 @@ function parseOpsQuery(text) {
   else if (idm = work.match(/\b(?:hbl|hawb|house\s*(?:bill|b\/l|bl|awb)?)\s*#?\s*([a-z0-9][a-z0-9\-\/]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'house'; work = work.replace(idm[0], ' '); }
   else if (idm = work.match(/\b(?:mbl|mawb|master\s*(?:bill|b\/l|bl|awb)?)\s*#?\s*([a-z0-9][a-z0-9\-\/]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'master'; work = work.replace(idm[0], ' '); }
   else if (idm = work.match(/\b(?:ship-?\s?id|shipid|spot-?\s?id|spotid|spot)\s*#?\s*([a-z0-9][a-z0-9\-\/:_]{1,})\b/i)) { out.ref = idm[1]; out.refField = 'shipid'; work = work.replace(idm[0], ' '); }
-  else if (idm = work.match(/\b(?:vessel|vsl|m\/?v|voyage)\s+#?\s*([a-z0-9][\w\-\/]*(?:\s+(?!to\b|from\b|about\b|last\b|this\b|please\b)[a-z0-9][\w\-\/]*){0,3})/i)) { out.ref = idm[1].trim(); out.refField = 'conv'; work = work.replace(idm[0], ' '); }
+  else if (idm = work.match(/\b(?:vessel|vsl|m\/?v|voyage)\s+(?:(?:named?|called|under|is|name\s+of)\s+)?#?\s*([a-z0-9][\w\-\/]*(?:\s+(?!to\b|from\b|about\b|last\b|this\b|please\b)[a-z0-9][\w\-\/]*){0,3})/i)) { out.ref = idm[1].trim(); out.refField = 'conv'; work = work.replace(idm[0], ' '); }
   else if (idm = work.match(/\b([A-Z]{4}\d{7})\b/)) { out.ref = idm[1]; out.refField = 'container'; work = work.replace(idm[0], ' '); }
   else if (idm = work.match(/\b(?:job|file)\s*(?:no\.?|number|#)?\s*([a-z]{2,}[a-z0-9\-]{3,})\b/i)) { out.ref = idm[1]; out.refField = 'job'; work = work.replace(idm[0], ' '); }
   // an explicit role word pins the company: "shipper ABC", "consignee X", "customer Y".

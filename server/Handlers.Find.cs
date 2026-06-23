@@ -1,7 +1,20 @@
 using Microsoft.Data.SqlClient;
+using System.Text.Json.Nodes;
 using Row = System.Collections.Generic.IDictionary<string, object>;
 
 namespace Ops;
+
+// Extracted clue object shared by the structured query path (Qs) and the natural-language path (OpsQuery.Parse).
+// Mirror of parseOpsQuery's output in ops.js; FindCore consumes it so both paths run identical SQL + scope.
+public sealed class FindClue
+{
+    public string Who = "", Pol = "", Pod = "", Commodity = "", Mode = "", Bound = "";
+    public string Ref = "", RefField = "";
+    public string NoteAuthor = "", NoteText = "";
+    public bool Tome, Mine;
+    public string From = "", To = "";
+    public string DateLabel = "";
+}
 
 public static partial class Handlers
 {
@@ -11,24 +24,50 @@ public static partial class Handlers
     // every path gated by the SAME Scope.StationClause + Scope.PairClause that the worklist uses — that scope is
     // the whole security boundary, and notes inherit it via an EXISTS on their parent shipment. Recency-sorted,
     // deduped by job_no (a job that also has a matching note is shown once, flagged hasNote). ----
+    // adapter: the structured GET /api-ops/find reads the same clue params it always has, then runs the shared core.
     public static object Find(SqlConnection cn, Qs q, ReqState rs)
     {
-        var me = rs.Me;
-        var who = (q["who"] ?? "").Trim();
-        var pol = (q["pol"] ?? "").Trim();
-        var pod = (q["pod"] ?? "").Trim();
-        var commodity = (q["commodity"] ?? "").Trim();
-        var mode = (q["mode"] ?? "").Trim();
-        var bound = (q["bound"] ?? "").Trim();
-        var refq = (q["ref"] ?? "").Trim();
-        var refField = q["refField"] ?? "";
-        var noteAuthor = (q["noteauthor"] ?? "").Trim();
-        var noteText = (q["notetext"] ?? "").Trim();
-        var tome = (q["tome"] ?? "") != "";
+        var clue = new FindClue
+        {
+            Who = (q["who"] ?? "").Trim(),
+            Pol = (q["pol"] ?? "").Trim(),
+            Pod = (q["pod"] ?? "").Trim(),
+            Commodity = (q["commodity"] ?? "").Trim(),
+            Mode = (q["mode"] ?? "").Trim(),
+            Bound = (q["bound"] ?? "").Trim(),
+            Ref = (q["ref"] ?? "").Trim(),
+            RefField = q["refField"] ?? "",
+            NoteAuthor = (q["noteauthor"] ?? "").Trim(),
+            NoteText = (q["notetext"] ?? "").Trim(),
+            Tome = (q["tome"] ?? "") != "",
+            From = (q["from"] ?? "").Trim(),
+            To = (q["to"] ?? "").Trim(),
+        };
         // involvement default ("mine"); an explicit identifier lookup finds any file, so it bypasses the lens.
-        var mine = (q["mine"] ?? "") != "" && refq == "";
-        var from = (q["from"] ?? "").Trim();
-        var to = (q["to"] ?? "").Trim();
+        clue.Mine = (q["mine"] ?? "") != "" && clue.Ref == "";
+        var r = FindCore(cn, clue, rs);
+        return new { items = r.Items, resolved = r.Resolved };
+    }
+
+    // shared search core (the structured path and the natural-language /api-ops/find-text path both call this) —
+    // identical SQL, identical Scope.* boundary, identical payload. Returns the items + the resolved clue echo.
+    public static (object[] Items, object Resolved) FindCore(SqlConnection cn, FindClue clue, ReqState rs)
+    {
+        var me = rs.Me;
+        var who = clue.Who;
+        var pol = clue.Pol;
+        var pod = clue.Pod;
+        var commodity = clue.Commodity;
+        var mode = clue.Mode;
+        var bound = clue.Bound;
+        var refq = clue.Ref;
+        var refField = clue.RefField;
+        var noteAuthor = clue.NoteAuthor;
+        var noteText = clue.NoteText;
+        var tome = clue.Tome;
+        var mine = clue.Mine;
+        var from = clue.From;
+        var to = clue.To;
         var hasNoteClue = noteAuthor != "" || noteText != "" || tome;
         var hasShipmentClue = who != "" || pol != "" || pod != "" || commodity != "" || refq != "" || mode != "" || bound != "";
         // a purely note-centric query ("Leo messaged me about X") is anchored by the NOTE search — running the
@@ -43,12 +82,26 @@ public static partial class Handlers
         if (who != "")
         {
             p["who"] = "%" + Db.LikeEsc(who) + "%";
-            w += " AND (shipper_name LIKE @who OR consignee_name LIKE @who OR shipper_code LIKE @who OR consignee_code LIKE @who " +
-                 "OR agent_code LIKE @who OR ctrl_code LIKE @who OR cust_code LIKE @who OR cust_contact LIKE @who OR carrier LIKE @who " +
-                 "OR EXISTS (SELECT 1 FROM dbo.job_note n WHERE n.job_no = shipment_alerts.job_no AND (n.party LIKE @who OR n.contact LIKE @who))) ";
+            p["whopfx"] = Db.LikeEsc(who) + "%";   // prefix match: container owner code / air flight (e.g. "CX" -> CX299)
+            var ors = new List<string>
+            {
+                "shipper_name LIKE @who", "consignee_name LIKE @who", "shipper_code LIKE @who", "consignee_code LIKE @who",
+                "agent_code LIKE @who", "ctrl_code LIKE @who", "cust_code LIKE @who", "cust_contact LIKE @who",
+                "carrier LIKE @who", "vessel_voyage LIKE @whopfx", "container_no LIKE @whopfx",
+                "EXISTS (SELECT 1 FROM dbo.job_note n WHERE n.job_no = shipment_alerts.job_no AND (n.party LIKE @who OR n.contact LIKE @who))",
+            };
+            // resolve a typed company NAME -> party code(s) via company_dim (the operational store keeps party
+            // codes, not names, for customer/agent/controlling), and a typed liner/carrier NAME -> carrier code(s)
+            // via liner_dim. Codes still match directly above; this adds name search. Empty/absent dim -> no-op.
+            var partyCodes = ResolveCodes(cn, "company_dim", who, withCountry: false);
+            var inl = AddCodes(p, "pc", partyCodes);
+            if (inl != "") foreach (var col in new[] { "shipper_code", "consignee_code", "agent_code", "ctrl_code", "cust_code" }) ors.Add($"{col} IN ({inl})");
+            var linerInl = AddCodes(p, "lc", ResolveCodes(cn, "liner_dim", who, withCountry: false));
+            if (linerInl != "") ors.Add($"carrier IN ({linerInl})");
+            w += " AND (" + string.Join(" OR ", ors) + ") ";
         }
-        if (pol != "") { p["pol"] = "%" + Db.LikeEsc(pol) + "%"; w += " AND (pol LIKE @pol OR lane LIKE @pol OR route_summary LIKE @pol) "; }
-        if (pod != "") { p["pod"] = "%" + Db.LikeEsc(pod) + "%"; w += " AND (pod LIKE @pod OR lane LIKE @pod OR route_summary LIKE @pod) "; }
+        if (pol != "") w += " AND (" + PlaceClause(cn, p, "pol", pol, "plc") + ") ";
+        if (pod != "") w += " AND (" + PlaceClause(cn, p, "pod", pod, "pdc") + ") ";
         if (commodity != "") { p["com"] = "%" + Db.LikeEsc(commodity) + "%"; w += " AND commodity LIKE @com "; }
         if (mode != "") { p["md"] = mode; w += " AND mode=@md "; }
         if (bound != "") { p["bnd"] = bound; w += " AND bound=@bnd "; }
@@ -168,7 +221,56 @@ public static partial class Handlers
         }
         var items = merged.OrderByDescending(x => x.sort, StringComparer.Ordinal).Take(60).Select(x => x.item).ToArray();
 
-        return new { items, resolved = new { who, pol, pod, commodity, mode, bound, mine, noteAuthor, noteText, tome, from, to } };
+        return (items, new { who, pol, pod, commodity, mode, bound, mine, noteAuthor, noteText, tome, from, to });
+    }
+
+    // map the LLM fallback's clue object (Llm.ParseFind output — same camelCase shape as parseOpsQuery) to a
+    // FindClue. Applies the same "explicit identifier bypasses the involvement lens" rule as the rule path.
+    public static FindClue ClueFromJson(JsonObject o)
+    {
+        string S(string k) => ((string?)o[k] ?? "").Trim();
+        bool B(string k, bool dflt) { var v = o[k]; if (v == null) return dflt; try { return (bool)v!; } catch { return dflt; } }
+        var c = new FindClue
+        {
+            Who = S("who"), Pol = S("pol"), Pod = S("pod"), Commodity = S("commodity"),
+            Mode = S("mode"), Bound = S("bound"), Ref = S("ref"), RefField = S("refField"),
+            NoteAuthor = S("noteAuthor"), NoteText = S("noteText"), Tome = B("tome", false),
+            From = S("from"), To = S("to"),
+        };
+        c.Mine = B("mine", true) && c.Ref == "";
+        return c;
+    }
+
+    // resolve a typed NAME (or code) to the matching reference code(s) via a *_dim lookup table (company_dim /
+    // port_dim / liner_dim), so a name search hits the operational columns that store only codes. Bounded; a
+    // missing/empty dim returns nothing (the literal LIKE on the raw term still runs), so it degrades gracefully.
+    static string[] ResolveCodes(SqlConnection cn, string table, string term, bool withCountry)
+    {
+        if (term == "") return Array.Empty<string>();
+        var p = new Dictionary<string, object?> { ["t"] = "%" + Db.LikeEsc(term) + "%" };
+        var cols = "name LIKE @t OR code LIKE @t" + (withCountry ? " OR country LIKE @t" : "");
+        try { return Db.RunQ(cn, $"SELECT DISTINCT TOP 40 code FROM dbo.{table} WHERE {cols}", p).Select(r => Db.Str(Db.G(r, "code"))).Where(s => s != "").ToArray(); }
+        catch { return Array.Empty<string>(); }   // table absent (e.g. liner_dim not seeded yet) -> no resolution
+    }
+
+    // add @<prefix>N params for each code; return the "@p0,@p1,..." body for an IN (...), or "" when no codes.
+    static string AddCodes(Dictionary<string, object?> p, string prefix, string[] codes)
+    {
+        if (codes.Length == 0) return "";
+        var names = new List<string>();
+        for (int i = 0; i < codes.Length; i++) { var k = prefix + i; names.Add("@" + k); p[k] = codes[i]; }
+        return string.Join(",", names);
+    }
+
+    // a place clause for pol/pod: literal LIKE on the term (code/lane/route) OR the column IN the port codes a
+    // typed place NAME resolves to (so "hong kong" -> pol IN ('HKG','HKHKG'), not just a code the user typed).
+    static string PlaceClause(SqlConnection cn, Dictionary<string, object?> p, string col, string term, string prefix)
+    {
+        p[col] = "%" + Db.LikeEsc(term) + "%";
+        var ors = new List<string> { $"{col} LIKE @{col}", $"lane LIKE @{col}", $"route_summary LIKE @{col}" };
+        var inl = AddCodes(p, prefix, ResolveCodes(cn, "port_dim", term, withCountry: true));
+        if (inl != "") ors.Add($"{col} IN ({inl})");
+        return string.Join(" OR ", ors);
     }
 
     // sort key for a shipment hit: anchor date, falling back to eta then ata (all yyyy-mm-dd strings).

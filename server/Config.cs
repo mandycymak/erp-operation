@@ -50,6 +50,20 @@ public static class Config
     public static bool LinkAutoProvision { get; private set; } = true;
     public static string LinkDefaultRole { get; private set; } = "operator";
 
+    // ---- JWT bearer auth for third-party API callers (Swivel L!NK / Cargoclip). A caller presents a signed
+    // JWT carrying the user's email; the server validates it, federates on that email (same key as L!NK), and
+    // runs every query under that user's scope. ENABLED only when the flag is on AND a verification key is
+    // present (signingKey for HS* or jwksUrl/publicKey for RS*/ES*). Validation fails CLOSED (any error -> 401).
+    public static bool JwtEnabled { get; private set; }
+    public static string JwtIssuer { get; private set; } = "";        // expected iss ("" = don't validate issuer)
+    public static string JwtAudience { get; private set; } = "";      // expected aud ("" = don't validate audience)
+    public static string JwtSigningKey { get; private set; } = "";    // HS256/384/512 shared secret
+    public static string JwtJwksUrl { get; private set; } = "";       // RS*/ES* public keyset URL
+    public static string JwtPublicKey { get; private set; } = "";     // RS*/ES* PEM public key (alternative to jwksUrl)
+    public static string JwtEmailClaim { get; private set; } = "email";
+    public static bool JwtAutoProvision { get; private set; } = true;
+    public static int JwtClockSkewSec { get; private set; } = 120;
+
     // ---- Swivel ERP write API (serve-ops.ps1 erpApi block; consumed by Erp.cs in Stage 4) ----
     public static string ErpBaseUrl { get; private set; } = "";
     public static string ErpToken { get; private set; } = "";
@@ -143,6 +157,19 @@ public static class Config
         LinkEnabled = LinkProfileUrl != "";
         LinkAutoProvision = (bool?)link?["autoProvision"] ?? true;
         LinkDefaultRole = NonEmpty(((string?)link?["defaultRole"] ?? "").Trim().ToLowerInvariant(), "operator");
+
+        var jwt = cfg["jwtAuth"]?.AsObject();
+        JwtIssuer = EnvOrConfig("OPS_JWT_ISSUER", (string?)jwt?["issuer"]).Trim();
+        JwtAudience = EnvOrConfig("OPS_JWT_AUDIENCE", (string?)jwt?["audience"]).Trim();
+        JwtSigningKey = EnvOrConfig("OPS_JWT_SIGNING_KEY", (string?)jwt?["signingKey"]).Trim();
+        JwtJwksUrl = EnvOrConfig("OPS_JWT_JWKS_URL", (string?)jwt?["jwksUrl"]).Trim();
+        JwtPublicKey = EnvOrConfig("OPS_JWT_PUBLIC_KEY", (string?)jwt?["publicKey"]).Trim();
+        JwtEmailClaim = NonEmpty(((string?)jwt?["emailClaim"] ?? "").Trim(), "email");
+        JwtAutoProvision = (bool?)jwt?["autoProvision"] ?? LinkAutoProvision;
+        JwtClockSkewSec = (int?)jwt?["clockSkewSec"] ?? 120;
+        // enabled only with the flag on AND some verification material present — a missing key keeps it inert.
+        JwtEnabled = ((bool?)jwt?["enabled"] ?? false)
+            && (JwtSigningKey != "" || JwtJwksUrl != "" || JwtPublicKey != "");
 
         var erp = cfg["erpApi"]?.AsObject();
         ErpBaseUrl = ((string?)erp?["baseUrl"] ?? "").Trim();
