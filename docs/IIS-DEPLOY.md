@@ -125,6 +125,46 @@ If you front the app with a separate public reverse proxy for customers, expose 
   frame. Point the L!NK iframe URL at the new HTTPS host if the host/port changed.
 - Reconcile a couple of milestone lights / KPIs against a direct read-only ERP SQL query (CLAUDE.md house rule).
 
+## 9. Third-party Find API (JWT bearer + cross-origin) — IIS changes
+
+The `POST /api-ops/find-text` + `GET /api-ops/find` endpoints let an external app (Swivel L!NK / Cargoclip)
+call Find authenticated by a **JWT bearer token** carrying the user's email (see `docs/API.md`). Two IIS settings
+break a fresh site for this feature even though the app handles them correctly:
+
+1. **Remove WebDAV so the CORS preflight reaches the app (the critical one).** IIS's **WebDAVModule** intercepts
+   the `OPTIONS` verb and returns **405**, which kills the browser CORS preflight (the app's own
+   `Access-Control-*` + `OPTIONS` 204 handler never runs). Any **browser / cross-origin** caller fails until
+   fixed. Either uninstall the *WebDAV Publishing* role feature on the server once (Server Manager → Web Server →
+   remove **WebDAV Publishing**), or add to the published `web.config` (re-apply after each `dotnet publish`):
+   ```xml
+   <system.webServer>
+     <modules><remove name="WebDAVModule" /></modules>
+     <handlers><remove name="WebDAV" /></handlers>
+     <security><requestFiltering><verbs allowUnlisted="true" /></requestFiltering></security>
+     <!-- existing <aspNetCore .../> stays -->
+   </system.webServer>
+   ```
+   > A pure server-to-server caller sends no preflight, so it works without this; a **browser** client on another
+   > origin needs it. Uninstalling the feature is cleaner (survives republish).
+
+2. **Anonymous Authentication ON, Windows Authentication OFF** for the site. The app does its own JWT/cookie
+   auth; with Windows Auth enabled, IIS challenges the request and the `Authorization: Bearer …` header never
+   reaches the app (401s). IIS Manager → site → *Authentication*.
+
+3. **JWT config is config-only — no IIS step.** Put the `jwtAuth` block (the provider's **public key**,
+   `issuer`, `emailClaim` — for Cargoclip: `issuer:"cargoClip"`, `emailClaim:"u"`, no `audience`) in
+   `ops.config.<tenant>.json` under `OPS_ROOT`. The public key is **not a secret**. If you prefer env, set
+   `OPS_JWT_*` as **app-pool** environment variables (survive republish, unlike `web.config`).
+
+4. **Outbound access only if you use a JWKS URL.** With an inline `publicKey`, nothing extra. If you switch to
+   `jwtAuth.jwksUrl`, the app-pool identity needs **outbound HTTPS** to that URL.
+
+5. **HTTPS** — keep `OPS_HTTPS=1`; third parties call `https://<host>/api-ops/find-text`.
+
+> The natural-language search resolves names→codes from `port_dim` / `liner_dim` / `company_dim`. Seed them off
+> the request path with `seed-ports.ps1` + `seed-liners.ps1` (and the usual `seed-alerts.ps1`); `setup-ops.ps1`
+> creates `liner_dim`. `register-ops-tasks.ps1` schedules the weekly refreshes.
+
 ## Tenancy (multiple customers)
 Config-driven, **one deploy per customer**: same binaries, each customer runs its own IIS site (or app pool)
 pointed at its own `OPS_ROOT` + `ops.config.<tenant>.json` (own server/creds/`opsDb`/`stations[]`/branding/
