@@ -80,8 +80,8 @@ async function init() {
   buildStationPicker();
   const rost = await api('/api-ops/roster'); const ru = arr(rost.users);
   state.roster = ru.map(u => u.username);
-  // username -> { name, team, station } so the @-mention picker can label colleagues (matters at ~500 users)
-  state.rosterMeta = {}; ru.forEach(u => { state.rosterMeta[u.username] = { name: u.displayName || u.username, team: u.team || '', station: u.station || '' }; });
+  // username -> { name, team, station, email } so the @-mention picker shows the display name (matters at ~500 users)
+  state.rosterMeta = {}; ru.forEach(u => { state.rosterMeta[u.username] = { name: u.displayName || u.username, team: u.team || '', station: u.station || '', email: u.email || '' }; });
   if (!state.user && state.roster.length) state.user = state.roster[0];
   buildUserPicker(); buildTeammate();
   wireLens(); wireBound(); wireMode(); wireFilters(); wireTheme(); buildLangPicker();
@@ -914,7 +914,7 @@ function openArrangeForm(job, type, wrap) {
     const contact = f.querySelector('.contact').value.trim();
     const note = f.querySelector('.note').value.trim();
     const arr_status = f.querySelector('.status').value;
-    const mentions = extractMentions(f.querySelector('.ment').value);
+    const mentions = extractMentions(f.querySelector('.ment'));
     if (!note && !party) return;
     save.disabled = true;
     await api('/api-ops/notes', { method: 'POST', body: { job_no: job, kind: 'arrangement', arr_type: type, party, contact, arr_status, note: note || ('Arrange ' + type), mentions } });
@@ -1264,7 +1264,7 @@ function composer(job, prefill) {
   wireMention(ta, pop);
   send.onclick = async () => {
     const text = ta.value.trim(); if (!text) return;
-    const mentions = extractMentions(text);
+    const mentions = extractMentions(ta);
     send.disabled = true;
     await api('/api-ops/notes', { method: 'POST', body: { job_no: job, note: text, mentions } });
     send.disabled = false; ta.value = '';
@@ -1273,9 +1273,22 @@ function composer(job, prefill) {
   };
   return c;
 }
-function extractMentions(text) {
-  const set = new Set(); const re = /@([A-Za-z0-9_.\-]+)/g; let m;
-  while ((m = re.exec(text))) { const cand = state.roster.find(u => u.toLowerCase() === m[1].toLowerCase()); if (cand) set.add(cand); }
+// Resolve mentions from a textarea/input (or a raw string). The picker inserts the colleague's DISPLAY NAME as the
+// visible @token (so an email-style username never shows), but records the real username on the element. We return the
+// recorded usernames whose token is still present, plus any @display-name / @username typed by hand — so deleting the
+// text removes the mention and a manual mention still resolves.
+function mentionPresent(text, label) {
+  if (!label) return false; const at = '@' + label;
+  return text.includes(at + ' ') || text.includes(at + '\n') || text.includes(at + '\t') || text.endsWith(at);
+}
+function extractMentions(elOrText) {
+  const isEl = elOrText && typeof elOrText === 'object';
+  const text = isEl ? (elOrText.value || '') : (elOrText || '');
+  const set = new Set();
+  const tracked = (isEl && elOrText._mentions) ? [...elOrText._mentions] : [];
+  tracked.forEach(u => { if (mentionPresent(text, findNameOf(u)) || mentionPresent(text, u)) set.add(u); });
+  // fallback: a colleague typed by display name or username without using the picker
+  state.roster.forEach(u => { if (mentionPresent(text, findNameOf(u)) || mentionPresent(text, u)) set.add(u); });
   return [...set];
 }
 function wireMention(ta, pop) {
@@ -1286,19 +1299,21 @@ function wireMention(ta, pop) {
     if (!mt) return close();
     const q = mt[1].toLowerCase();
     const meta = state.rosterMeta || {};
-    // match on username, real name, team OR station — so "@HKG" or "@sales" narrows the ~500-user list
+    // match on real name, username/email, team OR station — so "@HKG" or "@sales" narrows the ~500-user list
     items = state.roster.filter(u => {
       const m = meta[u] || {};
-      return u.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q) ||
+      return (m.name || '').toLowerCase().includes(q) || u.toLowerCase().includes(q) ||
+        (m.email || '').toLowerCase().includes(q) ||
         (m.team || '').toLowerCase().includes(q) || (m.station || '').toLowerCase().includes(q);
     }).slice(0, 8);
     if (!items.length) return close();
     pop.innerHTML = ''; items.forEach((u, i) => {
       const m = meta[u] || {};
-      const sub = [m.team, m.station].filter(Boolean).join(' · ');
+      const name = m.name || u;
+      const ident = (m.email || u);                       // show the email/username as the muted secondary line
+      const sub = [ident !== name ? ident : '', m.team, m.station].filter(Boolean).join(' · ');
       const d = el('div', i === 0 ? 'sel' : '');
-      d.innerHTML = '<span class="mname">@' + esc(u) + '</span>' +
-        (m.name && m.name !== u ? ' <span class="mmeta">' + esc(m.name) + '</span>' : '') +
+      d.innerHTML = '<span class="mname">@' + esc(name) + '</span>' +
         (sub ? ' <span class="mmeta">' + esc(sub) + '</span>' : '');
       d.onclick = () => pick(u); pop.appendChild(d);
     });
@@ -1313,13 +1328,16 @@ function wireMention(ta, pop) {
   });
   function hi() { [...pop.children].forEach((d, i) => d.className = i === active ? 'sel' : ''); }
   function pick(u) {
-    const s = ta.selectionStart; const before = ta.value.slice(0, s).replace(/@([A-Za-z0-9_.\-]*)$/, '@' + u + ' ');
-    ta.value = before + ta.value.slice(s); ta.focus(); close();
+    const label = findNameOf(u) || u;                     // insert the display name, not the username/email
+    const s = ta.selectionStart; const before = ta.value.slice(0, s).replace(/@([^@]*)$/, '@' + label + ' ');
+    ta.value = before + ta.value.slice(s);
+    (ta._mentions || (ta._mentions = new Set())).add(u);  // remember who this @token resolves to
+    ta.focus(); close();
   }
 }
 function noteItem(n) {
   const d = el('div', 'noteitem');
-  const ment = arr(n.mentions).map(m => '<span class="mtag">@' + esc(m) + '</span>').join(' ');
+  const ment = arr(n.mentions).map(m => '<span class="mtag" title="' + esc(m) + '">@' + esc(findNameOf(m)) + '</span>').join(' ');
   const kindTag = (n.kind && n.kind !== 'note') ? '<span class="kind ' + esc(n.kind) + '">' + esc(tr(n.kind)) + '</span> ' : '';
   const done = n.status === 'done';
   d.innerHTML = '<div class="who">' + kindTag + '<strong>' + esc(n.user) + '</strong> · ' + esc((n.created || '').slice(0, 16).replace('T', ' ')) +

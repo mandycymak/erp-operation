@@ -50,8 +50,9 @@ public static partial class Handlers
     static Resp AdminUserUpsert(JsonElement j, Session sess)
     {
         var un = j.Str("username").Trim();
-        if (!System.Text.RegularExpressions.Regex.IsMatch(un, "^[A-Za-z0-9_.-]+$"))
-            return new Resp(new { error = "Invalid username (use letters, digits, . _ -)" }, 400);
+        // username may be an email (the house convention is username == email); allow @ and + alongside the handle set.
+        if (!System.Text.RegularExpressions.Regex.IsMatch(un, "^[A-Za-z0-9_.@+-]+$"))
+            return new Resp(new { error = "Invalid username (use letters, digits and . _ - @ +)" }, 400);
         var role = j.Str("role").Trim().ToLowerInvariant();
         if (role is not ("admin" or "manager" or "operator")) return new Resp(new { error = "Role must be admin, manager or operator" }, 400);
         var em = j.Str("email").Trim();

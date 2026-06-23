@@ -2015,7 +2015,7 @@ function Handle-OpsAdmin($ctx,$sess,$path){
       if($method -eq "POST"){
         $j=$null; try{ $j=(Read-Body $ctx)|ConvertFrom-Json }catch{}
         $un="$($j.username)".Trim()
-        if($un -notmatch '^[A-Za-z0-9_.-]+$'){ Send-Json $ctx @{ error="Invalid username (use letters, digits, . _ -)" } 400; return }
+        if($un -notmatch '^[A-Za-z0-9_.@+-]+$'){ Send-Json $ctx @{ error="Invalid username (use letters, digits and . _ - @ +)" } 400; return }
         $role="$($j.role)".Trim().ToLower()
         if($role -notin 'admin','manager','operator'){ Send-Json $ctx @{ error="Role must be admin, manager or operator" } 400; return }
         $em="$($j.email)".Trim()
