@@ -104,14 +104,11 @@ function wireFind() {
   const fb = $('#findBtn'); if (fb) fb.onclick = openFind;
   const fc = $('#findClose'); if (fc) fc.onclick = closeFind;
   const ft = $('#findText');
-  if (ft) {
-    const deb = debounce(runOpsFind, 350);
-    ft.addEventListener('input', deb);
-    ft.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runOpsFind(); } else if (e.key === 'Escape') closeFind(); });
-  }
+  if (ft) ft.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runOpsFind(); } else if (e.key === 'Escape') closeFind(); });
+  const fs = $('#findSend'); if (fs) fs.onclick = function () { runOpsFind(); };
   const fv = $('#findView'); if (fv) fv.addEventListener('click', e => { if (e.target === fv) closeFind(); });
 }
-function openFind() { const v = $('#findView'); if (!v) return; v.style.display = 'flex'; const i = $('#findText'); if (i) { i.focus(); i.select(); } }
+function openFind() { const v = $('#findView'); if (!v) return; v.style.display = 'flex'; const i = $('#findText'); if (i) i.focus(); }
 function closeFind() { const v = $('#findView'); if (v) v.style.display = 'none'; }
 function buildUserPicker() {
   const sel = $('#userPicker'); sel.innerHTML = '';
@@ -1520,25 +1517,36 @@ function opsFindSummary(p, aiNote) {
   if (p.dateLabel) bits.push('📅 ' + esc(p.dateLabel));
   return (aiNote ? '✨ ' + esc(tr('AI-assisted')) + ' · ' : '') + esc(tr('Looking for:')) + ' ' + bits.join(' · ');
 }
+// Append a chat bubble to the Find transcript and scroll it into view. Returns the element so an async
+// answer can fill it in once results arrive. cls: '' (Find answer) | 'me' (the operator) | 'sys' (error).
+function findBubble(cls, html) {
+  var feed = $('#findFeed'); if (!feed) return null;
+  var d = document.createElement('div'); d.className = 'find-msg' + (cls ? ' ' + cls : ''); d.innerHTML = html;
+  feed.appendChild(d); feed.scrollTop = feed.scrollHeight; return d;
+}
+// Each Send is an independent, fresh search: post the operator's words as a 'me' bubble, then a pending Find
+// bubble that gets filled with the parsed summary + result cards (or an LLM-assisted retry / an error).
 async function runOpsFind() {
-  var box = $('#findText'); var text = box ? box.value : '';
-  var feed = $('#findFeed'), sum = $('#findSummary');
-  if (!('' + text).trim()) { if (sum) sum.innerHTML = ''; if (feed) feed.innerHTML = "<div class='empty'>" + esc(tr('Type what you remember — a company, lane, commodity, who messaged you, or a date.')) + '</div>'; return; }
+  var box = $('#findText'); var text = box ? ('' + box.value).trim() : '';
+  if (!text) return;
+  findBubble('me', "<div class='find-meta'>" + esc(tr('you')) + '</div>' + esc(text));
+  if (box) box.value = '';
   var p = parseOpsQuery(text);
-  if (sum) sum.innerHTML = opsFindSummary(p, false);
-  if (feed) feed.innerHTML = "<div class='empty'>" + esc(tr('Searching…')) + '</div>';
+  var pend = findBubble('', "<div class='find-meta'>" + esc(tr('Find')) + '</div>' + "<div class='find-sum'>" + opsFindSummary(p, false) + '</div>' + "<div class='muted sm'>" + esc(tr('Searching…')) + '</div>');
   try {
     var res = await api('/api-ops/find?' + new URLSearchParams(opsFindParams(p)).toString());
     var items = arr(res.items);
     // Optional LLM fallback (Part 4): only when the rule parse found nothing. Inert unless enabled server-side
-    // (the endpoint returns 501) — a misparse stays visible + editable; the LLM only re-suggests clues.
-    if (!items.length && await opsFindLlmFallback(text)) return;
-    renderOpsFindFeed(items);
-  } catch (e) { if (feed) feed.innerHTML = "<div class='empty'>" + esc(tr('Search failed')) + ': ' + esc((e && e.message) || e) + '</div>'; }
+    // (the endpoint returns 501) — the original summary stays visible; the LLM only re-suggests clues.
+    if (!items.length && await opsFindLlmFallback(text, pend)) return;
+    fillFindAnswer(pend, opsFindSummary(p, false), items);
+  } catch (e) {
+    if (pend) { pend.className = 'find-msg sys'; pend.innerHTML = "<div class='find-meta'>" + esc(tr('Find')) + '</div>' + esc(tr('Search failed')) + ': ' + esc((e && e.message) || e); }
+  }
 }
-// Ask the (flag-gated) LLM to re-interpret the text, then re-run Find with its clues. Returns true if it rendered
-// results. Fails silently (returns false) when the endpoint is disabled (501) or errors — never throws to the caller.
-async function opsFindLlmFallback(text) {
+// Ask the (flag-gated) LLM to re-interpret the text, then re-run Find with its clues, filling the pending
+// bubble. Returns true if it rendered results. Fails silently (false) when disabled (501) or on error.
+async function opsFindLlmFallback(text, pend) {
   try {
     var r = await api('/api-ops/parse-find', { method: 'POST', body: { text: text } });
     if (!r || !r.clue) return false;
@@ -1546,8 +1554,7 @@ async function opsFindLlmFallback(text) {
     var res = await api('/api-ops/find?' + new URLSearchParams(opsFindParams(c)).toString());
     var items = arr(res.items);
     if (!items.length) return false;
-    var sum = $('#findSummary'); if (sum) sum.innerHTML = opsFindSummary(c, true);
-    renderOpsFindFeed(items);
+    fillFindAnswer(pend, opsFindSummary(c, true), items);
     return true;
   } catch (e) { return false; }
 }
@@ -1585,21 +1592,29 @@ function findShipRow(it) {
     (pty ? "<div class='muted sm pty-row'>" + pty + '</div>' : '') +
     '</div>';
 }
-function renderOpsFindFeed(items) {
-  var feed = $('#findFeed'); if (!feed) return;
-  if (!items.length) { feed.innerHTML = "<div class='empty'>" + esc(tr('Nothing matched — try fewer words, a different name, or turn off “mine only” (say “anyone”).')) + '</div>'; return; }
-  feed.innerHTML = items.map(function (it) {
-    if (it.type === 'note') {
-      var who = findNameOf(it.author);
-      var ctx = [it.lane, it.consigneeName || it.shipperName].filter(Boolean).join(' · ');
-      return "<div class='find-row' data-job='" + esc(it.jobNo) + "' data-label='" + esc(it.humanId) + "'>" +
-        "<div class='find-h'><span class='badge nb'>💬 " + esc(tr('note')) + '</span> <b>' + esc(who) + "</b> <span class='muted sm'>" + esc(('' + (it.created || '')).slice(0, 10)) + '</span></div>' +
-        '<div>' + esc(('' + (it.note || '')).slice(0, 160)) + '</div>' +
-        "<div class='muted sm'>" + esc(it.humanId) + (ctx ? ' · ' + esc(ctx) : '') + '</div></div>';
-    }
-    return findShipRow(it);
-  }).join('');
-  feed.querySelectorAll('.find-row').forEach(function (row) { row.onclick = function () { closeFind(); openShipment(row.dataset.job, row.dataset.label); }; });
+// Render one Find result (shipment card or note) — shared by every answer bubble.
+function renderFindItem(it) {
+  if (it.type === 'note') {
+    var who = findNameOf(it.author);
+    var ctx = [it.lane, it.consigneeName || it.shipperName].filter(Boolean).join(' · ');
+    return "<div class='find-row' data-job='" + esc(it.jobNo) + "' data-label='" + esc(it.humanId) + "'>" +
+      "<div class='find-h'><span class='badge nb'>💬 " + esc(tr('note')) + '</span> <b>' + esc(who) + "</b> <span class='muted sm'>" + esc(('' + (it.created || '')).slice(0, 10)) + '</span></div>' +
+      '<div>' + esc(('' + (it.note || '')).slice(0, 160)) + '</div>' +
+      "<div class='muted sm'>" + esc(it.humanId) + (ctx ? ' · ' + esc(ctx) : '') + '</div></div>';
+  }
+  return findShipRow(it);
+}
+// Fill a pending Find answer bubble with the parsed summary line + the result cards (or a no-match hint),
+// then wire each card to deep-link into the drawer. summaryHtml comes from opsFindSummary (already escaped).
+function fillFindAnswer(pend, summaryHtml, items) {
+  if (!pend) return;
+  var head = "<div class='find-meta'>" + esc(tr('Find')) + ' · ' + items.length + ' ' + esc(tr('result(s)')) + '</div>';
+  var body = items.length
+    ? items.map(renderFindItem).join('')
+    : "<div class='empty'>" + esc(tr('Nothing matched — try fewer words, a different name, or turn off “mine only” (say “anyone”).')) + '</div>';
+  pend.innerHTML = head + "<div class='find-sum'>" + summaryHtml + '</div>' + body;
+  pend.querySelectorAll('.find-row').forEach(function (row) { row.onclick = function () { closeFind(); openShipment(row.dataset.job, row.dataset.label); }; });
+  var feed = $('#findFeed'); if (feed) feed.scrollTop = feed.scrollHeight;
 }
 
 linkBoot().then(init);

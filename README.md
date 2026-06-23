@@ -32,9 +32,10 @@ inbound feed, the draft HBL/HAWB customer-agreement loop, **Edit ERP data → li
 The UI is **localized — English + Simplified Chinese (中文) + Japanese (日本語)** with a per-user default and a
 one-click switch. Sign-in is **by email**, with a seam for **SWIVEL L!NK** OAuth sign-on.
 
-A **natural-language Find tab** (🔎 in the header) lets an operator locate a shipment by typing what they
+A **natural-language Find chat** (🔎 in the header) lets an operator locate a shipment by typing what they
 remember — a company, lane, commodity, contact, booking/HBL/**ship-id**/**vessel**/container number, a message
-someone sent them, or a date — across active **and** recently-closed files, always within their role scope.
+someone sent them, or a date — across active **and** recently-closed files, always within their role scope. Each
+message is a fresh search and the conversation stays on screen so searches can be compared.
 Each hit is shown as a **full worklist-style card** (incoterm, cargo, commodity, ship-id, parties, dates) so the
 right file can be picked at a glance. It's a rule-based parser (no LLM)
 with an editable "Looking for:" summary; an **optional LLM fallback** (Claude / OpenAI / DeepSeek, **off by

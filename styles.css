@@ -281,9 +281,14 @@ button:hover{filter:brightness(1.08)}
 .find-view{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:5vh 12px}
 .find-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:760px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.4)}
 .find-top{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
-.find-box>input{margin:12px 14px 4px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:15px}
-#findSummary{padding:2px 16px 8px}
-.find-feed{overflow:auto;padding:4px 10px 12px}
+.find-feed{flex:1;overflow:auto;padding:10px 12px;display:flex;flex-direction:column}
+.find-msg{border:1px solid var(--line);border-radius:10px;background:var(--panel2);padding:8px 11px;margin:5px 0;max-width:94%;align-self:flex-start}
+.find-msg.me{align-self:flex-end;background:var(--accent);border-color:var(--accent);color:#fff;max-width:80%;white-space:pre-wrap;word-break:break-word}
+.find-msg.sys{border-color:#b54b4b;background:rgba(180,75,75,.12)}
+.find-meta{font-size:11px;opacity:.7;margin-bottom:4px}
+.find-sum{font-size:12px;margin-bottom:6px}
+.find-ask{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--line)}
+.find-ask>input{flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);font-size:15px}
 .find-row{padding:9px 10px;border:1px solid var(--line);border-radius:8px;margin:6px 4px;cursor:pointer;background:var(--panel)}
 .find-row:hover{border-color:var(--accent);background:var(--panel2)}
 .find-row .find-h{display:flex;align-items:center;gap:7px;margin-bottom:2px}

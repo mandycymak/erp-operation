@@ -130,13 +130,16 @@ The **My Tasks** panel (badge in the header) collects everything waiting on you:
 
 ## 8. Find — search by typing what you remember
 
-The header **🔎 Find** button opens a search page where you describe the shipment in **plain language** — you
+The header **🔎 Find** button opens a **chat** where you describe the shipment in **plain language** — you
 don't need to know which field, and you don't even need to remember whether it was **Air or Sea** (Find covers
 both). It searches your shipments **and** the notes/messages on them, and includes **recently-closed** files,
 not just active ones — so a delivered shipment whose booking number you've forgotten is still findable.
 
-Type what you remember; Find pulls out the clues and shows you an **"Looking for:"** line so you can see what it
-understood (edit your text and it re-runs — a misread is corrected, never silently wrong). Examples:
+Type what you remember and press **Send** (or Enter). Each message is an **independent, fresh search** — your
+words appear as a chat bubble, and Find replies with a bubble that opens with a **"Looking for:"** line (so you
+can see what it understood) followed by the matching cards. The **whole conversation stays on screen**, so you
+can compare searches and just send a reworded message if a search missed — a misread is never silently wrong.
+Examples:
 
 - *"from hong kong, bike, last week"* — a lane + a commodity + a date window.
 - *"shipper abc shipped footwear to me"* — a company + a commodity + a message that mentions you.

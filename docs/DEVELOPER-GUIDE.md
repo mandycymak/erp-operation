@@ -133,6 +133,12 @@ A feature added **after** the .NET port, so it has **no `serve-ops.ps1` parity**
 parser is **rule-based and client-side** (`parseOpsQuery` in `ops.js` — ports quotation's `parseDateWindow` /
 `stripPlaceNoise` / stop-word approach, no LLM); the server just receives the extracted clue params.
 
+The client UI (the header **🔎 Find** overlay in `index.html` / `ops.js`) is a **chat transcript**: each Send is
+an independent search — `runOpsFind` appends a `me` bubble, then a pending **Find** bubble (`findBubble`) it fills
+via `fillFindAnswer` with the `opsFindSummary` "Looking for:" line + the cards (`renderFindItem` → `findShipRow`
+/ note row). History is kept on screen; rows still deep-link into the drawer. (A self-contained external tester,
+`tools/find-chat.html`, drives the JWT-authed `POST /api-ops/find-text` instead — same server-side find.)
+
 - **`GET /api-ops/find` (`Handlers.Find`).** A scoped `shipment_alerts` query (party / lane / commodity /
   carrier / the existing identifier field→column map, **plus** an `EXISTS dbo.job_note` branch so the "who" clue
   also matches a note's arrangement `party`/`contact`) **merged** with a `job_note` search (author / body /

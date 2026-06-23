@@ -93,8 +93,9 @@
   </div>
 </div>
 
-<!-- Natural-language Find: a dedicated, mode-agnostic overlay (separate from the working panel; an operator
-     may not even recall Air vs Sea). Rule parser + dedicated /api-ops/find; rows deep-link into the drawer. -->
+<!-- Natural-language Find: a dedicated, mode-agnostic chat overlay (separate from the working panel; an operator
+     may not even recall Air vs Sea). Each message is a fresh search (rule parser + /api-ops/find); the transcript
+     stays visible so searches can be compared. Result rows deep-link into the drawer. -->
 <div id="findView" class="find-view" style="display:none">
   <div class="find-box">
     <div class="find-top">
@@ -102,10 +103,14 @@
       <span class="spacer"></span>
       <button class="ghost" id="findClose" data-i18n-title title="Close (Esc)">✕</button>
     </div>
-    <input type="text" id="findText" autocomplete="off" data-i18n-placeholder
-      placeholder="Describe it… e.g. “from hong kong, bike, last week” · “Rainbow Transportation booking” · “Leo messaged me about customs”">
-    <div class="muted sm" id="findSummary"></div>
-    <div id="findFeed" class="find-feed"><div class="empty" data-i18n>Type what you remember — a company, lane, commodity, who messaged you, or a date.</div></div>
+    <div id="findFeed" class="find-feed">
+      <div class="find-msg"><span data-i18n>Type what you remember — a company, lane, commodity, who messaged you, or a date.</span> <span class="muted sm" data-i18n>Each message is a fresh search.</span></div>
+    </div>
+    <div class="find-ask">
+      <input type="text" id="findText" autocomplete="off" data-i18n-placeholder
+        placeholder="Describe it… e.g. “from hong kong, bike, last week” · “Rainbow Transportation booking” · “Leo messaged me about customs”">
+      <button class="primary" id="findSend" data-i18n>Send</button>
+    </div>
   </div>
 </div>
 
