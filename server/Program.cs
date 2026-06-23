@@ -170,6 +170,31 @@ app.MapGet("/api-ops/config", (HttpContext ctx) => Json(ctx, new
     linkEnabled = Config.LinkEnabled,
 }));
 
+// Liveness/readiness probe for the watchdog (ops-healthcheck.ps1) and any external uptime monitor. Unauthenticated
+// (same exposure class as /config — only instance/version are revealed, no secrets). Opens ONE ops-DB connection
+// with a SHORT connect timeout so a down DB trips quickly, runs SELECT 1, and returns 200 ok / 503 db:down. The
+// RICH admin view (history, storage, audit) is /api-ops/admin/health — this one stays tiny and dependency-light.
+app.MapGet("/api-ops/health", async (HttpContext ctx) =>
+{
+    var version = typeof(Config).Assembly.GetName().Version?.ToString() ?? "";
+    var utc = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
+    try
+    {
+        // 5 s connect timeout so an unreachable DB doesn't hang the probe for the default 30 s.
+        var probeConn = Config.ConnStr.Replace("Connect Timeout=30", "Connect Timeout=5");
+        using var cn = new SqlConnection(probeConn);
+        await cn.OpenAsync();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT 1"; cmd.CommandTimeout = 5;
+        await cmd.ExecuteScalarAsync();
+        await Json(ctx, new { ok = true, db = "up", opsDb = Config.OpsDb, instance = Config.InstanceName, version, utc });
+    }
+    catch (Exception ex)
+    {
+        await Json(ctx, new { ok = false, db = "down", error = ex.Message, instance = Config.InstanceName, version, utc }, 503);
+    }
+});
+
 // email is the login key; accept the legacy 'username' field too, and fall back to a username match so no one
 // is locked out during the email-login switch (serve-ops.ps1 Handle-OpsLogin).
 app.MapPost("/api-ops/login", async (HttpContext ctx) =>
@@ -179,17 +204,22 @@ app.MapPost("/api-ops/login", async (HttpContext ctx) =>
     var username = j.ValueKind == JsonValueKind.Object && j.TryGetProperty("username", out var un) ? un.GetString() : null;
     var password = j.ValueKind == JsonValueKind.Object && j.TryGetProperty("password", out var pw) ? pw.GetString() : null;
     var id = !string.IsNullOrWhiteSpace(email) ? email!.Trim() : (username ?? "").Trim();
+    var ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "";
     var u = Auth.FindUserByEmail(id) ?? Auth.FindUser(id);
     if (u == null || string.IsNullOrEmpty(u.PwdHash) || Auth.HashPwd(u.Salt, password ?? "") != u.PwdHash)
     {
+        // record the failed attempt (access-control evidence / brute-force visibility) — surfaced in the IT-Admin tab.
+        Auth.Audit(id == "" ? "(blank)" : id, $"login FAILED ip={ip}");
         await Json(ctx, new { error = "Invalid email or password" }, 401); return;
     }
+    Auth.Audit(u.Username, $"login ok (local) ip={ip}");
     await Json(ctx, NewSessionPayload(ctx, u));
 });
 
 app.MapMethods("/api-ops/logout", new[] { "GET", "POST", "DELETE" }, async (HttpContext ctx) =>
 {
     var sid = ctx.Request.Cookies["ops_sid"];
+    if (sid != null && Auth.Sessions.TryGetValue(sid, out var s)) Auth.Audit(s.Username, "logout");
     if (sid != null) Auth.Sessions.TryRemove(sid, out _);
     ctx.Response.Headers.Append("Set-Cookie", "ops_sid=; Path=/; Max-Age=0");
     await Json(ctx, new { ok = true });
@@ -270,7 +300,7 @@ void MapData(string path, Func<SqlConnection, Qs, ReqState, object> handler)
             cn.Open();
             await Json(ctx, handler(cn, qs, rs));
         }
-        catch (Exception ex) { await Json(ctx, new { error = ex.Message }, 500); }
+        catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
         finally { dbGate.Release(); }
     });
 }
@@ -291,7 +321,7 @@ void MapDataPost(string path, Func<SqlConnection, JsonElement, ReqState, object>
             cn.Open();
             await Json(ctx, handler(cn, body, rs));
         }
-        catch (Exception ex) { await Json(ctx, new { error = ex.Message }, 500); }
+        catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
         finally { dbGate.Release(); }
     });
 }
@@ -387,7 +417,7 @@ app.MapPost("/api-ops/find-text", async (HttpContext ctx) =>
         }
         await Json(ctx, new { query = text, source, items = r.Items, resolved = r.Resolved });
     }
-    catch (Exception ex) { await Json(ctx, new { error = ex.Message }, 500); }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
     finally { dbGate.Release(); }
 });
 // ---- Stage 3: writes + admin + feed-assign ----
@@ -404,7 +434,7 @@ MapDataPost("/api-ops/inbound-assign", Handlers.InboundAssign);
 // admin CRUD (admin-gated inside Handlers.Admin) — users / milestones / evidence / erp-settings.
 MapAuthed("/api-ops/admin/{*rest}", new[] { "GET", "POST" }, async (ctx, sess, rs) =>
 {
-    var r = Handlers.Admin(ctx.Request.Path, ctx.Request.Method, await ReadBody(ctx), sess);
+    var r = Handlers.Admin(ctx.Request.Path, ctx.Request.Method, await ReadBody(ctx), new Qs(ctx.Request.Query), sess);
     await Json(ctx, r.Body, r.Code);
 });
 
@@ -436,7 +466,7 @@ app.MapGet("/api-ops/erp-file-download", async (HttpContext ctx) =>
         ctx.Response.Headers["Content-Disposition"] = $"inline; filename=\"{res.Name.Replace("\"", "")}\"";
         await ctx.Response.Body.WriteAsync(res.Bytes);
     }
-    catch { ctx.Response.StatusCode = 404; try { await ctx.Response.CompleteAsync(); } catch { } }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); ctx.Response.StatusCode = 404; try { await ctx.Response.CompleteAsync(); } catch { } }
     finally { dbGate.Release(); }
 });
 
@@ -454,7 +484,7 @@ app.MapPost("/api-ops/erp-edit-save", async (HttpContext ctx) =>
         cn.Open();
         await Json(ctx, Handlers.ErpEditSave(cn, body, rs, ip));
     }
-    catch (Exception ex) { await Json(ctx, new { error = ex.Message }, 500); }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
     finally { dbGate.Release(); }
 });
 
@@ -492,7 +522,7 @@ app.MapGet("/api-ops/doc-attach-file", async (HttpContext ctx) =>
     var qs = new Qs(ctx.Request.Query);
     await dbGate.WaitAsync();
     try { using var cn = new SqlConnection(Config.ConnStr); cn.Open(); await SendBlob(ctx, Handlers.DocAttachFile(cn, qs, rs)); }
-    catch { ctx.Response.StatusCode = 404; try { await ctx.Response.CompleteAsync(); } catch { } }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); ctx.Response.StatusCode = 404; try { await ctx.Response.CompleteAsync(); } catch { } }
     finally { dbGate.Release(); }
 });
 
@@ -502,7 +532,7 @@ async Task PublicJson(HttpContext ctx, Func<SqlConnection, string, object> h)
     var raw = ctx.Request.Query["t"].ToString().Trim();
     await dbGate.WaitAsync();
     try { using var cn = new SqlConnection(Config.ConnStr); cn.Open(); await Json(ctx, h(cn, raw)); }
-    catch (Exception ex) { await Json(ctx, new { error = ex.Message }, 500); }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
     finally { dbGate.Release(); }
 }
 async Task PublicPost(HttpContext ctx, long cap, Func<SqlConnection, System.Text.Json.JsonElement, string, object> h)
@@ -512,7 +542,7 @@ async Task PublicPost(HttpContext ctx, long cap, Func<SqlConnection, System.Text
     var ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "";
     await dbGate.WaitAsync();
     try { using var cn = new SqlConnection(Config.ConnStr); cn.Open(); await Json(ctx, h(cn, body, ip)); }
-    catch (Exception ex) { await Json(ctx, new { error = ex.Message }, 500); }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
     finally { dbGate.Release(); }
 }
 
@@ -528,7 +558,7 @@ app.MapGet("/api-doc/attach-file", async (HttpContext ctx) =>
     var att = ctx.Request.Query["id"].ToString().Trim();
     await dbGate.WaitAsync();
     try { using var cn = new SqlConnection(Config.ConnStr); cn.Open(); await SendBlob(ctx, Handlers.PublicDocAttachFile(cn, raw, att)); }
-    catch { ctx.Response.StatusCode = 404; try { await ctx.Response.CompleteAsync(); } catch { } }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); ctx.Response.StatusCode = 404; try { await ctx.Response.CompleteAsync(); } catch { } }
     finally { dbGate.Release(); }
 });
 

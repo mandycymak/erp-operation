@@ -55,15 +55,18 @@ actually built and proven; update it when you ship something.
 | `seed-alerts.ps1` | the listener stand-in (`-Mode Sea\|Air`): reads `blhead`/`awbhead`, batches contacts, computes arrival/cargo/conveyance, upserts `shipment_alerts` |
 | `eval-shipment.ps1` | read-only one-shot card for one shipment (diagnostic) |
 | `seed-station-map.ps1` / `publish-bookings.ps1` | the cross-station inbound feed (identity directory + publisher) |
-| `register-ops-tasks.ps1` | Task Scheduler registration |
-| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`), `Auth.cs`, `Config.cs`, `Sql.cs`, `Filter.cs`, and `Handlers.*.cs` (one area per file: Worklist/Shipment/**Find**/Notes/Tasks/Inbound/Erp*/Doc/Admin/Misc). `Notes.cs` backs the SQL `job_note` store; **`Llm.cs`** is the optional, flag-gated Find fallback adapter. `dotnet publish -c Release` to deploy |
+| `register-ops-tasks.ps1` | Task Scheduler registration (feed/worklist refresh **+ the governance jobs `Ops Backup` / `Ops Healthcheck` / `Ops Purge`**) |
+| **`backup-ops.ps1`** | nightly ops-DB `.bak` (COPY_ONLY) + gitignored-secrets copy + prune; non-zero exit on failure |
+| **`ops-healthcheck.ps1`** | the watchdog — checks app/db/tasks/feed/backup/storage/disk/VPN → `health_check_log` + alert (config `alerts`: webhook/SMTP) on failure |
+| **`purge-ops.ps1`** | data retention/aging (config `retention`) + log rotation — keeps the ops DB small over years (`-WhatIf` previews) |
+| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`, the unauthenticated **`GET /api-ops/health`** probe), `Auth.cs`, `Config.cs`, `Sql.cs`, `Filter.cs`, **`Log.cs`** (`Log.Error` → `ops-error.log`), and `Handlers.*.cs` (one area per file: Worklist/Shipment/**Find**/Notes/Tasks/Inbound/Erp*/Doc/Admin/Misc). `Handlers.Admin.cs` also serves the read-only IT-Admin views (`/api-ops/admin/health` · `/storage` · `/audit` · `/errors`). `Notes.cs` backs the SQL `job_note` store; **`Llm.cs`** is the optional, flag-gated Find fallback adapter. `dotnet publish -c Release` to deploy |
 | `serve-ops.ps1` | the **legacy** web service (rollback) — same routes/contract as `server/`; keep in parity when a shared contract changes |
 | **`i18n.js`** | the client localization layer — `tr(en, ctx?)`, `applyDom()`, `boot()`, `setLang()`, the `SUPPORTED` language list |
 | **`lang/<code>.json`** | UI translation dictionaries (English source string = key). `lang/zh-Hans.json`, `lang/ja.json` |
 | `erp-doc-api.ps1` | the Swivel 3rd-party ERP API client (agree / issue: booking/update, file/upload, event/update; `Build-ErpPatchPayload` / `Invoke-ErpEditPush` for the Edit-ERP-data push) |
 | `erp-edit.html` / `erp-edit.js` / `erp-edit-fields.json` | **Edit ERP data** editor (HBL/AWB-grid layout) + its field dictionary (`writeKey` per field) |
 | `index.html` / `ops.js` / `styles.css` | the operator UI |
-| `admin-ops.html` / `login.html` | admin (users + milestones) and login |
+| `admin-ops.html` / `login.html` | admin (users + milestones + **Audit & Health** + **Change log** tabs) and login |
 | `doc-editor.html` / `doc-editor.js` | staff draft editor (diff, send, agree, issue, amend) |
 | `bl-review.html` / `bl-review.js` / `bl-review.css` | the public customer review page |
 | `bl-form.js` | the **shared** bill renderer (used by both the staff editor and the customer page) |
@@ -119,6 +122,20 @@ unique); `username` keys notes/@-mentions/sessions/scope/`erpUsers` — **don't*
 `Get-OpsUserByEmail` (case-insensitive) + **`New-OpsSession $ctx $u`** (builds the session + cookie, returns the
 public payload) — every sign-in path calls `New-OpsSession`. `Handle-OpsLogin` matches email, with a `Get-OpsUser`
 (username) fallback. Per-user `authProvider` (`local` | `swivel` | `both`); a `swivel` user has no salt/pwdHash.
+
+### Observability & the IT-Admin views (.NET)
+
+- **Log handler exceptions, never swallow them.** Every `catch (Exception ex)` that returns a 500 calls
+  `Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex)` first (`server/Log.cs` → `ops-error.log`, defensive
+  like `Auth.Audit`, never throws). Add new write/data handlers the same way so a failure is diagnosable. The
+  client response shape is unchanged (sanitizing the client-facing message is a deferred hardening item).
+- **Audit the security-relevant actions.** `Auth.Audit(who, msg)` (→ `admin-audit.log`) already records user CRUD,
+  milestone/ERP edits, doc lifecycle, and **logins/failed-logins**; keep new admin mutations audited.
+- **IT-Admin read views** live in the admin-gated `Handlers.Admin` switch (`sess.Admin` check) and are **read-only,
+  no scope** (admin sees the whole instance): `/api-ops/admin/health` (latest `health_check_log` per check + last-OK),
+  `/storage` (`sys.dm_db_partition_stats` / `sys.database_files`), `/audit` and `/errors` (both **date-range +
+  row-capped** with a `truncated` flag so a large log can't swamp the UI). The `Admin(...)` signature takes a `Qs`
+  for these query params. The unauthenticated `GET /api-ops/health` (DB `SELECT 1`, 200/503) is the watchdog probe.
 
 **SWIVEL L!NK** (`/api-ops/link-oauth-login` → `Handle-LinkOAuthLogin`, an SQL-free public route): redeems the
 one-time `code` server-side at `SWIVEL_OAUTH_PROFILE_URL` (no client_id/secret), **verifies the echoed `state`**,

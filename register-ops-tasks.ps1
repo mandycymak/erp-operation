@@ -81,7 +81,26 @@ $linersScript=Join-Path $PSScriptRoot "seed-liners.ps1"
 $linersTrig=New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At "03:40"
 Register-OpsTask "Ops Liner Dim Refresh" "$linersScript`" -ConfigPath `"$ConfigPath`"" $linersTrig
 
+# --- operations / governance jobs (backup, watchdog, retention) ---
+# A longer time limit for the backup + purge (a large DB backup can exceed the default 20 min).
+$longSettings=New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+
+# nightly backup (02:00): ops DB .bak + secrets copy + prune.
+$backupScript=Join-Path $PSScriptRoot "backup-ops.ps1"
+$backupAction=New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$backupScript`" -ConfigPath `"$ConfigPath`""
+try { Register-ScheduledTask -TaskName "Ops Backup" -Action $backupAction -Trigger (New-ScheduledTaskTrigger -Daily -At "02:00") -Principal $principal -Settings $longSettings -Force -ErrorAction Stop | Out-Null; Write-Host "  registered: Ops Backup" -ForegroundColor Green; $script:okCount++ } catch { Write-Host "  FAILED: Ops Backup -- $($_.Exception.Message)" -ForegroundColor Red; $script:failCount++ }
+
+# watchdog every 25 min: health checks -> health_check_log + alert on failure.
+$healthScript=Join-Path $PSScriptRoot "ops-healthcheck.ps1"
+$healthTrig=New-ScheduledTaskTrigger -Once -At (Get-Date "00:05") -RepetitionInterval (New-TimeSpan -Minutes 25) -RepetitionDuration (New-TimeSpan -Days 3650)
+Register-OpsTask "Ops Healthcheck" "$healthScript`" -ConfigPath `"$ConfigPath`"" $healthTrig
+
+# weekly retention/purge (Sunday 04:00, after the dim refreshes): aging + log rotation.
+$purgeScript=Join-Path $PSScriptRoot "purge-ops.ps1"
+$purgeAction=New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$purgeScript`" -ConfigPath `"$ConfigPath`""
+try { Register-ScheduledTask -TaskName "Ops Purge" -Action $purgeAction -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At "04:00") -Principal $principal -Settings $longSettings -Force -ErrorAction Stop | Out-Null; Write-Host "  registered: Ops Purge" -ForegroundColor Green; $script:okCount++ } catch { Write-Host "  FAILED: Ops Purge -- $($_.Exception.Message)" -ForegroundColor Red; $script:failCount++ }
+
 $color = if($script:failCount -gt 0){'Red'}else{'Cyan'}
 Write-Host "Done. $($script:okCount) task(s) registered, $($script:failCount) failed, across $($stations.Count) station(s)." -ForegroundColor $color
-Write-Host "Review in Task Scheduler: 'Ops Publish *' (feed) / 'Ops Worklist *' (worklist refresh) / 'Ops Station Map Refresh' / 'Ops Port Dim Refresh'." -ForegroundColor Cyan
+Write-Host "Review in Task Scheduler: 'Ops Publish *' (feed) / 'Ops Worklist *' (worklist refresh) / 'Ops Station Map Refresh' / 'Ops Port Dim Refresh' / 'Ops Backup' / 'Ops Healthcheck' / 'Ops Purge'." -ForegroundColor Cyan
 if($script:failCount -gt 0){ exit 1 }

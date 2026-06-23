@@ -159,9 +159,38 @@ foreach ($code in $stations.Keys) {
 This registers, per configured station: **`Ops Publish Sea/Air`** (cross-station feed, Sea 3x/day · Air every 2h,
 staggered) **and `Ops Worklist Sea/Air`** (worklist refresh via `seed-alerts.ps1`, same cadence, +3 min after the
 publisher — its `-AsOf` is computed at run time so it always seeds "today"), plus weekly `Ops Station Map Refresh`
-and `Ops Port Dim Refresh`. The station set is taken from `stations[]` in the config, so N stations → N task sets.
-**These jobs run on whatever host you schedule them on and write the ops DB directly — in production that is the
-server (with the VPN up), not a workstation; the IIS app only reads the same DB.**
+and `Ops Port Dim Refresh`, **and the three governance jobs `Ops Backup` (nightly), `Ops Healthcheck` (every
+25 min) and `Ops Purge` (weekly)** — see §5a. The station set is taken from `stations[]` in the config, so N
+stations → N task sets. **These jobs run on whatever host you schedule them on and write the ops DB directly — in
+production that is the server (with the VPN up), not a workstation; the IIS app only reads the same DB.**
+
+---
+
+## 5a. Operations, monitoring & backup (for go-live)
+
+Three concerns the IT/support team owns after go-live — all visible **in the app** so no database access is needed,
+and all detailed in **[`OPERATIONS-RUNBOOK.md`](OPERATIONS-RUNBOOK.md)**. The one-time install/onboarding is its own
+self-contained checklist: **[`ONBOARD-CHECKLIST.md`](ONBOARD-CHECKLIST.md)**.
+
+- **See problems & the audit trail — in the browser.** Sign in as an admin → **Admin**. Two tabs:
+  - **Audit & Health** — a **Health board** (one row per check, with "last OK" so a red→green row shows a recovery)
+    and a **Storage & growth** view (DB size, biggest tables, attachment bytes, free disk).
+  - **Change log** — **who changed what / who logged in** and **server errors**, each bounded by a **date range**
+    (default today) and capped so a busy day / error storm can't break the page.
+  These read `health_check_log` + the audit tables/logs; nothing writes the ERP.
+- **Know when something breaks.** `ops-healthcheck.ps1` (the `Ops Healthcheck` task) checks app / DB / scheduled
+  tasks / feed freshness / backup age / DB size / disk / VPN every ~25 min, writes each to `health_check_log`, and
+  on failure **alerts** via the config **`alerts`** block — a Teams/Slack `webhookUrl` and/or `smtp` email — and
+  logs `ops-health.log`. The unauthenticated probe is `GET /api-ops/health` (`200 ok` / `503 db:down`) for any
+  external uptime monitor.
+- **Backup + retention.** `backup-ops.ps1` (`Ops Backup`, nightly) writes a dated `.bak` of the ops DB + a copy of
+  the gitignored secrets, pruned after `RetainDays`. `purge-ops.ps1` (`Ops Purge`, weekly) ages out/trims the data
+  per the config **`retention`** horizons and rotates the logs, so the DB stays small over years. **Gotcha:** the
+  `.bak` folder must be writable by the **SQL Server service account** (not the app pool) — see the checklist's
+  `icacls` step.
+
+> Application errors are written to **`ops-error.log`** (route, correlation id, stack) — previously they were
+> discarded. Login successes/failures are in **`admin-audit.log`**. Both surface in the **Change log** tab.
 
 ---
 

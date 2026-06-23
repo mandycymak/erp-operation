@@ -11,6 +11,9 @@ admin-hide.json
 ops-lists/
 user-lists/
 
+# Local DB backups + copied secrets (backup-ops.ps1) - NEVER commit
+backups/
+
 # Audit + run logs, watermarks
 *-audit.log
 *.log

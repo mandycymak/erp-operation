@@ -44,6 +44,13 @@
   .toolbar{display:flex;align-items:center;gap:12px;margin:12px 0 2px;flex-wrap:wrap}
   .toolbar input{font-size:13px;padding:7px 10px;min-width:300px}
   .toolbar .count{font-size:12px;color:var(--mut)}
+  .pill{display:inline-block;padding:1px 9px;border-radius:10px;font-size:11px;font-weight:600}
+  .pill.ok{background:#16341f;color:#5fd98a}
+  .pill.bad{background:#3a1b1b;color:#ff8a8a}
+  tr.overth td{background:#3a1b1b}
+  .daterow{font-size:12px;color:var(--mut);display:inline-flex;align-items:center;gap:6px}
+  .datebox{font-size:12px;padding:5px 7px;min-width:104px;width:104px}
+  .trunc{font-size:12px;color:#ffb45f}
 </style>
 </head>
 <body>
@@ -60,6 +67,8 @@
     <button class="tabbtn" data-tab="milestones">Milestones &amp; alerts</button>
     <button class="tabbtn" data-tab="documents">Documents</button>
     <button class="tabbtn" data-tab="erp">ERP API</button>
+    <button class="tabbtn" data-tab="audit">Audit &amp; Health</button>
+    <button class="tabbtn" data-tab="changelog">Change log</button>
   </div>
 
   <section id="tab-users" class="tabpane">
@@ -238,6 +247,70 @@
     </div>
   </div>
   </section>
+
+  <!-- IT-Admin: Audit & Health. Process health + storage growth (the at-a-glance state). The high-volume record
+       lists (change/access audit, errors) live in the separate "Change log" tab so they can't swamp this view. -->
+  <section id="tab-audit" class="tabpane" style="display:none">
+    <div class="toolbar">
+      <span class="muted" style="font-size:12px">For IT support: process health + storage growth — no database access needed. Detailed records are in the <b>Change log</b> tab.</span>
+      <button class="ghost" id="auRefresh" style="font-size:12px;margin-left:auto">↻ Refresh</button>
+    </div>
+
+    <h3 style="margin:14px 0 4px;font-size:14px">Health</h3>
+    <div class="muted" id="auHealthSummary" style="font-size:12px;margin-bottom:6px">Loading…</div>
+    <table class="usr" id="auHealthTable">
+      <thead><tr><th>Check</th><th>Status</th><th>Detail</th><th>Last OK</th><th>As of</th></tr></thead>
+      <tbody id="auHealthBody"></tbody>
+    </table>
+
+    <h3 style="margin:18px 0 4px;font-size:14px">Storage &amp; growth</h3>
+    <div class="muted" id="auStorageSummary" style="font-size:12px;margin-bottom:6px">Loading…</div>
+    <table class="usr" id="auStorageTable">
+      <thead><tr><th>Largest tables</th><th>Rows</th><th>Size (MB)</th></tr></thead>
+      <tbody id="auStorageBody"></tbody>
+    </table>
+    <div class="muted" id="auLogSizes" style="font-size:12px;margin-top:6px"></div>
+  </section>
+
+  <!-- IT-Admin: Change log. The high-volume audit + error record lists, each bounded by a date range (default
+       today) and capped server-side so a busy day or an error storm can never break the UI. -->
+  <section id="tab-changelog" class="tabpane" style="display:none">
+    <div class="toolbar">
+      <span class="muted" style="font-size:12px">Who changed what, logins, and server errors. Bounded by a date range (default today) so the list stays readable.</span>
+      <button class="ghost" id="clRefresh" style="font-size:12px;margin-left:auto">↻ Refresh</button>
+    </div>
+
+    <h3 style="margin:14px 0 4px;font-size:14px">Change &amp; access audit</h3>
+    <div class="toolbar">
+      <span class="daterow">from <input id="auFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> to <input id="auTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"></span>
+      <select id="auSource" style="font-size:12px">
+        <option value="changes">All changes &amp; logins</option>
+        <option value="erp">ERP data edits</option>
+        <option value="docs">Documents</option>
+        <option value="milestones">Milestones</option>
+      </select>
+      <input id="auSearch" type="search" autocomplete="off" placeholder="Filter (user / action)…" style="font-size:12px">
+      <span class="count" id="auAuditCount"></span>
+      <span class="trunc" id="auAuditTrunc" style="display:none"></span>
+    </div>
+    <table class="usr" id="auAuditTable">
+      <thead id="auAuditHead"></thead>
+      <tbody id="auAuditBody"></tbody>
+    </table>
+
+    <h3 style="margin:18px 0 4px;font-size:14px">Server errors</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">From <code>ops-error.log</code>. Hover a row for the stack trace. Quote the id when reporting a problem.</div>
+    <div class="toolbar">
+      <span class="daterow">from <input id="errFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> to <input id="errTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"></span>
+      <input id="errSearch" type="search" autocomplete="off" placeholder="Filter (route / message)…" style="font-size:12px">
+      <span class="count" id="auErrCount"></span>
+      <span class="trunc" id="auErrTrunc" style="display:none"></span>
+    </div>
+    <table class="usr" id="auErrTable">
+      <thead><tr><th>When</th><th>Id</th><th>Where</th><th>Message</th></tr></thead>
+      <tbody id="auErrBody"></tbody>
+    </table>
+  </section>
 </div>
 <script>
 'use strict';
@@ -384,6 +457,13 @@ async function load() {
 function switchTab(name) {
   document.querySelectorAll('.tabpane').forEach(p => p.style.display = (p.id === 'tab-' + name) ? '' : 'none');
   document.querySelectorAll('.tabbtn').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  if (name === 'audit' && !auditLoaded) { auditLoaded = true; loadAuditTab(); }   // lazy-load once
+  if (name === 'changelog' && !changelogLoaded) {
+    changelogLoaded = true;
+    const t = todayStr();
+    ['#auFrom', '#auTo', '#errFrom', '#errTo'].forEach(s => { if (!$(s).value) $(s).value = t; });   // default range = today
+    loadChangelogTab();
+  }
 }
 
 /* ---------- ERP API identity (erp-api-map.json scalars) ---------- */
@@ -536,6 +616,108 @@ async function loadDocs() {
   DOCS = arr(d.docs); DOCMS = arr(d.milestones); fillDocMsOptions(); renderDocTable();
 }
 
+/* ---------- IT-Admin: Audit & Health (read-only views; lazy-loaded on first tab switch) ---------- */
+let auditLoaded = false, changelogLoaded = false;
+const mb = n => (n == null ? 0 : Number(n)).toLocaleString(undefined, { maximumFractionDigits: 1 });
+const todayStr = () => { const d = new Date(), p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); };
+
+async function loadHealth() {
+  const d = await api('/api-ops/admin/health');
+  if (d.error) { $('#auHealthSummary').textContent = d.error; return; }
+  const errs = d.errorCount24h || 0;
+  $('#auHealthSummary').innerHTML = 'App v' + esc((d.app && d.app.version) || '') + ' · ops DB ' +
+    (d.db && d.db.up ? '<span class="pill ok">up</span>' : '<span class="pill bad">down</span>') + ' · ' +
+    (errs ? '<span class="pill bad">' + errs + ' error(s) / 24h</span>' : '<span class="pill ok">0 errors / 24h</span>');
+  const checks = arr(d.checks), tb = $('#auHealthBody');
+  if (!checks.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">No health checks recorded yet — the watchdog (ops-healthcheck.ps1) has not run. Register it with register-ops-tasks.ps1.</td></tr>'; return; }
+  tb.innerHTML = '';
+  checks.forEach(c => {
+    const ok = c.status === 'ok', tr = document.createElement('tr');
+    if (!ok) tr.className = 'overth';
+    tr.innerHTML = '<td><b>' + esc(c.check_name) + '</b></td>' +
+      '<td><span class="pill ' + (ok ? 'ok' : 'bad') + '">' + esc(c.status) + '</span></td>' +
+      '<td>' + esc(c.detail || '') + '</td><td>' + esc(c.last_ok || '-') + '</td>' +
+      '<td class="muted">' + esc(c.occurred_at || '') + '</td>';
+    tb.appendChild(tr);
+  });
+}
+
+async function loadStorage() {
+  const d = await api('/api-ops/admin/storage');
+  if (d.error) { $('#auStorageSummary').textContent = d.error; return; }
+  const db = d.db || {}, disk = d.disk || {}, att = d.attachments;
+  let s = 'Database ' + mb(db.totalMb) + ' MB (data ' + mb(db.dataMb) + ' + log ' + mb(db.logMb) + ')';
+  if (att) s += ' · attachments ' + att.count + ' files / ' + mb(att.mb) + ' MB' +
+    (att.deletedCount ? (' (' + att.deletedCount + ' soft-deleted / ' + mb(att.deletedMb) + ' MB reclaimable)') : '');
+  s += ' · disk free ' + mb(disk.freeMb) + ' / ' + mb(disk.totalMb) + ' MB';
+  $('#auStorageSummary').textContent = s;
+  const tb = $('#auStorageBody'); tb.innerHTML = '';
+  arr(d.tables).forEach(t => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + esc(t.table_name) + '</td><td>' + (t.rows != null ? Number(t.rows).toLocaleString() : '') + '</td><td>' + mb(t.reserved_mb) + '</td>';
+    tb.appendChild(tr);
+  });
+  $('#auLogSizes').textContent = 'Log files: ' + arr(d.logs).map(l => l.name + ' ' + mb(l.mb) + ' MB').join('  ·  ');
+}
+
+function auAuditCols(source) {
+  if (source === 'erp') return ['occurred_at', 'actor', 'job_no', 'erp_status', 'erp_error'];
+  if (source === 'docs') return ['occurred_at', 'actor', 'event', 'doc_id', 'version_no'];
+  if (source === 'milestones') return ['occurred_at', 'done_by', 'job_no', 'milestone_code', 'to_state'];
+  return ['when', 'who', 'action'];
+}
+// yyyy-mm-dd guard: blank passes (server defaults to today), else must match the pattern.
+const dateOk = v => v === '' || /^\d{4}-\d{2}-\d{2}$/.test(v);
+function rangeQs(fromSel, toSel) {
+  const f = $(fromSel).value.trim(), t = $(toSel).value.trim();
+  if (!dateOk(f) || !dateOk(t)) return null;   // invalid -> caller skips the query
+  return (f ? '&from=' + f : '') + (t ? '&to=' + t : '');
+}
+function showTrunc(sel, d) {
+  const el = $(sel);
+  if (d.truncated) { el.textContent = '⚠ showing first ' + arr(d.items).length + ' — narrow the date range'; el.style.display = ''; }
+  else el.style.display = 'none';
+}
+
+async function loadAudit() {
+  const r = rangeQs('#auFrom', '#auTo'); if (r === null) return;   // wait for a valid date
+  const source = $('#auSource').value, q = $('#auSearch').value.trim();
+  const d = await api('/api-ops/admin/audit?source=' + encodeURIComponent(source) + (q ? ('&q=' + encodeURIComponent(q)) : '') + r);
+  const head = $('#auAuditHead'), body = $('#auAuditBody');
+  if (d.error) { head.innerHTML = ''; body.innerHTML = '<tr><td class="muted">' + esc(d.error) + '</td></tr>'; $('#auAuditCount').textContent = ''; showTrunc('#auAuditTrunc', {}); return; }
+  const cols = auAuditCols(source), items = arr(d.items);
+  head.innerHTML = '<tr>' + cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr>';
+  $('#auAuditCount').textContent = (d.count != null ? d.count : items.length) + ' record(s)';
+  showTrunc('#auAuditTrunc', d);
+  body.innerHTML = items.length ? '' : '<tr><td colspan="' + cols.length + '" class="muted">No records in range.</td></tr>';
+  items.forEach(it => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = cols.map(c => '<td>' + esc(it[c] == null ? '' : it[c]) + '</td>').join('');
+    body.appendChild(tr);
+  });
+}
+
+async function loadErrors() {
+  const r = rangeQs('#errFrom', '#errTo'); if (r === null) return;
+  const q = $('#errSearch').value.trim();
+  const d = await api('/api-ops/admin/errors?' + r.replace(/^&/, '') + (q ? ('&q=' + encodeURIComponent(q)) : ''));
+  const tb = $('#auErrBody');
+  if (d.error) { tb.innerHTML = '<tr><td colspan="4" class="muted">' + esc(d.error) + '</td></tr>'; $('#auErrCount').textContent = ''; showTrunc('#auErrTrunc', {}); return; }
+  const items = arr(d.items);
+  $('#auErrCount').textContent = (d.count != null ? d.count : items.length) + ' error(s)';
+  showTrunc('#auErrTrunc', d);
+  tb.innerHTML = items.length ? '' : '<tr><td colspan="4" class="muted">No errors in range.</td></tr>';
+  items.forEach(e => {
+    const tr = document.createElement('tr');
+    tr.title = e.stack || '';
+    tr.innerHTML = '<td class="muted">' + esc(e.when) + '</td><td>' + esc(e.id) + '</td><td>' + esc(e.where) + '</td><td>' + esc(e.message) + '</td>';
+    tb.appendChild(tr);
+  });
+}
+
+function loadAuditTab() { loadHealth(); loadStorage(); }
+function loadChangelogTab() { loadAudit(); loadErrors(); }
+
 (async function init() {
   const me = await api('/api-ops/me');
   if (me.authOn && !me.admin) { document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif">Admin only. <a href="index.html">← back to the worklist</a></div>'; return; }
@@ -563,6 +745,13 @@ async function loadDocs() {
   loadDocs();
   $('#erpSaveBtn').onclick = saveErp;
   loadErp();
+  $('#auRefresh').onclick = loadAuditTab;
+  $('#clRefresh').onclick = loadChangelogTab;
+  $('#auSource').onchange = loadAudit;
+  $('#auSearch').onchange = loadAudit;
+  $('#auFrom').onchange = loadAudit; $('#auTo').onchange = loadAudit;
+  $('#errSearch').onchange = loadErrors;
+  $('#errFrom').onchange = loadErrors; $('#errTo').onchange = loadErrors;
 })();
 </script>
 </body>

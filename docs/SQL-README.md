@@ -168,6 +168,35 @@ were untouched by the move.
 > in the caller's station/mode scope. The arrangement `party`/`contact` columns are also what lets Find match a
 > free-text contact like *"Rainbow Transportation"* to the shipment it was recorded on.
 
+### Operations & governance (`health_check_log`)
+
+| Table | Grain | Purpose |
+|---|---|---|
+| `health_check_log` | append-only, one row per watchdog check per run | written by `ops-healthcheck.ps1` (every ~25 min): `check_name` (`app`/`db`/`tasks`/`feed`/`backup`/`storage:db`/`storage:disk`/`erp-vpn`/`purge`), `status` (`ok`/`fail`), `detail`, `metric_num` (a numeric value for the storage/age trend), `occurred_at`. The in-app **Audit & Health** board reads the *latest row per `check_name`* for current state and `MAX(occurred_at WHERE status='ok')` for "last OK" — a `fail` then later `ok` makes a **recovery** visible. Indexed on `(check_name, occurred_at)`. |
+
+> ℹ️ **The other audit trails are not new tables** — they already existed: `milestone_event_log`, `doc_event_log`,
+> `erp_edit_log` (all append-only, who/when, `erp_edit_log` carries before→after per field), plus the file logs
+> `admin-audit.log` (change + **login/failed-login** audit) and `ops-error.log` (every server-side exception). The
+> **Change log** admin tab reads all of these, bounded by a date range + a row cap.
+
+### Data retention / growth (`purge-ops.ps1`)
+
+The schema is meant to hold only **active** operational state, but the aging was not enforced until
+`purge-ops.ps1` (weekly `Ops Purge`). It uses the timestamp/status columns already in the schema, all horizons from
+the config `retention` block:
+
+| Table | Aged by | Default horizon |
+|---|---|---|
+| `shipment_alerts` | `updated_at` stale → `job_status='closed'`; then closed/void deleted | `staleDays 21` → `retainClosedDays 180` (≥ Find's recently-closed window) |
+| `inbound_booking_feed` | `updated_at` stale → deleted | `retainFeedDays 120` |
+| `milestone_event_log` / `doc_event_log` / `erp_edit_log` | `occurred_at` older than horizon | `auditRetainMonths 24` |
+| `health_check_log` | `occurred_at` older than horizon | `healthRetainDays 90` |
+| `doc_attachment` | **only soft-deleted** (`deleted=1`) blobs by `uploaded_at` | `attachPurgeDays 60` (live attachments are never auto-deleted) |
+
+> The on-disk logs (`admin-audit.log`, `ops-error.log`, `ops-health.log`, `ops-backup.log`) are **rotated** by the
+> same job (over `logRotateMb`, keeping `logKeep` archives). The **Storage & growth** admin tab + the watchdog
+> thresholds (`dbSizeWarnMb`/`diskFreeWarnMb`) tell you if growth is getting out of hand.
+
 ---
 
 ## 3. ERP source field map — Sea (`blhead` + `blcont` + `blitem`)

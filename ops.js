@@ -93,7 +93,9 @@ async function init() {
     document.querySelectorAll('.vgroup').forEach(g => g.classList.toggle('collapsed', allCollapsed));
     $('#collapseAll').textContent = allCollapsed ? tr('⊕ Expand all') : tr('⊖ Collapse all');
   };
-  $('#tasksBtn').onclick = () => $('#tasksPanel').scrollIntoView({ behavior: 'smooth' });
+  // block:'nearest' scrolls only when the panel isn't already on screen — on a wide layout the
+  // sidebar panel is already visible, so this no longer jerks the whole page up ("rolls up").
+  $('#tasksBtn').onclick = () => $('#tasksPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   $('#closeDrawer').onclick = closeDrawer; $('#drawerBg').onclick = closeDrawer;
   wireFind();
   refreshAll();

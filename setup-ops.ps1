@@ -629,9 +629,29 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_erpedit_job' AND object_
   CREATE INDEX IX_erpedit_job ON dbo.erp_edit_log(job_no, occurred_at);
 "@
 
-Write-Host "Operational database [$opsDb] ready (17 tables + indexes):" -ForegroundColor Green
+# --- D.6 health_check_log - append-only result trail written by ops-healthcheck.ps1 (the watchdog). The in-app
+#     IT-Admin "Audit & Health" tab reads it so support can see process state WITHOUT database access: the latest
+#     row per check_name is the current state, MAX(occurred_at WHERE status='ok') is "last OK", and a 'fail' row
+#     followed by a later 'ok' makes a recovery visible (the support follow-up trail). metric_num carries a
+#     numeric value (e.g. DB size MB, free-disk MB, age in hours) for the storage/growth trend. Pruned by
+#     purge-ops.ps1 (HealthRetainDays). ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.health_check_log') IS NULL
+CREATE TABLE dbo.health_check_log (
+  id          bigint IDENTITY(1,1) PRIMARY KEY,
+  check_name  nvarchar(40)  NOT NULL,    -- app|db|task:<name>|feed|backup|storage:db|storage:disk|...
+  status      nvarchar(8)   NOT NULL,    -- ok|fail
+  detail      nvarchar(max) NULL,        -- human-readable detail / error
+  metric_num  float         NULL,        -- numeric metric for trend (MB, hours, count); NULL when not applicable
+  occurred_at datetime2     NOT NULL
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_health_check' AND object_id=OBJECT_ID('dbo.health_check_log'))
+  CREATE INDEX IX_health_check ON dbo.health_check_log(check_name, occurred_at);
+"@
+
+Write-Host "Operational database [$opsDb] ready (18 tables + indexes):" -ForegroundColor Green
 Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
 Write-Host "  milestone_event_log, company_dim, port_dim, liner_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
 Write-Host "  doc_draft, doc_version, doc_review_token, doc_event_log, doc_attachment (draft document review)" -ForegroundColor Green
-Write-Host "  erp_edit_log (ERP master-code corrections audit)" -ForegroundColor Green
+Write-Host "  erp_edit_log (ERP master-code corrections audit), health_check_log (watchdog status trail)" -ForegroundColor Green
 Write-Host "Next: map the alias/evidence fields to real ERP columns, then run listener-engine.ps1 -Mode Sea on the pilot station." -ForegroundColor Cyan

@@ -20,6 +20,8 @@ and the follow-up / @-mention collaboration subsystem).
 | `docs/DEVELOPER-GUIDE.md` | Coding standards + back-/front-end conventions, **the .NET web tier**, and **how to add a UI language**. |
 | `docs/SQL-README.md` | The `erpops` schema + the verified ERP source field map. |
 | **`docs/IIS-DEPLOY.md`** | **Deploying the .NET app to a real server (IIS + HTTPS).** Read this to put it in production. |
+| **`docs/ONBOARD-CHECKLIST.md`** | **The one self-contained, step-by-step checklist to deploy + onboard a customer** (config, DB+seed, users, scheduled jobs, backups), with a visible verification after every step. |
+| **`docs/OPERATIONS-RUNBOOK.md`** | **Ongoing support & governance:** the in-app Audit & Health console, log map, troubleshooting, data-retention/growth, backup/restore, safe patching, IIS-vs-container. |
 | **`docs/CUTOVER.md`** | Strangler-flip runbook: retiring `serve-ops.ps1` for the .NET server (parity diff, click-test, L!NK URL flip). |
 | `CLAUDE.md` | Project context for Claude Code: hard constraints (gotchas), the reuse map, repo layout. Auto-loaded in a Claude Code session. |
 

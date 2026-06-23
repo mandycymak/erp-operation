@@ -30,6 +30,20 @@
   "routeManual": [
     { "origin": "BKK", "kind": "agent", "value": "A0354", "dest": "HKG", "priority": 10 }
   ],
+  "_alerts": "Where ops-healthcheck.ps1 (the watchdog) sends a notification when a check FAILS (app down, DB unreachable, a scheduled task failed, feed stale, backup missing, storage/disk over threshold). Leave webhookUrl/smtp empty to only log to ops-health.log + the in-app Audit & Health board. webhookUrl = a Teams/Slack-compatible incoming webhook (posts {text}). smtp = host/port/from/to[] (+ optional user/password/ssl) for email. SECRET values (smtp password) stay in this gitignored file.",
+  "alerts": {
+    "webhookUrl": "",
+    "smtp": { "host": "", "port": 25, "ssl": false, "user": "", "password": "", "from": "controltower@example.com", "to": ["it-support@example.com"] }
+  },
+  "_healthUrl": "Optional. The URL ops-healthcheck.ps1 probes for the 'app' check. Default http://localhost:<port>/api-ops/health (the Kestrel/dev port). Behind IIS/HTTPS set this to e.g. https://localhost/api-ops/health (a self-signed/localhost cert is tolerated).",
+  "healthUrl": "",
+  "_retention": "Data-retention horizons enforced by purge-ops.ps1 (keeps the ops DB small over years) and the warn thresholds used by ops-healthcheck.ps1. staleDays: a shipment_alerts row not refreshed in this many days is aged out to job_status='closed' (it dropped out of the active ERP set). retainClosedDays: closed/void alerts are deleted after this (keep >= the Find 'recently-closed' window, ~180). retainFeedDays: inbound_booking_feed rows not refreshed in this long are deleted. auditRetainMonths: how long milestone/doc/erp-edit event logs are kept (audit history). healthRetainDays: health_check_log retention. attachPurgeDays: soft-deleted document attachments are reclaimed after this (LIVE attachments are never auto-deleted). logRotateMb/logKeep: rotate a log file over N MB, keeping K archives. feedStaleHours/backupStaleHours/dbSizeWarnMb/diskFreeWarnMb: the watchdog raises an alert past these.",
+  "retention": {
+    "staleDays": 21, "retainClosedDays": 180, "retainFeedDays": 120,
+    "auditRetainMonths": 24, "healthRetainDays": 90, "attachPurgeDays": 60,
+    "logRotateMb": 16, "logKeep": 6,
+    "feedStaleHours": 12, "backupStaleHours": 26, "dbSizeWarnMb": 5000, "diskFreeWarnMb": 2000
+  },
   "stations": [
     { "code": "BKK", "name": "Bangkok",   "country": "TH", "database": "station_bkk" },
     { "code": "SIN", "name": "Singapore", "country": "SG", "database": "station_sin" },
