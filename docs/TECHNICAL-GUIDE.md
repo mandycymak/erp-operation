@@ -35,7 +35,7 @@ so it stays fast.
 | Need | Why |
 |---|---|
 | **Windows + PowerShell 5.1** | the whole stack (`.ps1` + .NET `SqlClient`/`HttpListener`) |
-| **Swivel OpenVPN up** | the SQL hosts (`18.136.126.101,1438` prod / `192.168.5.2` demoerp) are only reachable through the tunnel — see [§9](#9-vpn-the-swivel-tunnel) |
+| **Swivel OpenVPN up** *(dev/remote only)* | in **this dev setup** the SQL hosts (`18.136.126.101,1438` prod / `192.168.5.2` demoerp) are only reachable through the tunnel — see [§9](#9-vpn-the-swivel-tunnel). **At a customer site the VPN is not needed**: the server just needs network reach to the ops DB + the source ERP SQL (seeders) + the ERP API host (push), all on the customer LAN |
 | **SQL Server reachable** | source ERP (read-only) + the ops DB host |
 | **A SQL login** | read access to the station ERP DBs; create/write on the ops DB (or two-server mode — see [§3](#3-first-time-install)) |
 | **Microsoft Edge or Google Chrome** | headless **print-to-PDF** for the agreed-document upload (auto-generated PDF). Optional — if absent, issue still posts the event, just no auto PDF |
@@ -43,6 +43,14 @@ so it stays fast.
 ---
 
 ## 3. First-time install
+
+> ⚡ **Fastest path — one command per stage.** The manual steps below are wrapped by two self-documenting
+> `.bat` files: **`setup-database.bat`** (creates the DB + all tables via `setup-ops.ps1` and seeds the milestone
+> config) then, after the first app start, **`seed-data.bat`** (the live-ERP fill: station map / ports / liners /
+> inbound feed / worklist, looping every config station x Sea/Air). After `setup-database.bat` + first app start,
+> **all ~24 tables exist and `admin`/`admin123` works** (change that password immediately). The numbered steps
+> below are what those wrappers run, for when you need to do one stage by hand. Full step-by-step:
+> [`ONBOARD-CHECKLIST.md`](ONBOARD-CHECKLIST.md).
 
 ### Step 1 — create your config (holds credentials — gitignored)
 
@@ -87,8 +95,14 @@ feature — just re-run `setup-ops.ps1`.)
 .\seed-ports.ps1  -ConfigPath .\ops.config.demoerp.json              # POL/POD dropdowns
 ```
 
-`seed-alerts.ps1` is the **listener stand-in** — a one-shot evaluator/upsert. Loop it over all stations (see
-[§5](#5-refreshing-the-data)).
+`seed-alerts.ps1` is the **listener stand-in** — a one-shot evaluator/upsert. Run it **once in full-snapshot mode
+(no `-Delta`)** to backfill, then the scheduled jobs use **`-Delta`** for cheap incremental refreshes (only rows
+whose ERP create/update date moved since the last run — see [§5](#5-refreshing-the-data)). Loop it over all
+stations.
+
+> 🆕 **Booking-stage records show too.** `seed-alerts.ps1` now also pulls booking-stage rows (`awb_type='B'`),
+> stamped `bill_stage='booking'`, so a just-created booking appears in the worklist (a **BOOKING** badge) and in the
+> scoped **New bookings** panel the moment it exists — not only once it becomes a house bill.
 
 ### Step 4 — start the web service (.NET)
 
@@ -157,12 +171,19 @@ foreach ($code in $stations.Keys) {
 ```
 
 This registers, per configured station: **`Ops Publish Sea/Air`** (cross-station feed, Sea 3x/day · Air every 2h,
-staggered) **and `Ops Worklist Sea/Air`** (worklist refresh via `seed-alerts.ps1`, same cadence, +3 min after the
-publisher — its `-AsOf` is computed at run time so it always seeds "today"), plus weekly `Ops Station Map Refresh`
-and `Ops Port Dim Refresh`, **and the three governance jobs `Ops Backup` (nightly), `Ops Healthcheck` (every
-25 min) and `Ops Purge` (weekly)** — see §5a. The station set is taken from `stations[]` in the config, so N
-stations → N task sets. **These jobs run on whatever host you schedule them on and write the ops DB directly — in
-production that is the server (with the VPN up), not a workstation; the IIS app only reads the same DB.**
+staggered); **`Ops Worklist Sea/Air`** (incremental worklist refresh via **`seed-alerts.ps1 -Delta`** — **Air every
+`WorklistAirMins` (default 5)**, **Sea every `WorklistSeaMins` (default 15)**, staggered; its `-AsOf` is computed at
+run time so it always seeds "today"); **`Ops Booking Watch Sea/Air`** (`watch-bookings.ps1`, every `BookingWatchMins`,
+default 5 — detects new export bookings → `booking_alert`, alerts the factory when `bookingAlert.enabled`); weekly
+`Ops Station Map Refresh` and `Ops Port Dim Refresh`; **and the three governance jobs `Ops Backup` (nightly),
+`Ops Healthcheck` (every 25 min) and `Ops Purge` (weekly)** — see §5a. The station set is taken from `stations[]`
+in the config, so N stations → N task sets. **These jobs run on whatever host you schedule them on and write the
+ops DB directly — in production that is the server (with the VPN up), not a workstation; the IIS app only reads the
+same DB.**
+
+> 🆕 **Run the full backfill once before the delta tasks take over** (the `setup-database.bat` → start app →
+> `seed-data.bat` flow does this). The delta jobs only pull rows that changed since the last watermark, so they
+> assume the active set was already seeded in full.
 
 ---
 
@@ -192,6 +213,12 @@ self-contained checklist: **[`ONBOARD-CHECKLIST.md`](ONBOARD-CHECKLIST.md)**.
 > Application errors are written to **`ops-error.log`** (route, correlation id, stack) — previously they were
 > discarded. Login successes/failures are in **`admin-audit.log`**. Both surface in the **Change log** tab.
 
+> 🔌 **Which ERP API call failed?** Every Swivel ERP call (push **and** the previously-silent reads) is logged to
+> **`dbo.erp_api_log`** — endpoint, ok/HTTP-status, duration, the ERP's own error text, bounded req/resp summaries,
+> and a **`corr_id`** linking the calls of one operation (a doc agree's get+update share an id). Surfaced as the
+> **ERP API calls** panel in the **Change log** tab and the `/api-ops/admin/erp-api` endpoint (date-range + cap +
+> "failures only"). Mock-mode calls aren't logged — they never reach the ERP. Trimmed by `purge-ops.ps1`.
+
 ---
 
 ## 6. Managing user accounts & roles
@@ -199,8 +226,9 @@ self-contained checklist: **[`ONBOARD-CHECKLIST.md`](ONBOARD-CHECKLIST.md)**.
 Sign in as an **admin** and open the **Admin** link (admins only). `admin-ops.html` has **four tabs**:
 
 - **Users** — add/edit logins, with a live search over name/email/station/team/ERP-name (built for ~500 users).
-  **Email is the required, unique sign-in key**; a **Sign-in** column shows each user's method. Passwords are
-  stored hashed (`SHA256("salt:password")`); new users are hashed automatically.
+  **Email is the required, unique sign-in key**; a **Sign-in** column shows each user's method. Logins/roles/scope
+  live in **SQL** (`dbo.app_user` + `dbo.app_user_scope`) — **not** a JSON file. Passwords are stored hashed
+  (`SHA256("salt:password")`); new users are hashed automatically.
 - **Milestones & alerts** — CRUD over `milestone_def`: name, mode/bound/seq/phase, active, and the **alert
   timing** (`baseline` / fixed offset / `none`) that drives every operator's Green/Amber/Red. Edits apply at
   a shipment's **next evaluation run**, not retroactively.
@@ -209,15 +237,23 @@ Sign in as an **admin** and open the **Admin** link (admins only). `admin-ops.ht
   (the box is always shown when the ERP is live), and the ones that would also **clear a milestone** on that
   shipment are flagged with a `*`. Keep these matched to the ERP Document Type master, or `/file/upload` is
   rejected. (If the list is empty the picker falls back to a free-text doctype field.)
-- **ERP API** — the non-secret ERP identity codes in `erp-api-map.json`: **`partyGroupCode`** (the company code,
-  e.g. `DEV`) and the fallback **`forwarderCode`** (office owncode). The bearer token is **not** here. See §7.
+- **ERP API** — the ERP **connection**, editable at the customer site with no file edit and no restart: the
+  **Base URL**, the **bearer token** (write-only — masked, "leave blank to keep"; never returned by the API) and
+  the **mock** toggle, stored in **`dbo.app_setting`** and overriding `ops.config.json` at runtime, with a
+  **LIVE / MOCK** status indicator. Plus the non-secret ERP identity codes from `erp-api-map.json`:
+  **`partyGroupCode`** (the company code, e.g. `DEV`) and the fallback **`forwarderCode`** (office owncode). See §7.
 
-**Auth model.** With `users.json` present the app runs in **real-auth mode** (login page, sessions, row-level
-scope). Without it, open/demo mode. Users **sign in by email + password** (a username also works as a fallback so
-no one is locked out during the switch). The **`username` stays the internal identity** (notes, @-mentions,
-sessions, scope, and the ERP-username bridge are unchanged) — email is only the credential. Each record carries
-`stations[]`, `access[]` (`Sea-Export`…), `teams[]`, `admin`, **`authProvider`** (`local` | `swivel` | `both`),
-and the **ERP usernames** it owns (free-text ERP `pic_user` values). Admin/manager see everything.
+**Auth model — users live in SQL, with a secure default admin.** Logins/roles/scope are stored in **`dbo.app_user`
++ `dbo.app_user_scope`** (created by `setup-ops.ps1`). On first start against an empty user table the app
+**imports a legacy `users.json` once** (kept only as a backup) **or seeds a default `admin`/`admin123`** (the
+console logs "change this password immediately"). Because a user always exists after bootstrap, the app is in
+**real-auth mode** (login page, sessions, row-level scope) in production — the old "open/demo" mode (every visitor
+auto-admin) **never triggers** unless someone manually empties the table. Users **sign in by email + password** (a
+username also works as a fallback so no one is locked out during the switch). The **`username` stays the internal
+identity** (notes, @-mentions, sessions, scope, and the ERP-username bridge are unchanged) — email is only the
+credential. Each record carries `stations[]`, `access[]` (`Sea-Export`…), `teams[]`, `admin`, **`authProvider`**
+(`local` | `swivel` | `both`), and the **ERP usernames** it owns (free-text ERP `pic_user` values). Admin/manager
+see everything.
 
 > 🔑 **A `swivel` user has no local password** — it signs in only via SWIVEL L!NK (below). A `local` user can be
 > matched by L!NK too (federation is by email), so `both` is the common case once L!NK is live.
@@ -273,7 +309,9 @@ The draft HBL/HAWB **Issue** posts to the **Swivel 3rd-party ERP API**. Two conf
   **`forwarderCode`** (the *fallback* office owncode), `serviceCodeDefault`, `commodityFallback`, the `event`
   (`transportBill` / "Transport Bill Confirm"), `documentTypeCode` (**`BL_REVIEW`** for HBL + HAWB), and
   `bookingUpdateMode` (`strict` / `best-effort`).
-- **`ops.config.json` → `erpApi` (gitignored, SECRET)** — `baseUrl` + the **bearer token** from Swivel.
+- **`ops.config.json` → `erpApi` (gitignored, SECRET)** — `baseUrl` + the **bearer token** from Swivel. **Or set
+  these in the admin ERP API tab** (`dbo.app_setting`), which overrides the config at runtime — so at a customer
+  the token need not sit in a file on the box (see §6). The DB value wins; a blank DB value falls back to the config.
 
 > 🧭 **`forwarderCode` is the office owncode — "where the data goes" — and is resolved PER STATION, not
 > hard-coded.** `Resolve-ForwarderCode($station)` → `Get-StationOwnCode` reads `fm3kco.site` (dbname → owncode,
@@ -319,8 +357,8 @@ The draft HBL/HAWB **Issue** posts to the **Swivel 3rd-party ERP API**. Two conf
 
 | File | Holds |
 |---|---|
-| `ops.config.json`, `ops.config.*.json` | SQL credentials + the ERP bearer token |
-| `users.json`, `roles.json` | logins (hashed) + row-level scope |
+| `ops.config.json`, `ops.config.*.json` | SQL credentials + the ERP bearer token (token may instead live in `app_setting`) |
+| `users.json`, `roles.json` | **legacy** logins (hashed) + scope — now only a one-time import source / backup; the live store is SQL (`app_user`) |
 | `ops-lists/`, `*-audit.log`, `*.log` | operational lists + audit trail |
 | `erp-mock/` | mock issue payloads (may contain booking data) |
 
@@ -370,16 +408,19 @@ False — ICMP is filtered; ignore it.
 ## 11. Quick reference
 
 ```powershell
-# Bring up demoerp end-to-end
+# Bring up demoerp end-to-end (one command per stage)
 .\.claude\skills\swivel-vpn\scripts\swivel-vpn.ps1 -Check      # VPN
-.\setup-ops.ps1            -ConfigPath .\ops.config.demoerp.json
-.\seed-milestone-config.ps1 -ConfigPath .\ops.config.demoerp.json
-# ...seed all stations (see §5)...
-.\serve-ops.ps1           -ConfigPath .\ops.config.demoerp.json -Port 8079
+.\setup-database.bat       .\ops.config.demoerp.json           # schema + all tables + milestone config
+cd server; $env:OPS_CONFIG='ops.config.demoerp.json'; dotnet run -c Release   # .NET web tier (seeds default admin)
+# ...back in repo root, with the app started:
+.\seed-data.bat           .\ops.config.demoerp.json           # live-ERP fill (all stations x Sea/Air)
 
 # Restart after a code/config change (port-scoped, excludes own PID)
-.\restart-ops-demoerp.bat
+.\restart-ops-demoerp.bat                                      # legacy PS server; for .NET re-run dotnet / redeploy-demoerp.bat
 ```
+
+> The manual long-hand (`setup-ops.ps1` / `seed-milestone-config.ps1` / per-station `seed-alerts.ps1` /
+> `serve-ops.ps1` rollback) is in §3–§5; the `.bat` wrappers above just chain those in order.
 
 See [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md) for code changes and [SQL-README.md](SQL-README.md) for the schema
 and ERP field map.

@@ -36,8 +36,8 @@ actually built and proven; update it when you ship something.
 | **`Packet Size=512` on every connection string** | The VPN MTU black-holes default 8 KB TDS packets on large responses → "semaphore timeout". |
 | **VPN must be up** to hit SQL | The DB hosts are only reachable through the Swivel OpenVPN. |
 | **Source ERP DBs are READ-ONLY** | All writes go to `erpops` or the gitignored JSON note store. Never `INSERT`/`UPDATE`/`ALTER` an ERP table. |
-| **Single-threaded server** | One `HttpListener` request at a time. Bound every query with `CommandTimeout`; the UI reads only small `erpops` tables, never the ERP on a request path. |
-| **Secrets are gitignored** (`ops.config*.json`, `users.json`, `roles.json`, `ops-lists/`, `*.log`, `erp-mock/`) | Credentials / the ERP token / access policy. Commit only `*.example.json`. **Check `git status` before every commit.** |
+| **Bound every query; never read the ERP on a request path** | The .NET tier is **multi-threaded** with a **`dbGate`** semaphore (default 16) capping concurrent SQL so a burst can't stampede the small-MTU VPN box, and **per-request `ReqState`** carries row-level scope (the structural fix the .NET port was for). Still: bound every query with `CommandTimeout`; the UI reads only small `erpops` tables, never the ERP on a request path. (The legacy `serve-ops.ps1` was single-threaded — one `HttpListener` request at a time; that constraint applies only if you run it.) |
+| **Secrets are gitignored** (`ops.config*.json`, `users.json`, `roles.json`, `ops-lists/`, `*.log`, `erp-mock/`, `backups/`) | Credentials / the ERP token / access policy. (`users.json` is now only a legacy import source/backup — the live user store is SQL `app_user`.) Commit only `*.example.json`. **Check `git status` before every commit.** |
 | **All SQL is parameterised** | `SqlParameter` / `@name` — never string-build values from user input. |
 | **Row-level scope is the security boundary** | Per-user scope must be AND-ed into *every* data query, not just the visible table. Out-of-scope rows return "not found" — no existence oracle. |
 | **Dates are ISO `yyyy-mm-dd` everywhere** | Display, input, storage. **No native `<input type="date">`** — use a text input + `^\d{4}-\d{2}-\d{2}$` guard. SQL `CONVERT(...,23)`; PowerShell `.ToString('yyyy-MM-dd')`. |
@@ -52,14 +52,16 @@ actually built and proven; update it when you ship something.
 | `setup-ops.ps1` | creates the `erpops` schema (operational + feed + draft-document tables), idempotent, two-server aware |
 | `seed-milestone-config.ps1` | the milestone matrix as data (`milestone_def` + starter evidence map) |
 | `ops-eval.ps1` | pure evaluator — `New-ShipContext` / `New-AirContext`, `Eval-Milestones`, the route-point builders (`Get-AirRoutePoints` / `Get-SeaRoutePoints`) |
-| `seed-alerts.ps1` | the listener stand-in (`-Mode Sea\|Air`): reads `blhead`/`awbhead`, batches contacts, computes arrival/cargo/conveyance, upserts `shipment_alerts` |
+| `seed-alerts.ps1` | the listener stand-in (`-Mode Sea\|Air`): reads `blhead`/`awbhead`, batches contacts, computes arrival/cargo/conveyance, upserts `shipment_alerts`. **`-Delta`** = incremental pull via the `alert_watermark` high-water (only rows whose ERP create/update moved); includes booking-stage rows (`bill_stage`) |
 | `eval-shipment.ps1` | read-only one-shot card for one shipment (diagnostic) |
-| `seed-station-map.ps1` / `publish-bookings.ps1` | the cross-station inbound feed (identity directory + publisher) |
-| `register-ops-tasks.ps1` | Task Scheduler registration (feed/worklist refresh **+ the governance jobs `Ops Backup` / `Ops Healthcheck` / `Ops Purge`**) |
+| `seed-station-map.ps1` / `publish-bookings.ps1` | the cross-station inbound feed (identity directory + publisher). The publisher **fans out one feed row per involved office** (destination agent / notify / consignee / routing / controlling) and sets the **`offshore`** flag for off-bill-only involvement |
+| **`watch-bookings.ps1`** | new-export-booking watcher → `booking_alert`; resolves the factory(shipper) and alerts via the config `bookingAlert` block |
+| `register-ops-tasks.ps1` | Task Scheduler registration (feed/worklist refresh — worklist now `seed-alerts -Delta`, Air ~5 min / Sea ~15 min — **`Ops Booking Watch`**, **+ the governance jobs `Ops Backup` / `Ops Healthcheck` / `Ops Purge`**) |
+| **`setup-database.bat` / `seed-data.bat` (→ `seed-data.ps1`)** | one-command onboarding: schema+tables+milestone config, then the live-ERP fill looping every station x Sea/Air |
 | **`backup-ops.ps1`** | nightly ops-DB `.bak` (COPY_ONLY) + gitignored-secrets copy + prune; non-zero exit on failure |
 | **`ops-healthcheck.ps1`** | the watchdog — checks app/db/tasks/feed/backup/storage/disk/VPN → `health_check_log` + alert (config `alerts`: webhook/SMTP) on failure |
 | **`purge-ops.ps1`** | data retention/aging (config `retention`) + log rotation — keeps the ops DB small over years (`-WhatIf` previews) |
-| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`, the unauthenticated **`GET /api-ops/health`** probe), `Auth.cs`, `Config.cs`, `Sql.cs`, `Filter.cs`, **`Log.cs`** (`Log.Error` → `ops-error.log`), and `Handlers.*.cs` (one area per file: Worklist/Shipment/**Find**/Notes/Tasks/Inbound/Erp*/Doc/Admin/Misc). `Handlers.Admin.cs` also serves the read-only IT-Admin views (`/api-ops/admin/health` · `/storage` · `/audit` · `/errors`). `Notes.cs` backs the SQL `job_note` store; **`Llm.cs`** is the optional, flag-gated Find fallback adapter. `dotnet publish -c Release` to deploy |
+| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`, the unauthenticated **`GET /api-ops/health`** probe), **`Auth.cs`** (backs onto SQL `app_user`+`app_user_scope`; `SeedOrImport` seeds default admin / imports legacy `users.json` once), **`Settings.cs`** (runtime ERP connection from `app_setting`, overrides `ops.config.json`), `Config.cs`, `Sql.cs`, `Filter.cs`, **`Log.cs`** (`Log.Error` → `ops-error.log`), **`ErpLog.cs`** (every ERP call → `erp_api_log`, `corr_id` scopes), and `Handlers.*.cs` (one area per file: Worklist/Shipment/**Find**/Notes/Tasks/Inbound/**Bookings**/Erp*/Doc/Admin/Misc). `Handlers.Admin.cs` also serves the read-only IT-Admin views (`/api-ops/admin/health` · `/storage` · `/audit` · `/errors` · `/erp-api`) and the ERP-connection editor; `Handlers.Bookings.cs` is the scoped **New bookings** endpoint. `Notes.cs` backs the SQL `job_note` store; **`Llm.cs`** is the optional, flag-gated Find fallback adapter. `dotnet publish -c Release` to deploy |
 | `serve-ops.ps1` | the **legacy** web service (rollback) — same routes/contract as `server/`; keep in parity when a shared contract changes |
 | **`i18n.js`** | the client localization layer — `tr(en, ctx?)`, `applyDom()`, `boot()`, `setLang()`, the `SUPPORTED` language list |
 | **`lang/<code>.json`** | UI translation dictionaries (English source string = key). `lang/zh-Hans.json`, `lang/ja.json` |
@@ -123,6 +125,13 @@ unique); `username` keys notes/@-mentions/sessions/scope/`erpUsers` — **don't*
 public payload) — every sign-in path calls `New-OpsSession`. `Handle-OpsLogin` matches email, with a `Get-OpsUser`
 (username) fallback. Per-user `authProvider` (`local` | `swivel` | `both`); a `swivel` user has no salt/pwdHash.
 
+> 🗄️ **The user store is SQL, not a file (`.NET`).** `server/Auth.cs` reads/writes **`dbo.app_user` +
+> `dbo.app_user_scope`** (whole-store rewrite in a transaction on save, like `Notes.cs`); every public signature and
+> the `UserRec` shape are unchanged, so Filter/Program/Handlers.Admin are untouched. **`SeedOrImport`** (called from
+> `LoadAll`) seeds a default `admin`/`admin123` on an empty table, or imports a legacy `users.json` once (kept as a
+> backup). `HashPwd` is the same salted-SHA256 as erp-dashboard, so imported hashes verify with no lockout. Because a
+> user always exists after bootstrap, the open/auto-admin branch (`!AuthOn`) never triggers in production.
+
 ### Observability & the IT-Admin views (.NET)
 
 - **Log handler exceptions, never swallow them.** Every `catch (Exception ex)` that returns a 500 calls
@@ -133,9 +142,20 @@ public payload) — every sign-in path calls `New-OpsSession`. `Handle-OpsLogin`
   milestone/ERP edits, doc lifecycle, and **logins/failed-logins**; keep new admin mutations audited.
 - **IT-Admin read views** live in the admin-gated `Handlers.Admin` switch (`sess.Admin` check) and are **read-only,
   no scope** (admin sees the whole instance): `/api-ops/admin/health` (latest `health_check_log` per check + last-OK),
-  `/storage` (`sys.dm_db_partition_stats` / `sys.database_files`), `/audit` and `/errors` (both **date-range +
-  row-capped** with a `truncated` flag so a large log can't swamp the UI). The `Admin(...)` signature takes a `Qs`
-  for these query params. The unauthenticated `GET /api-ops/health` (DB `SELECT 1`, 200/503) is the watchdog probe.
+  `/storage` (`sys.dm_db_partition_stats` / `sys.database_files`), `/audit`, `/errors` and **`/erp-api`** (all
+  **date-range + row-capped** with a `truncated` flag so a large log can't swamp the UI). The `Admin(...)` signature
+  takes a `Qs` for these query params. The unauthenticated `GET /api-ops/health` (DB `SELECT 1`, 200/503) is the
+  watchdog probe.
+- **Log every ERP call at the choke point (`server/ErpLog.cs`).** `Erp.Call` wraps every Swivel request — success
+  AND failure, incl. the previously-silent reads — into **`dbo.erp_api_log`** (endpoint, ok/HTTP-status, duration,
+  the ERP's error text, bounded req/resp summaries). **`ErpLog.Begin(actor, station, ref)`** opens an `AsyncLocal`
+  scope so the calls of one operation share a **`corr_id`** (a doc agree's `/booking/get` + `/booking/update`); the
+  scopes live in `EditPush`/`DocAgree`/`DocIssue` and the ErpFiles/ErpEdit handlers. Logging **never throws** (falls
+  back to `Log.Error`). Mock-mode calls are not logged. Surfaced via `/api-ops/admin/erp-api`.
+- **ERP connection at runtime (`server/Settings.cs`).** `Settings.ErpBaseUrl`/`ErpToken`/`ErpMock` read **`dbo.app_setting`**
+  (admin **ERP API** tab), overriding `ops.config.json` so the connection is fixable on-site with no file edit or
+  restart (`Settings.Load()` at startup, reloaded on save). The token is **never returned** by the API (GET reports
+  only `erpTokenSet`).
 
 **SWIVEL L!NK** (`/api-ops/link-oauth-login` → `Handle-LinkOAuthLogin`, an SQL-free public route): redeems the
 one-time `code` server-side at `SWIVEL_OAUTH_PROFILE_URL` (no client_id/secret), **verifies the echoed `state`**,
