@@ -8,6 +8,7 @@ using Ops;
 
 Config.Load();
 Auth.LoadAll();
+Settings.Load();   // runtime ERP-connection overrides from dbo.app_setting (admin "ERP API" tab); falls back to Config
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -355,6 +356,7 @@ MapData("/api-ops/roster", Handlers.Roster);
 MapData("/api-ops/companies", Handlers.Companies);
 MapData("/api-ops/ports", Handlers.Ports);
 MapData("/api-ops/inbound", Handlers.Inbound);
+MapData("/api-ops/new-bookings", Handlers.NewBookings);   // newly-received bookings, scoped to the caller's station(s)
 MapData("/api-ops/my-tasks", Handlers.MyTasks);
 MapData("/api-ops/worklist", Handlers.Worklist);
 MapData("/api-ops/find", Handlers.Find);

@@ -158,6 +158,9 @@ public static partial class Erp
             }
             catch (Exception ex) { return new(false, true, false, new(), "mock agree failed: " + ex.Message); }
         }
+        // one correlation scope: the /booking/get + /booking/update of this agree share a corr id, attributed to the
+        // agreeing user + booking, so the admin ERP API tab shows them as one operation.
+        using var _erpScope = ErpLog.Begin(by, SA(sa, "station"), booking["bookingNo"]?.ToString() ?? "");
         // READ-MERGE-WRITE: fetch the live booking first; abort if absent (no duplicate create). Echo serviceCode +
         // the terms codes from the live booking (presentation-only draft boxes must never change them).
         var cur = BookingGet(booking["bookingNo"]!.ToString(), booking["moduleTypeCode"]!.ToString(), "");
@@ -230,6 +233,8 @@ public static partial class Erp
             }
             catch (Exception ex) { return new(false, "", true, new(), "mock issue failed: " + ex.Message); }
         }
+        // one correlation scope for the whole issue (uploads + event + optional generate), attributed to the issuer.
+        using var _erpScope = ErpLog.Begin(by, SA(sa, "station"), bookingNo);
         var steps = new List<string>();
         foreach (var fl in files)
         {

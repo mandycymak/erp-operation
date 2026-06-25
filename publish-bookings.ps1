@@ -69,14 +69,9 @@ foreach($r in $routeRows){
   $mv=("$($r.match_value)").Trim(); $k="$($r.match_kind)|$mv"
   if(-not $routeByKV.ContainsKey($k) -or [int]$r.priority -lt $routeByKV[$k].pri){ $routeByKV[$k]=@{ dest=("$($r.dest_station)").Trim(); pri=[int]$r.priority } }
 }
-function Resolve-Dest($agent,$ctrl,$roagent,$pod){
-  $cands=@()
-  foreach($pair in @(@{k='agent';v=$agent},@{k='ctrl';v=$ctrl},@{k='roagent';v=$roagent},@{k='pod';v=$pod})){
-    if($pair.v){ $h=$routeByKV["$($pair.k)|$($pair.v)"]; if($h){ $cands+=$h } }
-  }
-  if(-not $cands.Count){ return $null }
-  ($cands | Sort-Object pri | Select-Object -First 1).dest
-}
+# NB: destination resolution + the offshore decision are done inline in the per-booking loop now (a booking can fan
+# out to SEVERAL stations), so the old single-winner Resolve-Dest/RouteHit helpers were removed. The route map is
+# still keyed "kind|value" -> @{dest;pri} in $routeByKV below.
 if(-not $routeByKV.Count){ Write-Host "WARNING: no station_route_map rules for origin $StationCode - run seed-station-map.ps1 first." -ForegroundColor Yellow }
 
 # watermark upsert (here-string; COALESCE preserves last_src_at when @lsa is NULL, e.g. an empty run)
@@ -103,12 +98,12 @@ function Filter-Cols($db,$table,$wantCsv){
 }
 # ---- candidate bookings (mode-specific) ----
 if($Mode -eq 'Air'){
-  $cols=Filter-Cols $Station 'awbhead' "booking, jobn, mawb, hawb, agn2_code, rcustomer, cgne_code, cgne_name, pol, pod, carr, flight1, f_date1, cargoready, routing, frt_terms, shpr_code, shpr_name, po_no, t_book_qty, t_book_wgt, crtdate, upddate"
+  $cols=Filter-Cols $Station 'awbhead' "booking, jobn, mawb, hawb, agn2_code, rcustomer, cgne_code, cgne_name, not1_code, pol, pod, carr, flight1, f_date1, cargoready, routing, frt_terms, shpr_code, shpr_name, po_no, t_book_qty, t_book_wgt, crtdate, upddate"
   # No bill/awb-type filter: the destination office (resolved below) decides what's cross-station, not the doc
   # stage. (The bill_type='B' filter belongs to the dashboard's de-dup, not to this feed.)
   $sql="SELECT TOP $Limit $cols FROM dbo.awbhead WHERE bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
 } else {
-  $cols=Filter-Cols $Station 'blhead' "sono, blno, jobn, mobl, agn2_code, rcustomer, roagent, cgne_code, cgne_name, service, spotid, t_book_qty, t_book_wgt, ref, pol, pod, carr, vessel_1, voyage_1, departure2, cargoready, routing, shpr_code, shpr_name, crtdate, upddate"
+  $cols=Filter-Cols $Station 'blhead' "sono, blno, jobn, mobl, agn2_code, rcustomer, roagent, cgne_code, cgne_name, not1_code, service, spotid, t_book_qty, t_book_wgt, ref, pol, pod, carr, vessel_1, voyage_1, departure2, cargoready, routing, shpr_code, shpr_name, crtdate, upddate"
   $sql="SELECT TOP $Limit $cols FROM dbo.blhead WHERE bound='O' AND (crtdate>@since OR upddate>@since) ORDER BY crtdate DESC"
 }
 $bk = Query $Station $sql @{ since=$since }
@@ -139,34 +134,54 @@ for($off=0; $off -lt $codes.Count; $off+=500){
 
 $feedMerge=@"
 MERGE dbo.inbound_booking_feed AS t
-USING (SELECT @ss source_station,@mode mode,@bn booking_no) s
-  ON t.source_station=s.source_station AND t.mode=s.mode AND t.booking_no=s.booking_no
-WHEN MATCHED THEN UPDATE SET dest_station=@dest,source_jobn=@jobn,master_bill=@mbl,house_bill=@hbl,
+USING (SELECT @ss source_station,@mode mode,@bn booking_no,@dest dest_station) s
+  ON t.source_station=s.source_station AND t.mode=s.mode AND t.booking_no=s.booking_no AND t.dest_station=s.dest_station
+WHEN MATCHED THEN UPDATE SET source_jobn=@jobn,master_bill=@mbl,house_bill=@hbl,
   shipper_code=@shc,shipper_name=@shn,ctrl_code=@ctc,ctrl_name=@ctn,agent_code=@agc,agent_name=@agn,
   consignee_code=@cgnc,consignee_name=@cgnn,cargo_type=@ctype,service=@svc,container_no=@cno,po_no=@pono,
   spot_id=@spot,booking_qty=@bqty,booking_wgt=@bwgt,
   pol=@pol,pod=@pod,carrier=@carr,vessel_flight=@vf,etd=@etd,cargo_ready=@cr,incoterm=@inco,
-  cargo_summary=@cs,booking_date=@bd,light=@light,src_updated_at=@srcup,
+  cargo_summary=@cs,booking_date=@bd,light=@light,src_updated_at=@srcup,offshore=@offshore,dest_role=@drole,
   feed_status=CASE WHEN t.feed_status='consumed' THEN t.feed_status ELSE 'open' END,updated_at=SYSDATETIME()
 WHEN NOT MATCHED THEN INSERT(source_station,mode,booking_no,dest_station,source_jobn,master_bill,house_bill,
   shipper_code,shipper_name,ctrl_code,ctrl_name,agent_code,agent_name,consignee_code,consignee_name,cargo_type,
   service,container_no,po_no,spot_id,booking_qty,booking_wgt,pol,pod,carrier,vessel_flight,etd,cargo_ready,
-  incoterm,cargo_summary,booking_date,feed_status,assigned_to,linked_job_no,light,src_updated_at,updated_at)
+  incoterm,cargo_summary,booking_date,feed_status,assigned_to,linked_job_no,light,src_updated_at,offshore,dest_role,updated_at)
   VALUES(@ss,@mode,@bn,@dest,@jobn,@mbl,@hbl,@shc,@shn,@ctc,@ctn,@agc,@agn,@cgnc,@cgnn,@ctype,@svc,@cno,@pono,
-  @spot,@bqty,@bwgt,@pol,@pod,@carr,@vf,@etd,@cr,@inco,@cs,@bd,'open',NULL,NULL,@light,@srcup,SYSDATETIME());
+  @spot,@bqty,@bwgt,@pol,@pod,@carr,@vf,@etd,@cr,@inco,@cs,@bd,'open',NULL,NULL,@light,@srcup,@offshore,@drole,SYSDATETIME());
 "@
 
 $today=(Get-Date).Date
-$n=0; $skipSelf=0; $skipNoRoute=0; $maxSrc=$null
+$n=0; $skipSelf=0; $skipNoRoute=0; $offshoreN=0; $maxSrc=$null
 foreach($b in $bk){
   # track high-water across ALL candidates (so skipped rows still advance the watermark)
   foreach($d in @($b.crtdate,$b.upddate)){ if($d -is [datetime] -and (-not $maxSrc -or $d -gt $maxSrc)){ $maxSrc=$d } }
   $agent=("$($b.agn2_code)").Trim(); $ctrl=("$($b.rcustomer)").Trim()
-  $roagent= if($Mode -eq 'Air'){ '' } else { ("$($b.roagent)").Trim() }
+  $roagent= if($Mode -eq 'Air'){ '' } else { ("$($b.roagent)").Trim() }   # Air has no routing-agent field
+  $notify=("$($b.not1_code)").Trim(); $consignee=("$($b.cgne_code)").Trim()
   $pod=("$($b.pod)").Trim()
-  $dest=Resolve-Dest $agent $ctrl $roagent $pod
-  if(-not $dest){ $skipNoRoute++; continue }
-  if($dest -eq $StationCode){ $skipSelf++; continue }
+  # A booking can concern SEVERAL stations: the destination agent's office AND any office named as notify/consignee/
+  # routing/controlling agent. Fan out one feed row PER involved station. Per station, OFFSHORE = it is named ONLY in
+  # an off-bill role (controlling/routing agent) and in NO bill-visible role (destination agent/notify/consignee) -
+  # those off-bill roles don't print on the HBL/HAWB, so it's a cross-trade move we coordinate, not a real import to us.
+  $involved=@{}
+  foreach($pr in @(
+    @{role='agent';    v=$agent;     pri=10; bill=$true},
+    @{role='notify';   v=$notify;    pri=12; bill=$true},
+    @{role='consignee';v=$consignee; pri=14; bill=$true},
+    @{role='roagent';  v=$roagent;   pri=15; bill=$false},
+    @{role='ctrl';     v=$ctrl;      pri=20; bill=$false})){
+    $rv="$($pr.v)".Trim(); if(-not $rv){ continue }
+    $h=$routeByKV["$($pr.role)|$rv"]; if(-not $h){ continue }
+    $st=$h.dest; if(-not $st -or $st -eq $StationCode){ continue }
+    if(-not $involved.ContainsKey($st)){ $involved[$st]=@{ billVisible=$false; offBill=$false; bestPri=9999; bestRole='' } }
+    $e=$involved[$st]
+    if($pr.bill){ $e.billVisible=$true } else { $e.offBill=$true }
+    if([int]$pr.pri -lt [int]$e.bestPri){ $e.bestPri=[int]$pr.pri; $e.bestRole=$pr.role }
+  }
+  # POD fallback ONLY when no party role routed anywhere (POD = physical discharge port -> a real arrival, not offshore)
+  if($involved.Count -eq 0 -and $pod){ $h=$routeByKV["pod|$pod"]; if($h -and $h.dest -and $h.dest -ne $StationCode){ $involved[$h.dest]=@{ billVisible=$true; offBill=$false; bestPri=200; bestRole='pod' } } }
+  if($involved.Count -eq 0){ $skipNoRoute++; continue }
   # key the feed on the SO number (sono/booking) — the stable id that exists from booking stage onward; at booking
   # time blno/mawb/jobn are still empty, so keying on those would collide every booking-stage row onto one feed row.
   $bn= if($Mode -eq 'Air'){ ("$($b.booking)").Trim() } else { ("$($b.sono)").Trim() }
@@ -194,24 +209,28 @@ foreach($b in $bk){
   }
   # pre-arrival urgency: R if ETD within 3 days, A within a week, else G (importer can prep earlier than arrival)
   $light='G'; if($etd -is [datetime]){ $days=($etd.Date - $today).TotalDays; if($days -le 3){ $light='R' } elseif($days -le 7){ $light='A' } }
-  Exec $feedMerge @{
-    ss=$StationCode; mode=$Mode; bn=$bn; dest=$dest; jobn=("$($b.jobn)").Trim()
-    mbl=$(if($mbl){$mbl}else{$null}); hbl=$(if($hbl){$hbl}else{$null})
-    shc=$(if(("$($b.shpr_code)").Trim()){("$($b.shpr_code)").Trim()}else{$null}); shn=$(if(("$($b.shpr_name)").Trim()){("$($b.shpr_name)").Trim()}else{$null})
-    ctc=$(if($ctrl){$ctrl}else{$null}); ctn=$(if($nameByCode.ContainsKey($ctrl)){$nameByCode[$ctrl]}else{$null})
-    agc=$(if($agent){$agent}else{$null}); agn=$(if($nameByCode.ContainsKey($agent)){$nameByCode[$agent]}else{$null})
-    cgnc=$(if($cgnc){$cgnc}else{$null}); cgnn=$(if($cgnn){$cgnn}else{$null})
-    ctype=$(if($ctype){$ctype}else{$null}); svc=$(if($svc){$svc}else{$null}); cno=$(if($cno){$cno}else{$null})
-    pono=$(if($pono){$pono}else{$null}); spot=$(if($spot){$spot}else{$null})
-    bqty=$(if($bqty){$bqty}else{$null}); bwgt=$(if($bwgt){$bwgt}else{$null})
-    pol=$(if(("$($b.pol)").Trim()){("$($b.pol)").Trim()}else{$null}); pod=$(if($pod){$pod}else{$null})
-    carr=$(if(("$($b.carr)").Trim()){("$($b.carr)").Trim()}else{$null}); vf=$(if($vf){$vf}else{$null})
-    etd=(DOnly $etd); cr=(DOnly $b.cargoready); inco=$(if($inco){$inco}else{$null})
-    cs=$cs; bd=(DOnly $b.crtdate); light=$light; srcup=$b.upddate
+  foreach($destSt in @($involved.Keys)){
+    $e=$involved[$destSt]
+    $offshore = if($e.offBill -and -not $e.billVisible){ 1 } else { 0 }
+    Exec $feedMerge @{
+      ss=$StationCode; mode=$Mode; bn=$bn; dest=$destSt; jobn=("$($b.jobn)").Trim()
+      mbl=$(if($mbl){$mbl}else{$null}); hbl=$(if($hbl){$hbl}else{$null})
+      shc=$(if(("$($b.shpr_code)").Trim()){("$($b.shpr_code)").Trim()}else{$null}); shn=$(if(("$($b.shpr_name)").Trim()){("$($b.shpr_name)").Trim()}else{$null})
+      ctc=$(if($ctrl){$ctrl}else{$null}); ctn=$(if($nameByCode.ContainsKey($ctrl)){$nameByCode[$ctrl]}else{$null})
+      agc=$(if($agent){$agent}else{$null}); agn=$(if($nameByCode.ContainsKey($agent)){$nameByCode[$agent]}else{$null})
+      cgnc=$(if($cgnc){$cgnc}else{$null}); cgnn=$(if($cgnn){$cgnn}else{$null})
+      ctype=$(if($ctype){$ctype}else{$null}); svc=$(if($svc){$svc}else{$null}); cno=$(if($cno){$cno}else{$null})
+      pono=$(if($pono){$pono}else{$null}); spot=$(if($spot){$spot}else{$null})
+      bqty=$(if($bqty){$bqty}else{$null}); bwgt=$(if($bwgt){$bwgt}else{$null})
+      pol=$(if(("$($b.pol)").Trim()){("$($b.pol)").Trim()}else{$null}); pod=$(if($pod){$pod}else{$null})
+      carr=$(if(("$($b.carr)").Trim()){("$($b.carr)").Trim()}else{$null}); vf=$(if($vf){$vf}else{$null})
+      etd=(DOnly $etd); cr=(DOnly $b.cargoready); inco=$(if($inco){$inco}else{$null})
+      cs=$cs; bd=(DOnly $b.crtdate); light=$light; srcup=$b.upddate; offshore=$offshore; drole=$e.bestRole
+    }
+    $n++; if($offshore){ $offshoreN++ }
   }
-  $n++
 }
 # advance watermark to the max source date seen this run
 Exec $wmMerge @{ ws=$StationCode; wm=$Mode; lsa=$(if($maxSrc){$maxSrc}else{$null}) }
 $opsCn.Close()
-Write-Host ("Published {0} cross-station booking(s) to inbound_booking_feed. (skipped: {1} self, {2} no-route)" -f $n,$skipSelf,$skipNoRoute) -ForegroundColor Green
+Write-Host ("Published {0} cross-station booking(s) to inbound_booking_feed ({3} offshore). (skipped: {1} self, {2} no-route)" -f $n,$skipSelf,$skipNoRoute,$offshoreN) -ForegroundColor Green

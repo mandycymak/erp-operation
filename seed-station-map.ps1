@@ -122,20 +122,28 @@ foreach($s in $stations){
   $origin="$($s.code)".Trim(); $db="$($s.database)".Trim()
   foreach($m in $modes){
     try{
-      if($m -eq 'Air'){ $rows=Query $db "SELECT DISTINCT agn2_code, rcustomer FROM dbo.awbhead WHERE bound='O'" @{} }
-      else            { $rows=Query $db "SELECT DISTINCT agn2_code, rcustomer, roagent FROM dbo.blhead WHERE bound='O'" @{} }
+      if($m -eq 'Air'){ $rows=Query $db "SELECT DISTINCT agn2_code, rcustomer, cgne_code, not1_code FROM dbo.awbhead WHERE bound='O'" @{} }
+      else            { $rows=Query $db "SELECT DISTINCT agn2_code, rcustomer, roagent, cgne_code, not1_code FROM dbo.blhead WHERE bound='O'" @{} }
     } catch { Write-Host ("  [skip] {0}/{1}: {2}" -f $origin,$m,$_.Exception.Message) -ForegroundColor DarkYellow; continue }
     $codes=@(); foreach($r in $rows){ $codes+=("$($r.agn2_code)").Trim(); $codes+=("$($r.rcustomer)").Trim(); if($r.PSObject.Properties['roagent']){ $codes+=("$($r.roagent)").Trim() } }
     $codes=@($codes|Where-Object{$_}|Select-Object -Unique)
     foreach($r in $rows){
-      $pairs=@(@{k='agent';v=("$($r.agn2_code)").Trim();pri=10}, @{k='ctrl';v=("$($r.rcustomer)").Trim();pri=20})
-      if($r.PSObject.Properties['roagent']){ $pairs+=,@{k='roagent';v=("$($r.roagent)").Trim();pri=15} }
+      # bill-VISIBLE party roles (agent/notify/consignee) + OFF-BILL roles (ctrl/roagent). track=$true only for the
+      # office-candidate roles (agent/ctrl/roagent) so the unmapped DISCOVERY report isn't flooded with real
+      # consignee/notify customers (those create a rule ONLY when they happen to equal an office owncode).
+      $pairs=@(
+        @{k='agent';    v=("$($r.agn2_code)").Trim(); pri=10; track=$true},
+        @{k='notify';   v=("$($r.not1_code)").Trim(); pri=12; track=$false},
+        @{k='consignee';v=("$($r.cgne_code)").Trim(); pri=14; track=$false},
+        @{k='ctrl';     v=("$($r.rcustomer)").Trim();  pri=20; track=$true}
+      )
+      if($r.PSObject.Properties['roagent']){ $pairs+=,@{k='roagent';v=("$($r.roagent)").Trim();pri=15;track=$true} }
       foreach($pair in $pairs){
         $code=("$($pair.v)").Trim(); if(-not $code){ continue }
         $dest=$ownToStation[$code.ToUpper()]; if(-not $dest){ $dest=$fmToStation[$code] }
         if($dest -and $dest -ne $origin){
           Exec $routeMerge @{ o=$origin; k=$pair.k; v=$code; d=$dest; p=$pair.pri; note="auto: site.owncode" }; $routeN++
-        } elseif(-not $dest){ $unmapped["$origin|$code"]=$null }
+        } elseif(-not $dest -and $pair.track){ $unmapped["$origin|$code"]=$null }
       }
     }
     # resolve names for the unmapped codes of this origin (for the discovery report)

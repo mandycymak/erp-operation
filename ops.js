@@ -98,6 +98,7 @@ async function init() {
   $('#tasksBtn').onclick = () => $('#tasksPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   $('#closeDrawer').onclick = closeDrawer; $('#drawerBg').onclick = closeDrawer;
   wireFind();
+  wireBookings();
   refreshAll();
 }
 
@@ -112,6 +113,44 @@ function wireFind() {
 }
 function openFind() { const v = $('#findView'); if (!v) return; v.style.display = 'flex'; const i = $('#findText'); if (i) i.focus(); }
 function closeFind() { const v = $('#findView'); if (v) v.style.display = 'none'; }
+
+// ---------- New bookings (newly-received bookings for the operator's station(s), scoped server-side) ----------
+function wireBookings() {
+  const b = $('#bkgBtn'); if (b) b.onclick = openBookings;
+  const c = $('#bkgClose'); if (c) c.onclick = closeBookings;
+  const v = $('#bkgView'); if (v) v.addEventListener('click', e => { if (e.target === v) closeBookings(); });
+  const s = $('#bkgSearch'); if (s) s.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadBookings(); } else if (e.key === 'Escape') closeBookings(); });
+}
+function openBookings() { const v = $('#bkgView'); if (!v) return; v.style.display = 'flex'; loadBookings(); }
+function closeBookings() { const v = $('#bkgView'); if (v) v.style.display = 'none'; }
+async function loadBookings() {
+  const feed = $('#bkgFeed'); if (!feed) return;
+  feed.innerHTML = '<div class="find-msg muted">' + esc(tr('Loading…')) + '</div>';
+  const q = ($('#bkgSearch') && $('#bkgSearch').value.trim()) || '';
+  let d;
+  try { d = await api('/api-ops/new-bookings' + (q ? ('?q=' + encodeURIComponent(q)) : '')); }
+  catch (e) { feed.innerHTML = '<div class="find-msg">' + esc(tr('Could not load bookings.')) + '</div>'; return; }
+  const rows = arr(d.rows);
+  $('#bkgSub').textContent = (d.count != null ? d.count : rows.length) + ' ' + tr('booking(s)') + ' · ' + (d.from || '') + ' → ' + (d.to || '');
+  if (!rows.length) { feed.innerHTML = '<div class="find-msg muted">' + esc(tr('No new bookings for your station(s) in this window.')) + '</div>'; return; }
+  feed.innerHTML = '';
+  rows.forEach(b => {
+    const card = el('div', 'mcard G bkgrow');
+    const lane = (b.pol || '') + (b.pod ? ' → ' + b.pod : '');
+    const stChip = b.status === 'notified' ? '<span class="chip arrived">' + esc(tr('notified')) + '</span>'
+      : (b.status === 'failed' ? '<span class="chip nospace">' + esc(tr('alert failed')) + '</span>' : '');
+    const contact = [b.factoryContact, b.factoryEmail].filter(Boolean).join(' · ');
+    card.innerHTML =
+      '<div class="r1"><span class="chip bkgstage">' + esc(tr('BOOKING')) + '</span>' +
+        '<span class="mref">' + esc(b.bookingNo || b.jobNo || '—') + '</span>' +
+        '<span class="mwho">' + esc(b.shipperName || '') + '</span>' +
+        '<span class="mspacer"></span>' + stChip + '</div>' +
+      '<div class="r2">' + [esc(b.station + ' ' + b.mode), esc(lane), contact ? esc(tr('factory') + ': ' + contact) : '',
+        b.srcCreated ? esc(tr('received') + ' ' + b.srcCreated) : ''].filter(Boolean).join('  ·  ') + '</div>';
+    if (b.jobNo) card.onclick = () => { closeBookings(); openShipment(b.jobNo, b.bookingNo || b.jobNo); };
+    feed.appendChild(card);
+  });
+}
 function buildUserPicker() {
   const sel = $('#userPicker'); sel.innerHTML = '';
   state.roster.forEach(u => { const o = el('option'); o.value = u; o.textContent = u; if (u === state.user) o.selected = true; sel.appendChild(o); });
@@ -539,8 +578,11 @@ function inboundCard(r) {
     ? '<span class="pty" data-q="' + esc(code || name) + '" title="' + esc(tr(title) + ' — ' + tr('click to search the feed for this company')) + '">' + tr(lbl) + ' ' + esc(name || code) + '</span>' : '';
   const pty = [mkPty('shpr', r.shipperName, r.shipperCode, 'shipper'), mkPty('cgne', r.consigneeName, r.consigneeCode, 'consignee'),
     mkPty('agnt', r.agentName, r.agentCode, 'agent (agn2)')].filter(Boolean).join('  ·  ');
+  // OFFSHORE: we're only an off-bill party (controlling/routing agent) — not the destination agent/notify/consignee
+  // shown on the bill — so this is a cross-trade move we coordinate, not a real import arriving to us.
+  const offTag = r.offshore ? '<span class="chip offshore" title="' + esc(tr('Offshore: we are only the controlling/routing agent (not shown on the bill) — not an actual import to us')) + '">' + esc(tr('OFFSHORE')) + '</span>' : '';
   c.innerHTML =
-    '<div class="r1"><span class="mref">' + esc(r.bookingNo) + '</span>' +
+    '<div class="r1"><span class="mref">' + esc(r.bookingNo) + '</span>' + offTag +
       (r.incoterm ? '<span class="minco">' + esc(r.incoterm) + '</span>' : '') +
       '<span class="mwho" title="' + esc(ctrl ? tr('controlling customer (rcustomer)') : tr('consignee')) + '">' + headWho + '</span><span class="mspacer"></span>' + asg + '</div>' +
     '<div class="ib-dates">' + dateRow + '</div>' +
@@ -733,6 +775,8 @@ function miniCard(r) {
   const today = (ME && ME.today) ? new Date(ME.today + 'T00:00:00') : new Date();
   const isNew = r.anchor && (today - new Date(r.anchor + 'T00:00:00')) / 86400000 < 7;
   const newTag = isNew ? '<span class="chip newbk" title="' + esc(tr('new booking - created') + ' ' + (r.anchor || '')) + '">' + esc(tr('NEW')) + '</span>' : '';
+  // booking-stage record (pre-house booking): flag it so operators see it's not yet a confirmed house bill/AWB
+  const bkgTag = (r.billStage === 'booking') ? '<span class="chip bkgstage" title="' + esc(tr('Booking stage - not yet a house bill/AWB')) + '">' + esc(tr('BOOKING')) + '</span>' : '';
   // primary id: the PER-SHIPMENT number the operator/customer recognises, never the internal synthetic key
   // and never the job number first (one job no can cover many house bills). Lead with the house bill, then the
   // booking (sono) — both per-HBL — then the job no, then the synthetic key as a last resort.
@@ -764,7 +808,7 @@ function miniCard(r) {
   const pty = [mkPty('shpr', r.shipperCode, 'shipper'), mkPty('cgne', r.consigneeCode, 'consignee'), mkPty('agnt', r.agentCode, 'agent (agn2)')].filter(Boolean).join('  ·  ');
   c.innerHTML =
     '<div class="r1">' +
-      '<span class="mref">' + (primary || '—') + '</span>' + newTag + inco +
+      '<span class="mref">' + (primary || '—') + '</span>' + bkgTag + newTag + inco +
       '<span class="mwho" title="' + esc(tr('controlling customer (rcustomer)')) + '">' + esc(who || '—') + '</span>' +
       '<span class="mspacer"></span>' + sev + note +
     '</div>' +

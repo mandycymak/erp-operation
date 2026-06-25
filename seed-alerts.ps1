@@ -9,7 +9,12 @@ param(
   [string]$ConfigPath=(Join-Path $PSScriptRoot "ops.config.json"),
   [string]$Station="pgshkg", [string]$StationCode="HKG",
   [ValidateSet('Sea','Air')][string]$Mode='Sea',
-  [datetime]$AsOf=[datetime]"2023-04-10", [int]$Limit=60, [int]$LeadDays=4
+  [datetime]$AsOf=[datetime]"2023-04-10", [int]$Limit=60, [int]$LeadDays=4,
+  # -Delta: incremental pull - only shipments created OR edited since the per-(station,mode) high-water in
+  # dbo.alert_watermark (the delta core of the listener; lets a high-frequency refresh stay cheap). Default mode
+  # (no -Delta) is the newest-N snapshot as of -AsOf, used for the initial backfill. -WindowDays bounds the FIRST
+  # delta run (no watermark yet) to the last N days so it can't pull all history at once.
+  [switch]$Delta, [int]$WindowDays=2
 )
 $ErrorActionPreference="Stop"
 . (Join-Path $PSScriptRoot "ops-eval.ps1")
@@ -68,22 +73,48 @@ function Wrap-Ntext($csv,[string[]]$ntextCols){
 $defs = Query $opsDb "SELECT milestone_code,bound,name,seq,phase_anchor,qualify_rule,complete_rule,sla_type,sla_offset_val,sla_offset_unit,sla_direction,sla_anchor,mode FROM dbo.milestone_def WHERE active=1"
 $evmap = Query $opsDb "SELECT milestone_code,bound,source_kind,source_table,source_field,match_value,module_match FROM dbo.milestone_evidence_map WHERE active=1"
 
-# ---- candidate shipments: active house bills/AWBs as of AsOf, recent first (mode-specific source table) ----
+# ---- candidate shipments (mode-specific source table) ----
+# Two selection modes share the same column list + enrichment:
+#   FULL  (default): the newest-N active house bills/AWBs as of -AsOf - the initial backfill snapshot.
+#   DELTA (-Delta) : only rows created OR edited since the per-(station,mode) high-water (dbo.alert_watermark),
+#                    OLDEST change first so a TOP cap never skips a row (the next run resumes at the new water-
+#                    mark). 'upddate' is selected so the watermark advances on edits, not just new records.
+$since=$null
+if($Delta){
+  # read the high-water as a real [datetime] and pass it as a TYPED datetime parameter (not a string) - the ERP
+  # crtdate/upddate are plain datetime, and a string round-trip either fails to convert (7-digit fractional) or
+  # forces a truncate-to-second that re-pulls the boundary row every run. A typed param keeps full precision.
+  $wm = Query $opsDb "SELECT last_src_at FROM dbo.alert_watermark WHERE station=@s AND mode=@m" @{ s=$StationCode; m=$Mode }
+  if($wm.Count -and $wm[0].last_src_at){ $since=$wm[0].last_src_at } else { $since=(Get-Date).AddDays(-$WindowDays) }
+}
 if($Mode -eq 'Air'){
   # awbhead = the air waybill table; awb_type H=house, S=straight/direct are the operator's shipments (M=consol master, B=booking)
-  $cols="jobn,hawb,mawb,po_no,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,t_book_qty,t_book_wgt,t_book_cwt,t_rece_qty,ttl_cwt,t_book_cbm,t_rece_cbm,to1,to3,dest,deli,flight2,flight3,f_date2,f_date3,f_time1,f_time2,f_time3,fa_date1,fa_date2,fa_date3,rout_by_1,pol_name,pod_name,to1_name,to3_name,dest_name,deli_name,goods_delivery,remark,special_remark"
+  $cols="jobn,hawb,mawb,po_no,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,upddate,t_book_qty,t_book_wgt,t_book_cwt,t_rece_qty,ttl_cwt,t_book_cbm,t_rece_cbm,to1,to3,dest,deli,flight2,flight3,f_date2,f_date3,f_time1,f_time2,f_time3,fa_date1,fa_date2,fa_date3,rout_by_1,pol_name,pod_name,to1_name,to3_name,dest_name,deli_name,goods_delivery,remark,special_remark"
   $cols=Filter-Cols $Station 'awbhead' $cols
   $cols=Wrap-Ntext $cols @('remark','special_remark')
-  # crtdate carries a TIME component; @a is a date string (midnight) - use < @a+1day so rows created ON the AsOf day are included
-  $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.awbhead WHERE awb_type IN('H','S') AND bound IN('O','I') AND crtdate<DATEADD(day,1,@a) AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
+  # include awb_type 'B' (booking) so newly-received bookings show in the worklist (flagged bill_stage='booking')
+  # before they become a house AWB; 'H'/'S' are the confirmed house/straight bills.
+  $base="FROM dbo.awbhead WHERE awb_type IN('B','H','S') AND bound IN('O','I') AND comp_date IS NULL"
 } else {
-  $cols="jobn,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,vessel_2,voyage_2,onboard1,onboard2,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure1,departure2,arrival1,arrival1d,arrival2,arrival2d,arrival3,deli,dest,pol_name,pod_name,deli_name,dest_name,available_date,spotid,sono,t_book_qty,t_book_wgt,t_book_cbm,t_rece_qty,t_rece_wgt,t_rece_cbm,remark,crtdate"
+  $cols="jobn,bill_type,blno,mobl,bound,frttype,routing,pol,pod,carr,salesman,picuser,crtuser,upduser,status,declaration,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,vessel_1,voyage_1,vessel_2,voyage_2,onboard1,onboard2,cargoready,cargorece,customs_clearance,ts_blno,ams_hbl,edidate,atd_date,eta_delivery,goods_delivery,comp_date,ata_date,not1_date,release_date,broker,customer_pickup,wh_code,ad_date,ware_date,pd_date,departure1,departure2,arrival1,arrival1d,arrival2,arrival2d,arrival3,deli,dest,pol_name,pod_name,deli_name,dest_name,available_date,spotid,sono,t_book_qty,t_book_wgt,t_book_cbm,t_rece_qty,t_rece_wgt,t_rece_cbm,remark,crtdate,upddate"
   $cols=Filter-Cols $Station 'blhead' $cols
   $cols=Wrap-Ntext $cols @('remark')
-  # crtdate carries a TIME component; @a is a date string (midnight) - use < @a+1day so rows created ON the AsOf day are included
-  $ships = Query $Station "SELECT TOP $Limit $cols FROM dbo.blhead WHERE bill_type='H' AND bound IN('O','I') AND crtdate<DATEADD(day,1,@a) AND comp_date IS NULL ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
+  # include bill_type 'B' (booking) alongside 'H' (house) so new bookings show in the worklist (flagged bill_stage).
+  $base="FROM dbo.blhead WHERE bill_type IN('B','H') AND bound IN('O','I') AND comp_date IS NULL"
 }
-if(-not $ships.Count){ Write-Host "No candidate $Mode shipments in $Station as of $($AsOf.ToString('yyyy-MM-dd'))." -ForegroundColor Red; exit }
+if($Delta){
+  # (crtdate>since OR upddate>since) catches new AND edited; CASE picks the later of the two for a stable ASC order
+  # that tolerates a NULL upddate. TOP is a safety cap, not the working set - oldest-first means no row is skipped.
+  $ships = Query $Station "SELECT TOP $Limit $cols $base AND (crtdate>@since OR upddate>@since) ORDER BY (CASE WHEN upddate>crtdate THEN upddate ELSE crtdate END) ASC" @{ since=$since }
+} else {
+  # crtdate carries a TIME component; @a is a date string (midnight) - use < @a+1day so rows created ON the AsOf day are included
+  $ships = Query $Station "SELECT TOP $Limit $cols $base AND crtdate<DATEADD(day,1,@a) ORDER BY crtdate DESC" @{ a=$AsOf.ToString('yyyy-MM-dd') }
+}
+if(-not $ships.Count){
+  if($Delta){ Write-Host "No changed $Mode shipments in $Station since $since (watermark unchanged)." -ForegroundColor DarkGray }
+  else { Write-Host "No candidate $Mode shipments in $Station as of $($AsOf.ToString('yyyy-MM-dd'))." -ForegroundColor Red }
+  exit
+}
 
 # ---- batch PIC evidence for the selected jobns (one query) ----
 $jobns=@($ships | ForEach-Object { "$($_.jobn)" } | Where-Object { $_ })
@@ -210,24 +241,26 @@ WHEN MATCHED THEN UPDATE SET station=@station,mode=@mode,cargo_type=@cargo,bound
   shipper_code=@shpr,consignee_code=@cgne,agent_code=@agent,ctrl_code=@ctrl,pol=@pol,pod=@pod,
   route_summary=@rsum,route_json=@rjson,detail_json=@djson,commodity=@commod,sono=@sono,
   available_date=@avail,eta_delivery=@etadel,goods_delivery=@gdel,erp_ref=@eref,erp_job_no=@erpjob,
-  milestone_checklist=@chk,updated_at=SYSDATETIME()
+  bill_stage=@bstage,milestone_checklist=@chk,updated_at=SYSDATETIME()
 WHEN NOT MATCHED THEN INSERT(job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,
   last_updated_by,anchor_date,etd,eta,atd,ata,job_status,worst_light,open_amber,open_red,next_due,auto_done,manual_done,
   consignee_name,shipper_name,cust_contact,cust_phone,cust_email,vessel_voyage,container_summary,container_count,
   total_weight,total_cbm,arrival_state,sort_key,house_bill,master_bill,incoterm,cust_ref,container_no,liner_so,cargo_ready,
   shipper_code,consignee_code,agent_code,ctrl_code,pol,pod,
   route_summary,route_json,detail_json,commodity,sono,available_date,eta_delivery,goods_delivery,erp_ref,erp_job_no,
-  milestone_checklist,updated_at)
+  bill_stage,milestone_checklist,updated_at)
   VALUES(@job,@station,@mode,@cargo,@bound,@lane,@carrier,@cust,@salesman,@pic,@cby,@uby,@anchor,@etd,@eta,@atd,@ata,
   @jstat,@worst,@amber,@red,@nextdue,@auto,@man,@cgname,@shipname,@ccontact,@cphone,@cemail,@vv,@csum,@ccount,
   @twgt,@tcbm,@astate,@skey,@house,@master,@inco,@cref,@cno,@lso,@cready,
   @shpr,@cgne,@agent,@ctrl,@pol,@pod,
   @rsum,@rjson,@djson,@commod,@sono,@avail,@etadel,@gdel,@eref,@erpjob,
-  @chk,SYSDATETIME());
+  @bstage,@chk,SYSDATETIME());
 "@
 function DOnly($d){ if($d -is [datetime]){ $d.ToString('yyyy-MM-dd') } else { $null } }
 $n=0; $dist=@{G=0;A=0;R=0}
 foreach($b in $ships){
+  # booking stage flag: awb_type/bill_type 'B' = a pre-house booking (worklist shows it as 'Booking'), else 'house'.
+  $bstage= if($Mode -eq 'Air'){ if("$($b.awb_type)".Trim() -eq 'B'){'booking'}else{'house'} } else { if("$($b.bill_type)".Trim() -eq 'B'){'booking'}else{'house'} }
   $ship= if($Mode -eq 'Air'){ New-AirContext $b } else { New-ShipContext $b }
   $S=@{ ship=$ship; asof=$AsOf; lead=$LeadDays; bound=$ship.bound; evmap=$evmap; picDocs=@($picByJob["$($b.jobn)"]) }
   $res=Eval-Milestones $S $defs $null
@@ -354,12 +387,20 @@ foreach($b in $ships){
     shpr=$shprCode; cgne=$cgneCode; agent=$agentCode; ctrl=$ctrlCode; pol=$polCode; pod=$podCode;
     rsum=$routeSummary; rjson=$routeJson; djson=$detailJson; commod=$commod; sono=$(if("$sono".Trim()){"$sono".Trim()}else{$null});
     avail=(DOnly $availDate); etadel=(DOnly $etaDel); gdel=(DOnly $gdsDel); eref=$(if($null -ne $b.ref){"$($b.ref)"}else{$null});
-    chk=($checklist | ConvertTo-Json -Depth 8 -Compress) }
+    bstage=$bstage; chk=($checklist | ConvertTo-Json -Depth 8 -Compress) }
   # Transition cleanup: this source row (erp_ref) maps to exactly one alert. If a prior pass stored it under a
   # different job_no (a synthetic key before jobn was assigned, or the legacy empty-key collapse row), drop it.
   if($null -ne $b.ref){ Exec "DELETE FROM dbo.shipment_alerts WHERE station=@st AND mode=@md AND erp_ref=@er AND job_no<>@jb" @{ st=$StationCode; md=$Mode; er="$($b.ref)"; jb=$jobNo } }
   $dist[$res.worst]++; $n++
 }
+# DELTA: advance the high-water to the latest source change consumed this run (MAX over crtdate/upddate of the
+# pulled rows). COALESCE keeps the prior mark if nothing came back, so an empty run never rewinds progress.
+if($Delta){
+  $maxSrc=$null
+  foreach($s in $ships){ foreach($t in @($s.crtdate,$s.upddate)){ if($t -is [datetime] -and ($null -eq $maxSrc -or $t -gt $maxSrc)){ $maxSrc=$t } } }
+  Exec "MERGE dbo.alert_watermark AS t USING (SELECT @s ss,@m mm) x ON t.station=x.ss AND t.mode=x.mm WHEN MATCHED THEN UPDATE SET last_src_at=COALESCE(@lsa,t.last_src_at),run_at=SYSDATETIME() WHEN NOT MATCHED THEN INSERT(station,mode,last_src_at,run_at) VALUES(@s,@m,@lsa,SYSDATETIME());" @{ s=$StationCode; m=$Mode; lsa=$maxSrc }
+}
 $opsCn.Close()
-Write-Host "Seeded $n $Mode shipment_alerts rows for $StationCode (as of $($AsOf.ToString('yyyy-MM-dd')))." -ForegroundColor Green
+$asOfNote = if($Delta){ "delta since $since" } else { "as of $($AsOf.ToString('yyyy-MM-dd'))" }
+Write-Host "Seeded $n $Mode shipment_alerts rows for $StationCode ($asOfNote)." -ForegroundColor Green
 Write-Host ("  worst_light:  R={0}  A={1}  G={2}" -f $dist.R,$dist.A,$dist.G) -ForegroundColor Cyan

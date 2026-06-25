@@ -105,7 +105,7 @@ public static partial class Handlers
             "cust_email,vessel_voyage,container_summary,container_count,total_weight,total_cbm,arrival_state," +
             "house_bill,master_bill,incoterm,cust_ref,container_no,liner_so,CONVERT(varchar(10),cargo_ready,23) cargo_ready," +
             "shipper_code,consignee_code,agent_code,ctrl_code," +
-            "commodity,sono,route_summary,CONVERT(varchar(10),available_date,23) available_date," +
+            "commodity,sono,bill_stage,route_summary,CONVERT(varchar(10),available_date,23) available_date," +
             "CONVERT(varchar(10),eta_delivery,23) eta_delivery,CONVERT(varchar(10),goods_delivery,23) goods_delivery," +
             "CONVERT(varchar(10),sort_key,23) sort_key FROM dbo.shipment_alerts " + w +
             "ORDER BY bound, CASE arrival_state WHEN 'arrived' THEN 0 WHEN 'no_space' THEN 0 WHEN 'arriving' THEN 1 WHEN 'customs_window' THEN 1 WHEN 'planning' THEN 2 WHEN 'cargo_pending' THEN 2 WHEN 'on_track' THEN 3 ELSE 9 END, sort_key, CASE worst_light WHEN 'R' THEN 0 WHEN 'A' THEN 1 ELSE 2 END";
@@ -203,6 +203,8 @@ public static partial class Handlers
                 ctrlCode = Db.Str(Db.G(r, "ctrl_code")),
                 commodity = Db.Str(Db.G(r, "commodity")),
                 sono = Db.Str(Db.G(r, "sono")),
+                billStage = Db.Str(Db.G(r, "bill_stage")),   // 'booking' (pre-house) vs 'house'; UI shows a Booking badge
+
                 routeSummary = Db.Str(Db.G(r, "route_summary")),
                 availableDate = Db.Str(Db.G(r, "available_date")),
                 etaDelivery = Db.Str(Db.G(r, "eta_delivery")),

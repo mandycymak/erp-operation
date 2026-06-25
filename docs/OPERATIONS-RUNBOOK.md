@@ -60,8 +60,12 @@ All under `<OPS_ROOT>`. Rotated by `purge-ops.ps1` when over the size cap (defau
 | `ops-health.log` | watchdog failures (what alerted, when) | file |
 | `ops-backup.log` | each backup run + prune result | file |
 | `dbo.erp_edit_log` | ERP data corrections, **before -> after** per field | Change log -> "ERP data edits" |
+| `dbo.erp_api_log` | **every** Swivel ERP API call (read & write): endpoint, result, error, timing, corr id | Change log -> "ERP API calls" |
 | `dbo.doc_event_log` | draft document lifecycle (incl. customer IP) | Change log -> "Documents" |
 | `dbo.milestone_event_log` | every milestone state change | Change log -> "Milestones" |
+| `dbo.app_user` / `app_user_scope` | logins, roles, row-level scope (SQL is the source of truth) | Admin -> Users |
+| `dbo.booking_alert` | new-booking -> factory(shipper) alerts: contact, lane, status, channel | SQL (`watch-bookings.ps1`) |
+| `dbo.alert_watermark` | per-station delta high-water for the worklist refresh | SQL |
 | `dbo.health_check_log` | watchdog results / history | Audit & Health -> Health board |
 | IIS `logs\stdout`, Windows Event Log | ANCM startup failures (app won't start) | server |
 
@@ -81,8 +85,22 @@ Start at the **Audit & Health** tab (health/storage) or **Change log** tab (reco
   the page stays usable - a `truncated` notice means narrow the window.)
 - **ERP Save failed** -> **Change log -> ERP data edits**: the row shows `erp_status` (rejected/error) and
   `erp_error` with the ERP's message, plus the before->after fields.
-- **Worklist looks stale** -> Health `feed` red. Check `Ops Worklist *` / `Ops Publish *` tasks ran
-  (Task Scheduler History / `LastTaskResult`). Re-run `seed-alerts.ps1` for that station to catch up.
+- **"Which ERP API errored?" / a push or file upload/download didn't work** -> **Change log -> ERP API calls**,
+  tick **failures only**. Every Swivel call is logged with its endpoint, HTTP status, the ERP's error message, and
+  timing; rows sharing a **corr** id are one operation (e.g. an agree = `/booking/get` + `/booking/update`). Hover a
+  row for the request/response. (Mock-mode calls are not logged - they never hit the ERP.) **No automatic retry**
+  yet: a transient failure must be re-attempted from the UI.
+- **Worklist looks stale** -> the worklist refreshes by **delta** (`seed-alerts.ps1 -Delta`): Air every ~5 min,
+  Sea every ~15 min, per `Ops Worklist *` tasks. Check the task ran (Task Scheduler History / `LastTaskResult`) and
+  that `dbo.alert_watermark` is advancing for that station/mode. To force a catch-up, run `seed-alerts.ps1 -Delta`
+  for the station, or re-run the **full backfill** (without `-Delta`) if the watermark looks wrong. Tune the cadence
+  with `register-ops-tasks.ps1 -WorklistAirMins / -WorklistSeaMins`. (Edits to shipments older than the first-run
+  `-WindowDays` window are picked up via `upddate` on the next run; a one-off full backfill re-syncs everything.)
+- **Factory didn't get a booking alert** -> check `dbo.booking_alert` for the booking (deduped by ERP ref): `status`
+  shows pending/notified/failed and `channel` shows how it fired. Recording happens even with `bookingAlert.enabled`
+  off (no send); to actually notify, set `bookingAlert.enabled=true` (+ `alerts.webhookUrl`/`smtp`, and
+  `emailFactory=true` to email the shipper directly). `factory_email` blank = the customer master (`custsub`) has no
+  email for that shipper.
 - **Login problems / suspicious access** -> **Change log -> All changes & logins** shows `login ok` /
   `login FAILED` with IP. Repeated failures from one IP = brute-force; the account is unaffected (failures never
   create a session).

@@ -29,6 +29,7 @@ public static partial class Handlers
             case "/api-ops/admin/storage": return AdminStorage();
             case "/api-ops/admin/audit": return AdminAudit(qs);
             case "/api-ops/admin/errors": return AdminErrors(qs);
+            case "/api-ops/admin/erp-api": return AdminErpApi(qs);
             default: return new Resp(new { error = "unknown admin endpoint" }, 404);
         }
     }
@@ -222,7 +223,17 @@ public static partial class Handlers
     static Resp AdminErpSettings(JsonElement j, Session sess, bool post)
     {
         if (!post)
-            return new Resp(new { partyGroupCode = ErpMap.Str("partyGroupCode").Trim(), forwarderCode = ErpMap.Str("forwarderCode").Trim() });
+            return new Resp(new
+            {
+                partyGroupCode = ErpMap.Str("partyGroupCode").Trim(),
+                forwarderCode = ErpMap.Str("forwarderCode").Trim(),
+                // ERP connection (effective value = SQL override else config); the token is NEVER returned, only whether one is set.
+                erpBaseUrl = Settings.ErpBaseUrl.Trim(),
+                erpMock = Settings.ErpMock,
+                erpTokenSet = Settings.ErpToken.Trim() != "",
+                erpFromDb = new { baseUrl = Settings.ErpBaseUrlFromDb, token = Settings.ErpTokenFromDb, mock = Settings.ErpMockFromDb },
+                live = !Erp.MockMode(),   // are real ERP calls actually happening now (url+token set AND mock off)
+            });
         var pg = j.Str("partyGroupCode").Trim();
         if (pg == "" || pg.Length > 32) return new Resp(new { error = "Party group code required (max 32 chars) - the company code, e.g. DEV" }, 400);
         var upd = new Dictionary<string, string> { ["partyGroupCode"] = pg };
@@ -233,8 +244,28 @@ public static partial class Handlers
             upd["forwarderCode"] = fc;
         }
         ErpMap.Set(upd);
-        Auth.Audit(sess.Username, $"erp-settings partyGroupCode={pg}{(upd.ContainsKey("forwarderCode") ? " forwarderCode=" + upd["forwarderCode"] : "")}");
-        return new Resp(new { ok = true });
+
+        // ---- ERP connection (stored in dbo.app_setting, overriding the config; applies immediately, no restart) ----
+        var sset = new Dictionary<string, string?>();
+        if (j.Has("erpBaseUrl"))
+        {
+            var url = j.Str("erpBaseUrl").Trim();
+            if (url != "" && !(url.StartsWith("http://") || url.StartsWith("https://"))) return new Resp(new { error = "ERP Base URL must start with http:// or https://" }, 400);
+            if (url.Length > 400) return new Resp(new { error = "ERP Base URL too long" }, 400);
+            sset[Settings.ErpBaseUrlKey] = url == "" ? null : url;   // blank -> delete -> fall back to config
+        }
+        if (j.Has("erpMock")) sset[Settings.ErpMockKey] = (j.Bool("erpMock") == true) ? "true" : "false";
+        // token: only changed when a non-blank value is supplied (the field is masked / write-only). An explicit
+        // clearToken=true reverts to the config token.
+        if (j.Has("clearToken") && j.Bool("clearToken") == true) sset[Settings.ErpTokenKey] = null;
+        else { var tok = j.Str("erpToken"); if (tok.Trim() != "") sset[Settings.ErpTokenKey] = tok.Trim(); }
+        if (sset.Count > 0) Settings.Set(sset);
+
+        var tokNote = sset.ContainsKey(Settings.ErpTokenKey) ? (sset[Settings.ErpTokenKey] == null ? " token=cleared" : " token=updated") : "";
+        Auth.Audit(sess.Username, $"erp-settings partyGroupCode={pg}{(upd.ContainsKey("forwarderCode") ? " forwarderCode=" + upd["forwarderCode"] : "")}" +
+            $"{(sset.ContainsKey(Settings.ErpBaseUrlKey) ? " baseUrl=" + (sset[Settings.ErpBaseUrlKey] ?? "(config)") : "")}" +
+            $"{(sset.ContainsKey(Settings.ErpMockKey) ? " mock=" + sset[Settings.ErpMockKey] : "")}{tokNote}");
+        return new Resp(new { ok = true, live = !Erp.MockMode() });
     }
 
     // ===================== IT-Admin: Audit & Health views (read-only, admin-gated) =====================
@@ -384,6 +415,34 @@ public static partial class Handlers
         int total = hit.Count;
         hit.Reverse();   // newest first
         return new Resp(new { from = fromS, to = toS, count = total, truncated = total > limit, items = hit.Take(limit).Select(x => x.rec).ToArray() });
+    }
+
+    // ERP API call log: every Swivel ERP call (read + write) from dbo.erp_api_log, so support can answer "which ERP
+    // API errored and why" in one place. Same DATE RANGE (default today) + row CAP + truncated signal as the other
+    // audit views. `fail=1` shows only failures (the usual diagnostic lens); optional `q` filters endpoint/ref/actor/
+    // error free-text. corr_id links the calls of one operation (a doc agree = booking/get + booking/update).
+    static Resp AdminErpApi(Qs qs)
+    {
+        int.TryParse(qs["limit"], out var limit); if (limit <= 0 || limit > 2000) limit = 500;
+        var q = (qs["q"] ?? "").Trim();
+        var failOnly = (qs["fail"] ?? "").Trim() is "1" or "true";
+        var (fromDt, toDt, fromS, toS) = DateRange(qs);
+
+        using var cn = new SqlConnection(Config.ConnStr); cn.Open();
+        var p = new Dictionary<string, object?> { ["n"] = limit + 1, ["from"] = fromDt, ["to"] = toDt };
+        var where = "WHERE occurred_at >= @from AND occurred_at < @to";
+        if (failOnly) where += " AND ok = 0";
+        if (q != "")
+        {
+            where += " AND (endpoint LIKE @q OR [ref] LIKE @q OR actor LIKE @q OR error LIKE @q OR corr_id LIKE @q)";
+            p["q"] = "%" + q + "%";
+        }
+        var rows = Db.RunQ(cn,
+            $"SELECT TOP (@n) CONVERT(varchar(19),occurred_at,120) AS occurred_at, corr_id, actor, station, direction, endpoint, [ref] AS ref, ok, http_status, duration_ms, error, req_summary, resp_summary " +
+            $"FROM dbo.erp_api_log {where} ORDER BY occurred_at DESC, id DESC", p);
+        bool truncated = rows.Count > limit;
+        if (truncated) rows = rows.Take(limit).ToList();
+        return new Resp(new { source = "erp-api", from = fromS, to = toS, failOnly, count = rows.Count, truncated, items = rows.Select(RawRow).ToArray() });
     }
 
     // from/to (yyyy-mm-dd) inclusive day range -> [fromDt 00:00, toDt+1day). Defaults to today when absent/invalid.

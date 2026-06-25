@@ -28,23 +28,46 @@ public static partial class Erp
 
     public sealed class ErpException : Exception { public ErpException(string m) : base(m) { } }
 
-    public static bool MockMode() => Config.ErpBaseUrl.Trim() == "" || Config.ErpToken.Trim() == "" || Config.ErpMock;
+    // effective ERP connection comes from Settings (SQL app_setting override, else ops.config.json) so a customer-site
+    // admin can correct the URL/token/mock from the admin "ERP API" tab without a restart.
+    public static bool MockMode() => Settings.ErpBaseUrl.Trim() == "" || Settings.ErpToken.Trim() == "" || Settings.ErpMock;
 
     // ---- low-level POST: bearer auth, JSON body, parsed JsonNode back; throws ErpException carrying the ERP's
     // own validation message on a non-2xx (ErpErr - so "Invalid carrier code" reaches the user, not just "(422)"). ----
     public static JsonNode? Call(string path, JsonObject payload)
     {
-        var baseUrl = Config.ErpBaseUrl.Trim().TrimEnd('/');
-        var tok = Regex.Replace(Config.ErpToken.Trim(), @"^(?i:Bearer\s+)", "").Trim();   // tolerate a pasted 'Bearer ' prefix
-        using var req = new HttpRequestMessage(HttpMethod.Post, baseUrl + path);
-        req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + tok);
-        req.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-        using var r = _http.Send(req);
-        string body;
-        using (var sr = new StreamReader(r.Content.ReadAsStream(), Encoding.UTF8)) body = sr.ReadToEnd();
-        if (!r.IsSuccessStatusCode) throw new ErpException(BuildErr((int)r.StatusCode, r.ReasonPhrase, body));
-        if (string.IsNullOrWhiteSpace(body)) return null;
-        try { return JsonNode.Parse(body); } catch { return null; }
+        var baseUrl = Settings.ErpBaseUrl.Trim().TrimEnd('/');
+        var tok = Regex.Replace(Settings.ErpToken.Trim(), @"^(?i:Bearer\s+)", "").Trim();   // tolerate a pasted 'Bearer ' prefix
+        // EVERY call is logged to dbo.erp_api_log (success + failure) so a customer-site admin can see which ERP API
+        // errored and why (ErpLog.Write never throws). The bearer token is a header, never in reqSummary.
+        var reqSummary = ErpLog.Summarize(payload);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int? status = null;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, baseUrl + path);
+            req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + tok);
+            req.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            using var r = _http.Send(req);
+            status = (int)r.StatusCode;
+            string body;
+            using (var sr = new StreamReader(r.Content.ReadAsStream(), Encoding.UTF8)) body = sr.ReadToEnd();
+            if (!r.IsSuccessStatusCode)
+            {
+                var err = BuildErr((int)r.StatusCode, r.ReasonPhrase, body);
+                ErpLog.Write(path, false, status, (int)sw.ElapsedMilliseconds, err, reqSummary, body);
+                throw new ErpException(err);
+            }
+            ErpLog.Write(path, true, status, (int)sw.ElapsedMilliseconds, null, reqSummary, body);
+            if (string.IsNullOrWhiteSpace(body)) return null;
+            try { return JsonNode.Parse(body); } catch { return null; }
+        }
+        catch (ErpException) { throw; }   // already logged above
+        catch (Exception ex)              // transport failure (timeout, DNS, connection reset) - no HTTP status
+        {
+            ErpLog.Write(path, false, status, (int)sw.ElapsedMilliseconds, ex.Message, reqSummary, null);
+            throw new ErpException(ex.Message);
+        }
     }
 
     static string BuildErr(int code, string? reason, string body)
@@ -333,6 +356,9 @@ public static partial class Erp
             }
             catch (Exception ex) { return new(false, true, false, new(), "mock edit failed: " + ex.Message); }
         }
+        // one correlation scope: the /booking/get + /booking/update of this edit share a corr id, attributed to the
+        // editor + booking, so the admin ERP API tab shows them as one operation.
+        using var _erpScope = ErpLog.Begin(by, "", bookingNo);
         var cur = BookingGet(bookingNo, module, forwarderCode);
         if (cur == null) return new(false, false, false, new(), $"booking '{bookingNo}' ({module}) not found via /booking/get - aborting so the update cannot create a new booking. Check partyGroupCode/forwarderCode (owncode) in erp-api-map.json and the booking number.");
         var bestEffort = ErpMap.Str("bookingUpdateMode").Trim().ToLowerInvariant() == "best-effort";

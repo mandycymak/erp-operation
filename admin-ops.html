@@ -235,11 +235,28 @@
       <b>Party group code</b> is the company/customer code (e.g. <code>DEV</code>) — required by the ERP.
       <b>Forwarder code</b> is the office <i>owncode</i> the data belongs to (where it goes, e.g. <code>S0001</code>=HKG);
       this is the fallback — each station's real owncode is resolved automatically from the ERP when available.
-      The bearer token is <b>not</b> here (it stays in the server config). Changes apply immediately — no restart.
+      Changes apply immediately — no restart.
     </div>
     <div class="frow">
       <div class="fcol" style="min-width:200px"><label>Party group code (company)</label><input id="ePartyGroup" autocomplete="off" placeholder="e.g. DEV"></div>
       <div class="fcol" style="min-width:240px"><label>Forwarder code (fallback owncode)</label><input id="eForwarder" autocomplete="off" placeholder="e.g. S0001"></div>
+    </div>
+
+    <h3 style="margin-top:18px">ERP connection</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">
+      The Swivel ERP HTTP API the app pushes to. Stored in the database (overrides the server config; no file edit, no
+      restart). Real ERP calls happen only when a <b>Base URL</b> and a <b>token</b> are set <b>and</b> "use mock" is off
+      — otherwise calls are mocked (nothing is sent). Status: <b><span id="eLive">—</span></b>.
+    </div>
+    <div class="frow">
+      <div class="fcol" style="min-width:320px"><label>ERP API Base URL</label><input id="eBaseUrl" autocomplete="off" placeholder="https://&lt;deployment&gt;-api.swivelsoftware.com"></div>
+    </div>
+    <div class="frow">
+      <div class="fcol" style="min-width:320px"><label>Bearer token <span id="eTokenState" class="muted" style="font-weight:normal"></span></label><input id="eToken" type="password" autocomplete="new-password" placeholder="paste to set / change — leave blank to keep"></div>
+      <div class="fcol" style="min-width:200px;justify-content:flex-end"><label class="muted" style="font-size:12px"><input type="checkbox" id="eClearToken"> clear token (use server config)</label></div>
+    </div>
+    <div class="frow">
+      <div class="fcol"><label class="muted" style="font-size:13px"><input type="checkbox" id="eMock"> use mock mode (do not call the real ERP)</label></div>
     </div>
     <div class="bar">
       <button class="primary" id="erpSaveBtn">Save ERP settings</button>
@@ -309,6 +326,20 @@
     <table class="usr" id="auErrTable">
       <thead><tr><th>When</th><th>Id</th><th>Where</th><th>Message</th></tr></thead>
       <tbody id="auErrBody"></tbody>
+    </table>
+
+    <h3 style="margin:18px 0 4px;font-size:14px">ERP API calls</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">Every Swivel ERP call (read &amp; write) from <code>dbo.erp_api_log</code> — so you can see which API errored and why. Rows sharing a <b>corr</b> id are one operation (e.g. an agree = booking/get + booking/update). Hover a row for the request/response.</div>
+    <div class="toolbar">
+      <span class="daterow">from <input id="apiFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> to <input id="apiTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"></span>
+      <label style="font-size:12px"><input id="apiFail" type="checkbox"> failures only</label>
+      <input id="apiSearch" type="search" autocomplete="off" placeholder="Filter (endpoint / ref / actor / error)…" style="font-size:12px">
+      <span class="count" id="auApiCount"></span>
+      <span class="trunc" id="auApiTrunc" style="display:none"></span>
+    </div>
+    <table class="usr" id="auApiTable">
+      <thead><tr><th>When</th><th>Corr</th><th>Actor</th><th>Stn</th><th>Dir</th><th>Endpoint</th><th>Ref</th><th>Result</th><th>ms</th><th>Error</th></tr></thead>
+      <tbody id="auApiBody"></tbody>
     </table>
   </section>
 </div>
@@ -467,19 +498,42 @@ function switchTab(name) {
 }
 
 /* ---------- ERP API identity (erp-api-map.json scalars) ---------- */
+function renderErpLive(d) {
+  const live = !!d.live;
+  $('#eLive').innerHTML = live
+    ? '<span style="color:#2a7">LIVE — real ERP calls</span>'
+    : '<span style="color:#c83">MOCK — calls are simulated</span>';
+  const tset = d.erpTokenSet, src = d.erpFromDb || {};
+  $('#eTokenState').textContent = tset
+    ? '(set' + (src.token ? ', in DB' : ', from config') + ' — leave blank to keep)'
+    : '(none set)';
+}
 async function loadErp() {
   const d = await api('/api-ops/admin/erp-settings');
   if (d.error) { $('#erpErr').textContent = d.error; return; }
   $('#ePartyGroup').value = d.partyGroupCode || '';
   $('#eForwarder').value = d.forwarderCode || '';
+  $('#eBaseUrl').value = d.erpBaseUrl || '';
+  $('#eMock').checked = !!d.erpMock;
+  $('#eToken').value = ''; $('#eClearToken').checked = false;
+  renderErpLive(d);
 }
 async function saveErp() {
   $('#erpErr').textContent = '';
-  const body = { partyGroupCode: $('#ePartyGroup').value.trim(), forwarderCode: $('#eForwarder').value.trim() };
+  const body = {
+    partyGroupCode: $('#ePartyGroup').value.trim(),
+    forwarderCode: $('#eForwarder').value.trim(),
+    erpBaseUrl: $('#eBaseUrl').value.trim(),
+    erpMock: $('#eMock').checked,
+    clearToken: $('#eClearToken').checked,
+  };
+  const tok = $('#eToken').value;            // only send a token when one was typed (the field is masked/write-only)
+  if (tok.trim() !== '') body.erpToken = tok;
   if (!body.partyGroupCode) { $('#erpErr').textContent = 'Party group code is required.'; return; }
   const r = await api('/api-ops/admin/erp-settings', { method: 'POST', body });
   if (r.error) { $('#erpErr').textContent = r.error; return; }
   $('#erpErr').innerHTML = '<span class="okline">✓ saved</span>';
+  loadErp();   // refresh the live/token status from the server
 }
 
 /* ---------- milestones & alerts (milestone_def editor) ---------- */
@@ -715,8 +769,29 @@ async function loadErrors() {
   });
 }
 
+async function loadErpApi() {
+  const r = rangeQs('#apiFrom', '#apiTo'); if (r === null) return;
+  const q = $('#apiSearch').value.trim(), fail = $('#apiFail').checked ? '&fail=1' : '';
+  const d = await api('/api-ops/admin/erp-api?' + r.replace(/^&/, '') + fail + (q ? ('&q=' + encodeURIComponent(q)) : ''));
+  const tb = $('#auApiBody');
+  if (d.error) { tb.innerHTML = '<tr><td colspan="10" class="muted">' + esc(d.error) + '</td></tr>'; $('#auApiCount').textContent = ''; showTrunc('#auApiTrunc', {}); return; }
+  const items = arr(d.items);
+  $('#auApiCount').textContent = (d.count != null ? d.count : items.length) + ' call(s)';
+  showTrunc('#auApiTrunc', d);
+  tb.innerHTML = items.length ? '' : '<tr><td colspan="10" class="muted">No ERP API calls in range.</td></tr>';
+  items.forEach(e => {
+    const tr = document.createElement('tr');
+    tr.title = (e.req_summary ? 'REQUEST:\n' + e.req_summary + '\n\n' : '') + (e.resp_summary ? 'RESPONSE:\n' + e.resp_summary : '');
+    const result = Number(e.ok) ? '<span style="color:#2a7">ok</span>' : '<span style="color:#c33">FAIL' + (e.http_status ? ' ' + e.http_status : '') + '</span>';
+    tr.innerHTML = '<td class="muted">' + esc(e.occurred_at) + '</td><td>' + esc(e.corr_id) + '</td><td>' + esc(e.actor) + '</td><td>' + esc(e.station) +
+      '</td><td>' + esc(e.direction) + '</td><td>' + esc(e.endpoint) + '</td><td>' + esc(e.ref) + '</td><td>' + result +
+      '</td><td class="muted">' + esc(e.duration_ms) + '</td><td>' + esc(e.error == null ? '' : e.error) + '</td>';
+    tb.appendChild(tr);
+  });
+}
+
 function loadAuditTab() { loadHealth(); loadStorage(); }
-function loadChangelogTab() { loadAudit(); loadErrors(); }
+function loadChangelogTab() { loadAudit(); loadErrors(); loadErpApi(); }
 
 (async function init() {
   const me = await api('/api-ops/me');
@@ -744,6 +819,8 @@ function loadChangelogTab() { loadAudit(); loadErrors(); }
   $('#docResetBtn').onclick = () => fillDocForm(null);
   loadDocs();
   $('#erpSaveBtn').onclick = saveErp;
+  // live feedback while typing/pasting the (masked) token, so you can tell the paste landed without revealing it
+  $('#eToken').oninput = () => { const n = $('#eToken').value.length; $('#eTokenState').textContent = n ? ('(' + n + ' characters entered — click Save to apply)') : '(none set)'; };
   loadErp();
   $('#auRefresh').onclick = loadAuditTab;
   $('#clRefresh').onclick = loadChangelogTab;
@@ -752,6 +829,8 @@ function loadChangelogTab() { loadAudit(); loadErrors(); }
   $('#auFrom').onchange = loadAudit; $('#auTo').onchange = loadAudit;
   $('#errSearch').onchange = loadErrors;
   $('#errFrom').onchange = loadErrors; $('#errTo').onchange = loadErrors;
+  $('#apiSearch').onchange = loadErpApi; $('#apiFail').onchange = loadErpApi;
+  $('#apiFrom').onchange = loadErpApi; $('#apiTo').onchange = loadErpApi;
 })();
 </script>
 </body>

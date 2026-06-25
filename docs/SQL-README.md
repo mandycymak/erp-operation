@@ -179,6 +179,46 @@ were untouched by the move.
 > `admin-audit.log` (change + **login/failed-login** audit) and `ops-error.log` (every server-side exception). The
 > **Change log** admin tab reads all of these, bounded by a date range + a row cap.
 
+### Logins, roles & scope (`app_user` + `app_user_scope`)
+
+| Table | Grain | Purpose |
+|---|---|---|
+| `app_user` | one row per user (PK `username`) | credentials + role + flags: `email` (the sign-in / L!NK federation key), `[role]` (admin/manager/operator), `is_admin`, `salt` + `pwd_hash` (`SHA256('salt:pwd')` lowercase hex), `auth_provider` (local/swivel/both), `language`, `primary_station`. |
+| `app_user_scope` | one row per (user, dim, code) | the row-level scope arrays, normalized: `dim` ∈ `team` / `station` / `access` / `erpuser`. |
+
+> Logins **used to live in the gitignored `users.json`**; they now live in SQL (ported from the sibling
+> erp-dashboard), so the customer maintains them in MSSQL and no credential file sits on the box. On first start the
+> .NET server (`server/Auth.cs` `SeedOrImport`) seeds a **default admin / admin123** when `app_user` is empty, or
+> imports a legacy `users.json` once (the file is then kept only as a backup). Because a user always exists after
+> bootstrap, the old open/auto-admin mode never triggers in production. Admin **Users** CRUD writes these tables
+> (whole-store rewrite in a transaction). `HashPwd` is unchanged from the file era, so imported hashes verify with no
+> lockout (a PBKDF2 upgrade is a possible later hardening pass).
+
+### Delta refresh + new-booking alerts (`alert_watermark`, `booking_alert`)
+
+| Table | Grain | Purpose |
+|---|---|---|
+| `alert_watermark` | per (station, mode) | the high-water `MAX(crtdate/upddate)` consumed by `seed-alerts.ps1 -Delta`, so each worklist refresh pulls only shipments created OR edited since the last run. This is what makes a tight refresh cadence (Air ~5 min, Sea ~15 min) cheap on the read-only ERP. Mirrors `feed_watermark` (which is keyed by the publishing origin). |
+| `booking_alert` | one per (station, mode, erp_ref) | one row per newly-received EXPORT booking detected by `watch-bookings.ps1`, deduped by the ERP ref so a booking is alerted once. Holds the resolved factory(shipper) contact/email, lane, `src_created`, and `status` (pending/notified/skipped/failed) + `channel`. Doubles as the audit/queue for the factory notification. |
+
+> **Why delta, not just "run more often":** the old full-fetch pulled the newest-N by *create* date, so an ETA/vessel edit on an older shipment was never refreshed. The delta filter `(crtdate>@since OR upddate>@since)` catches **new AND edited** rows, oldest-change first so a TOP cap never skips one. Measured on a live station: a delta query is ~10-50 ms (full active set is ~2,900 rows / 6 ms), so 30 stations x 2 modes every few minutes is light. Run the **full backfill once** (`seed-data.bat` / `seed-alerts` without `-Delta`) to populate history; the scheduled `-Delta` tasks then keep it fresh.
+
+### Runtime settings (`app_setting`)
+
+| Table | Grain | Purpose |
+|---|---|---|
+| `app_setting` | key/value (PK `name`) | runtime-editable settings that **override `ops.config.json`** so a customer-site admin can correct the **ERP connection** from the admin **ERP API** tab without editing a file or restarting: `erpBaseUrl`, `erpToken` (the bearer token — stored here so no secret sits in a file on the box; the DB is the access boundary), `erpMock`. A key absent/blank falls back to the config value. Read via `server/Settings.cs` (snapshot loaded at startup, reloaded on save). The token is **never returned** by the API — the admin GET reports only whether one is set. |
+
+> Real ERP calls happen only when an effective **Base URL** and **token** are set **and** `erpMock` is off
+> (`Erp.MockMode()` reads these via `Settings`); otherwise calls are mocked. The admin tab shows a **LIVE / MOCK**
+> status so you can see which mode you're in.
+
+### ERP API call log (`erp_api_log`)
+
+| Table | Grain | Purpose |
+|---|---|---|
+| `erp_api_log` | append-only, one row per Swivel ERP API call (read **and** write) | written at the single `Erp.Call` choke point (`server/Erp.cs`): `endpoint` (`/booking/update`, `/file/upload`, `/booking/get`, …), `direction` (read/write), `ok`, `http_status`, `duration_ms`, `error` (the ERP's own validation message), `actor`/`station`/`[ref]` (attribution), `corr_id` (links a multi-call operation — a doc agree = `/booking/get` + `/booking/update`), and bounded `req_summary`/`resp_summary`. Surfaced read-only via **Change log → ERP API calls** (`/api-ops/admin/erp-api`, date-range + cap + `failures only`). Answers "which ERP API errored and why" in one place. Indexed on `(occurred_at)` and `(corr_id)`. (Mock-mode calls are not logged — they never reach the ERP. No automatic retry yet.) |
+
 ### Data retention / growth (`purge-ops.ps1`)
 
 The schema is meant to hold only **active** operational state, but the aging was not enforced until
@@ -189,7 +229,8 @@ the config `retention` block:
 |---|---|---|
 | `shipment_alerts` | `updated_at` stale → `job_status='closed'`; then closed/void deleted | `staleDays 21` → `retainClosedDays 180` (≥ Find's recently-closed window) |
 | `inbound_booking_feed` | `updated_at` stale → deleted | `retainFeedDays 120` |
-| `milestone_event_log` / `doc_event_log` / `erp_edit_log` | `occurred_at` older than horizon | `auditRetainMonths 24` |
+| `milestone_event_log` / `doc_event_log` / `erp_edit_log` / `erp_api_log` | `occurred_at` older than horizon | `auditRetainMonths 24` |
+| `booking_alert` | `detected_at` older than horizon | `auditRetainMonths 24` |
 | `health_check_log` | `occurred_at` older than horizon | `healthRetainDays 90` |
 | `doc_attachment` | **only soft-deleted** (`deleted=1`) blobs by `uploaded_at` | `attachPurgeDays 60` (live attachments are never auto-deleted) |
 
@@ -274,6 +315,25 @@ S=direct; M=consol master, B=booking pipeline excluded). The line items are in `
 > (`Get-ErpCols`) therefore **does not probe column metadata** — it trusts the curated want-list and lets a
 > genuinely-missing column degrade gracefully. Never put a metadata query on a request path. See
 > [DEVELOPER-GUIDE.md §4](DEVELOPER-GUIDE.md).
+
+---
+
+## 4b. ERP field coverage — go-live reconciliation (the "what's missing" check)
+
+The pull/push field maps above are verified, but a few fields are **legitimately blank in the source ERP** or are
+**not echoed back** by the write API. Reconcile these against live SQL **per pilot station** before go-live (house
+rule: verify computed fields against the source ERP), and accept the residual gaps knowingly:
+
+| Area | Field | Known gap / what to check |
+|---|---|---|
+| Pull (Sea) | commodity | reads `blitem.commodity` (not the description column); blank for bookings with no commodity code — expected, not a bug. |
+| Pull (Air) | flight no. | a consolidated export house has an empty `flight1`; the seeder falls back to the **master** row's flight by MAWB. Confirm export flights populate. |
+| Pull (Air) | carrier | `awbhead.carr` is always empty on this ERP; the airline lives in `rout_by_1`. |
+| Push | every `writeKey` in `erp-edit-fields.json` | confirm each maps to a field `/booking/update` accepts; the read-merge guard (`Erp.cs EditPush`) re-sends the NewBooking-required keys (serviceCode/commodity/POL/POD, + carrier for Sea container edits) so editing one field never blanks the rest. |
+| Push | `linerAgentPartyCode` | the ERP stores it but **does not echo it back** in `/booking/get` or the BL columns; the editor overlays the last value from `erp_edit_log` and labels it "ERP read-back pending". |
+
+> After go-live, the **Change log → ERP API calls** tab (`erp_api_log`) shows every push and its result, so any
+> field the ERP silently rejects surfaces there as a failed `/booking/update` with the ERP's own message.
 
 ---
 

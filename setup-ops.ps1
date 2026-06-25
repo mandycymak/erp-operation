@@ -143,6 +143,9 @@ IF COL_LENGTH('dbo.shipment_alerts','cust_ref')     IS NULL ALTER TABLE dbo.ship
 IF COL_LENGTH('dbo.shipment_alerts','container_no') IS NULL ALTER TABLE dbo.shipment_alerts ADD container_no nvarchar(40) NULL;
 IF COL_LENGTH('dbo.shipment_alerts','liner_so')     IS NULL ALTER TABLE dbo.shipment_alerts ADD liner_so     nvarchar(40) NULL;
 IF COL_LENGTH('dbo.shipment_alerts','cargo_ready')  IS NULL ALTER TABLE dbo.shipment_alerts ADD cargo_ready  date          NULL;
+-- bill_stage: 'booking' (pre-house booking, awb_type/bill_type 'B') vs 'house' (confirmed house bill/AWB). Lets the
+-- worklist show newly-received bookings the moment they're created, flagged distinctly from confirmed shipments.
+IF COL_LENGTH('dbo.shipment_alerts','bill_stage')   IS NULL ALTER TABLE dbo.shipment_alerts ADD bill_stage   nvarchar(10) NULL;
 "@
 
 # --- 1.2d shipment_alerts party/route fields (added in place): the companies a shipment touches and the
@@ -309,6 +312,54 @@ if (Test-Path $notesFile) {
   }
 }
 
+# --- 2.10 app_user + app_user_scope - the login / role / row-level-scope store, ported from the sibling
+#     erp-dashboard (setup-warehouse.ps1 dbo.app_user/app_user_scope). Credentials used to live in the gitignored
+#     users.json file; they now live in SQL so the customer can maintain logins in their MSSQL environment and no
+#     credential file sits on the IIS box. The .NET server (server/Auth.cs SeedOrImport) does the one-time import
+#     of any existing users.json AND seeds a default admin/admin123 on first run when the table is empty - so this
+#     script only has to create the (empty) tables idempotently. is_admin gates admin-ops.html; the four scope
+#     dims (team|station|access|erpuser) are the inline arrays on the .NET UserRec, normalized one row per code. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.app_user') IS NULL
+CREATE TABLE dbo.app_user (
+  username       nvarchar(128) NOT NULL,
+  display_name   nvarchar(256) NULL,
+  email          nvarchar(256) NULL,        -- the sign-in / L!NK federation key
+  [role]         nvarchar(128) NULL,        -- admin|manager|operator
+  is_admin       bit           NOT NULL CONSTRAINT DF_app_user_admin DEFAULT 0,
+  salt           varchar(64)   NULL,        -- 16 hex chars
+  pwd_hash       varchar(128)  NULL,        -- SHA256('salt:pwd') lowercase hex (blank for swivel-only users)
+  auth_provider  nvarchar(16)  NOT NULL CONSTRAINT DF_app_user_authp DEFAULT 'local',  -- local|swivel|both
+  language       nvarchar(16)  NULL,        -- UI language preference ('' = follow browser/English)
+  primary_station nvarchar(128) NULL,
+  updated_at     datetime      NOT NULL CONSTRAINT DF_app_user_upd DEFAULT GETDATE(),
+  CONSTRAINT PK_app_user PRIMARY KEY (username)
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_app_user_email' AND object_id=OBJECT_ID('dbo.app_user'))
+  CREATE INDEX IX_app_user_email ON dbo.app_user(email);
+IF OBJECT_ID('dbo.app_user_scope') IS NULL
+CREATE TABLE dbo.app_user_scope (
+  username nvarchar(128) NOT NULL,
+  dim      varchar(20)   NOT NULL,          -- team|station|access|erpuser
+  code     nvarchar(128) NOT NULL,
+  CONSTRAINT PK_app_user_scope PRIMARY KEY (username, dim, code)
+);
+"@
+
+# --- 2.11 app_setting - runtime-editable key/value settings (ops DB) that OVERRIDE the read-only ops.config.json,
+#     so a customer-site admin can correct the ERP connection (erpBaseUrl / erpToken / erpMock) from the admin
+#     "ERP API" tab WITHOUT editing a file or restarting - and no secret sits in a file on the box. A key absent
+#     here falls back to the config value. value is NVARCHAR(MAX); the token is stored as-is (the DB is the access
+#     boundary, same protection level as the config file it replaces). ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.app_setting') IS NULL
+CREATE TABLE dbo.app_setting (
+  name       nvarchar(64)  NOT NULL CONSTRAINT PK_app_setting PRIMARY KEY,
+  value      nvarchar(max) NULL,
+  updated_at datetime      NOT NULL CONSTRAINT DF_app_setting_upd DEFAULT GETDATE()
+);
+"@
+
 # --- 2.1 milestone_def — config-driven matrix: qualify/complete rules + SLA per [milestone x bound] ---
 ExecSql $opsDb @"
 IF OBJECT_ID('dbo.milestone_def') IS NULL
@@ -473,6 +524,24 @@ IF COL_LENGTH('dbo.inbound_booking_feed','po_no')          IS NULL ALTER TABLE d
 IF COL_LENGTH('dbo.inbound_booking_feed','spot_id')        IS NULL ALTER TABLE dbo.inbound_booking_feed ADD spot_id        nvarchar(40)  NULL;  -- ship/spot id (blhead.spotid)
 IF COL_LENGTH('dbo.inbound_booking_feed','booking_qty')    IS NULL ALTER TABLE dbo.inbound_booking_feed ADD booking_qty    nvarchar(40)  NULL;
 IF COL_LENGTH('dbo.inbound_booking_feed','booking_wgt')    IS NULL ALTER TABLE dbo.inbound_booking_feed ADD booking_wgt    nvarchar(40)  NULL;
+-- offshore: 1 when THIS station is only an OFF-BILL party (controlling/routing agent) and NOT a bill-visible party
+--   (destination agent / notify / consignee). Those off-bill roles don't print on the HBL/HAWB, so the alert is for
+--   an offshore (cross-trade) move we coordinate, not an actual import arriving to us - flagged so it isn't mistaken
+--   for a real import. dest_role records which party matched (agent|notify|consignee|ctrl|roagent|pod) for clarity.
+IF COL_LENGTH('dbo.inbound_booking_feed','offshore')       IS NULL ALTER TABLE dbo.inbound_booking_feed ADD offshore bit NOT NULL CONSTRAINT DF_feed_offshore DEFAULT 0;
+IF COL_LENGTH('dbo.inbound_booking_feed','dest_role')      IS NULL ALTER TABLE dbo.inbound_booking_feed ADD dest_role nvarchar(16) NULL;
+-- A booking can concern MORE THAN ONE station (e.g. the destination agent's office AND a different office named as
+-- routing/controlling agent). The publisher now fans out one row PER involved station, so dest_station must be part
+-- of the primary key. Migrate the old 3-part PK -> 4-part (idempotent: only when dest_station isn't already in it).
+IF OBJECT_ID('dbo.inbound_booking_feed') IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM sys.index_columns ic
+  JOIN sys.indexes i ON i.object_id=ic.object_id AND i.index_id=ic.index_id
+  JOIN sys.columns  c ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+  WHERE i.is_primary_key=1 AND i.object_id=OBJECT_ID('dbo.inbound_booking_feed') AND c.name='dest_station')
+BEGIN
+  ALTER TABLE dbo.inbound_booking_feed DROP CONSTRAINT PK_inbound_feed;
+  ALTER TABLE dbo.inbound_booking_feed ADD CONSTRAINT PK_inbound_feed PRIMARY KEY (source_station, mode, booking_no, dest_station);
+END
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_feed_dest' AND object_id=OBJECT_ID('dbo.inbound_booking_feed'))
   CREATE INDEX IX_feed_dest ON dbo.inbound_booking_feed(dest_station, feed_status, etd)
     INCLUDE(mode,light,source_station,booking_no,source_jobn,shipper_name,ctrl_name,agent_name,pol,pod,assigned_to);
@@ -492,6 +561,52 @@ CREATE TABLE dbo.feed_watermark (
   run_at         datetime2   NOT NULL,
   CONSTRAINT PK_feed_watermark PRIMARY KEY (source_station, mode)
 );
+"@
+
+# --- X.4b alert_watermark — same high-water idea for the WORKLIST seeder (seed-alerts.ps1 -Delta): per
+#     (station, mode) MAX(crtdate/upddate) consumed, so each pass pulls only shipments created OR edited since the
+#     last run. This is what lets the worklist refresh run every few minutes cheaply (the delta core of the
+#     deferred listener-engine). Separate from feed_watermark (that one is keyed by the PUBLISHING origin). ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.alert_watermark') IS NULL
+CREATE TABLE dbo.alert_watermark (
+  station     nvarchar(8) NOT NULL,
+  mode        char(3)     NOT NULL,
+  last_src_at datetime2   NULL,           -- MAX(crtdate/upddate) consumed so far
+  run_at      datetime2   NOT NULL,
+  CONSTRAINT PK_alert_watermark PRIMARY KEY (station, mode)
+);
+"@
+
+# --- X.4c booking_alert - one row per NEWLY-RECEIVED booking detected by watch-bookings.ps1, so the factory
+#     (shipper) can be notified the moment a booking lands. Deduped by (station, mode, erp_ref) so a booking is
+#     alerted ONCE even though the watcher re-scans a recent window each run. Doubles as an audit/queue: status
+#     pending|notified|skipped|failed, the resolved factory contact/email, and which channel fired. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.booking_alert') IS NULL
+CREATE TABLE dbo.booking_alert (
+  id           bigint IDENTITY(1,1) PRIMARY KEY,
+  station      nvarchar(10) NOT NULL,
+  mode         char(3)      NOT NULL,
+  erp_ref      nvarchar(40) NOT NULL,     -- blhead.ref / awbhead.ref (the dedup key)
+  job_no       nvarchar(60) NULL,
+  booking_no   nvarchar(60) NULL,         -- sono / booking
+  shipper_code nvarchar(40) NULL,
+  shipper_name nvarchar(200) NULL,
+  factory_contact nvarchar(200) NULL,
+  factory_email   nvarchar(200) NULL,
+  pol          nvarchar(12) NULL,
+  pod          nvarchar(12) NULL,
+  src_created  datetime2    NULL,         -- ERP crtdate (how early we heard)
+  detected_at  datetime2    NOT NULL CONSTRAINT DF_bkalert_det DEFAULT SYSDATETIME(),
+  status       nvarchar(12) NOT NULL CONSTRAINT DF_bkalert_st DEFAULT 'pending',  -- pending|notified|skipped|failed
+  channel      nvarchar(20) NULL,         -- webhook|email|factory-email|none
+  notified_at  datetime2    NULL,
+  note         nvarchar(400) NULL,
+  CONSTRAINT UQ_booking_alert UNIQUE (station, mode, erp_ref)
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_bkalert_det' AND object_id=OBJECT_ID('dbo.booking_alert'))
+  CREATE INDEX IX_bkalert_det ON dbo.booking_alert(detected_at);
 "@
 
 # ============================================================================================================
@@ -629,6 +744,36 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_erpedit_job' AND object_
   CREATE INDEX IX_erpedit_job ON dbo.erp_edit_log(job_no, occurred_at);
 "@
 
+# --- D.5b erp_api_log — append-only log of EVERY Swivel ERP API call (read AND write), so support can answer
+#     "which API errored and why" from one place instead of hunting across erp_edit_log / doc_event_log / the flat
+#     ops-error.log. Written at the single Erp.Call choke point (server/Erp.cs) plus the previously-silent read
+#     paths (booking/get, file/enquiry, file/download). corr_id links the multi-call operations (a doc agree =
+#     booking/get + booking/update share one id). req_summary/resp_summary are BOUNDED truncations (not full
+#     business payloads). Read-only via the admin "ERP API" tab (/api-ops/admin/erp-api); trimmed by purge-ops.ps1. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.erp_api_log') IS NULL
+CREATE TABLE dbo.erp_api_log (
+  id          bigint IDENTITY(1,1) PRIMARY KEY,
+  occurred_at datetime2     NOT NULL CONSTRAINT DF_erpapi_at DEFAULT SYSDATETIME(),
+  corr_id     varchar(16)   NULL,        -- correlation id linking a multi-call operation
+  actor       nvarchar(80)  NULL,        -- app username on whose behalf the call ran ('' = system/job)
+  station     nvarchar(10)  NULL,
+  direction   varchar(8)    NOT NULL,    -- read|write
+  endpoint    nvarchar(64)  NOT NULL,    -- e.g. /booking/update, /file/upload, /booking/get
+  [ref]       nvarchar(60)  NULL,        -- job_no / booking key the call concerns (bracketed: ref is an ODBC reserved word)
+  ok          bit           NOT NULL,
+  http_status int           NULL,        -- HTTP status when known; NULL on transport failure / mock
+  duration_ms int           NULL,
+  error       nvarchar(max) NULL,        -- the ERP validation message / exception text on failure
+  req_summary nvarchar(2000) NULL,       -- truncated request (payload shape) for debugging a malformed call
+  resp_summary nvarchar(2000) NULL       -- truncated response body
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_erpapi_at'   AND object_id=OBJECT_ID('dbo.erp_api_log'))
+  CREATE INDEX IX_erpapi_at   ON dbo.erp_api_log(occurred_at);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_erpapi_corr' AND object_id=OBJECT_ID('dbo.erp_api_log'))
+  CREATE INDEX IX_erpapi_corr ON dbo.erp_api_log(corr_id);
+"@
+
 # --- D.6 health_check_log - append-only result trail written by ops-healthcheck.ps1 (the watchdog). The in-app
 #     IT-Admin "Audit & Health" tab reads it so support can see process state WITHOUT database access: the latest
 #     row per check_name is the current state, MAX(occurred_at WHERE status='ok') is "last OK", and a 'fail' row
@@ -649,9 +794,11 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_health_check' AND object
   CREATE INDEX IX_health_check ON dbo.health_check_log(check_name, occurred_at);
 "@
 
-Write-Host "Operational database [$opsDb] ready (18 tables + indexes):" -ForegroundColor Green
+Write-Host "Operational database [$opsDb] ready (24 tables + indexes):" -ForegroundColor Green
 Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
 Write-Host "  milestone_event_log, company_dim, port_dim, liner_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
 Write-Host "  doc_draft, doc_version, doc_review_token, doc_event_log, doc_attachment (draft document review)" -ForegroundColor Green
 Write-Host "  erp_edit_log (ERP master-code corrections audit), health_check_log (watchdog status trail)" -ForegroundColor Green
-Write-Host "Next: map the alias/evidence fields to real ERP columns, then run listener-engine.ps1 -Mode Sea on the pilot station." -ForegroundColor Cyan
+Write-Host "  app_user + app_user_scope (logins/roles/scope), erp_api_log (ERP API call+error log), app_setting (runtime ERP connection)" -ForegroundColor Green
+Write-Host "  alert_watermark (delta-pull high-water for seed-alerts -Delta), booking_alert (new-booking factory alerts)" -ForegroundColor Green
+Write-Host "Next: run seed-milestone-config.ps1, then start the .NET server (it seeds a default admin/admin123 on first run)." -ForegroundColor Cyan

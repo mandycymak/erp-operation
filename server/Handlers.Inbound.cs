@@ -75,7 +75,7 @@ public static partial class Handlers
             "ctrl_code,ctrl_name,agent_code,agent_name,consignee_code,consignee_name,cargo_type,service,container_no,po_no,spot_id,booking_qty,booking_wgt," +
             "pol,pod,carrier,vessel_flight,CONVERT(varchar(10),etd,23) etd," +
             "CONVERT(varchar(10),cargo_ready,23) cargo_ready,incoterm,cargo_summary,CONVERT(varchar(10),booking_date,23) booking_date," +
-            "feed_status,assigned_to,linked_job_no,light FROM dbo.inbound_booking_feed f " + w +
+            "feed_status,assigned_to,linked_job_no,light,offshore,dest_role FROM dbo.inbound_booking_feed f " + w +
             "ORDER BY CASE light WHEN 'R' THEN 0 WHEN 'A' THEN 1 ELSE 2 END, etd, source_station, source_jobn, booking_no";
         var rows = Db.RunQ(cn, sel, p);
 
@@ -119,6 +119,8 @@ public static partial class Handlers
                 assignedTo = Db.Str(Db.G(r, "assigned_to")),
                 linkedJobNo = Db.Str(Db.G(r, "linked_job_no")),
                 light = Db.Str(Db.G(r, "light")),
+                offshore = Db.IntOf(Db.G(r, "offshore")) == 1,   // we're only an off-bill party (ctrl/routing agent), not on the bill
+                destRole = Db.Str(Db.G(r, "dest_role")),         // which role routed it here (agent|notify|consignee|ctrl|roagent|pod)
             }).ToArray()
         };
     }

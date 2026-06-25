@@ -1,30 +1,27 @@
 {
   "_comment": "Deployment mapping for the Swivel 3rd-party ERP API (https://documents.swivelsoftware.com/3rd-erpapi.html). Used by erp-doc-api.ps1 when a draft HBL/HAWB is ISSUED. This file holds the NON-SECRET deployment codes (the bearer token lives in ops.config.json erpApi.token, gitignored). Every code here must match the corresponding ERP master (service type, status code, document type).",
-
   "_partyGroupCode": "Your Company Code - sent as partyGroupCode on every call (REQUIRED for real mode).",
   "partyGroupCode": "DEV",
-
   "_forwarderCode": "Forwarder Code - required by /file/upload and /document/generate.",
   "forwarderCode": "S0001",
-
   "_serviceCodeDefault": "serviceCode is REQUIRED by /booking/update and must match the Service Type Master in the ERP (e.g. CY/CY). Empty = issue is blocked with a clear error until configured.",
   "serviceCodeDefault": "FCL/FCL",
-
   "_commodityFallback": "commodity is REQUIRED by /booking/update; used when the shipment snapshot and the agreed description are both empty.",
   "commodityFallback": "GENERAL CARGO",
-
-  "_event": "The event stamped via /event/update when the document is issued. status must match the Status Code master in the ERP - per ops, the Transport Bill Confirm event maps to 'transportBill'.",
-  "event": { "status": "transportBill", "description": "Transport Bill Confirm" },
-
-  "_documentTypeCode": "ERP Document Type Code per doc type - used by /file/upload (attachment documentTypeCode) and /document/generate. The customer-agreed draft PDF is uploaded under this code; it MUST exist in the ERP Document Type master or /file/upload will reject it. Set to BL_REVIEW per ops (same code for HBL + HAWB).",
-  "documentTypeCode": { "HBL": "BL_REVIEW", "HAWB": "BL_REVIEW" },
-
-  "_generateDocument": "true = after saving data + event, also call /document/generate so the ERP produces the official house bill document.",
+  "_event": "The event stamped via /event/update when the document is issued. status must match the Status Code master in the ERP - per ops, the Transport Bill Confirm event maps to \u0027transportBill\u0027.",
+  "event": {
+    "status": "transportBill",
+    "description": "Transport Bill Confirm"
+  },
+  "_documentTypeCode": "ERP Document Type Code per doc type - used by /file/upload (attachment documentTypeCode) and /document/generate. The customer-agreed draft PDF is uploaded under this code; it MUST exist in the ERP Document Type master or /file/upload will reject it. Set to BL_REVIEW per ops (same code for HBL \u002B HAWB).",
+  "documentTypeCode": {
+    "HBL": "BL_REVIEW",
+    "HAWB": "BL_REVIEW"
+  },
+  "_generateDocument": "true = after saving data \u002B event, also call /document/generate so the ERP produces the official house bill document.",
   "generateDocument": false,
-
-  "_bookingUpdateMode": "strict = an ERP rejection of /booking/update aborts the issue. best-effort = the rejection is logged in the document history and the issue continues with /file/upload + /event/update. Flipped back to strict 2026-06-15: the old payload-invariant 'Departure date not active yet, Invalid carrier code' rejection is gone (live /booking/update returns ok once partyGroupCode=DEV + bookingParty.forwarderPartyCode=owncode are sent and POL/POD/service/commodity are read-merged from the live booking), so a real rejection now surfaces as an error.",
+  "_bookingUpdateMode": "strict = an ERP rejection of /booking/update aborts the issue. best-effort = the rejection is logged in the document history and the issue continues with /file/upload \u002B /event/update. Flipped back to strict 2026-06-15: the old payload-invariant \u0027Departure date not active yet, Invalid carrier code\u0027 rejection is gone (live /booking/update returns ok once partyGroupCode=DEV \u002B bookingParty.forwarderPartyCode=owncode are sent and POL/POD/service/commodity are read-merged from the live booking), so a real rejection now surfaces as an error.",
   "bookingUpdateMode": "strict",
-
-  "_bookingOverrides": "Optional last-step overrides applied to the /booking/update payload. Key = API property name; value = 'field:<doc field code>' (agreed document box), 'sa:<shipment_alerts column>' (snapshot), or 'const:<literal>'. Example: { \"freightTermsCode\": \"const:PP\" }.",
+  "_bookingOverrides": "Optional last-step overrides applied to the /booking/update payload. Key = API property name; value = \u0027field:\u003Cdoc field code\u003E\u0027 (agreed document box), \u0027sa:\u003Cshipment_alerts column\u003E\u0027 (snapshot), or \u0027const:\u003Cliteral\u003E\u0027. Example: { \u0022freightTermsCode\u0022: \u0022const:PP\u0022 }.",
   "bookingOverrides": {}
 }

@@ -364,6 +364,8 @@ public static partial class Handlers
         var fwd = s.OwnCode.Trim(); if (fwd == "") fwd = ErpMap.Str("forwarderCode").Trim();
         var ident = new Erp.PatchIdent(bookingNo, s.ModeKey, s.Bound, fwd);
         var (payload, sent) = Erp.BuildPatchPayload(changed, defs, ident, clean);
+        // outer correlation scope so the station is attributed; EditPush's inner scope inherits it (corr id + station).
+        using var _erpScope = ErpLog.Begin(me, s.Station, bookingNo);
         var erp = Erp.EditPush(payload, bookingNo, s.ModeKey, me, fwd);
         var changeRecs = changedCodes.Select(c => (object)new
         {

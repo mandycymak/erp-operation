@@ -26,6 +26,7 @@ public static partial class Handlers
         var cands = FileCandidates(isAir, Db.Str(Db.G(a, "sono")).Trim(), Db.Str(Db.G(a, "house_bill")).Trim(), Db.Str(Db.G(a, "master_bill")).Trim());
         if (!cands.Any(c => c.Val.Trim() != "")) return new { error = "no booking / bill number on this shipment to query the ERP" };
 
+        using var _erpScope = ErpLog.Begin(rs.Me, Db.Str(Db.G(a, "station")), job);
         var r = Erp.FileEnquiry(module, cands, Source.ForwarderCode(Db.Str(Db.G(a, "station"))));
         // doctypes whose upload would clear a milestone on THIS shipment (derived from the evidence map, cached)
         var dmap = DoctypeMap.Get(cn);
@@ -73,6 +74,7 @@ public static partial class Handlers
         var houseNo = Db.Str(Db.G(a, "house_bill")).Trim();
         var bookingNo = Db.Str(Db.G(a, "sono")).Trim(); if (bookingNo == "") bookingNo = Db.Str(Db.G(a, "master_bill")).Trim();
         var remark = $"Uploaded via Control Tower by {me} to clear '{doctype}'";
+        using var _erpScope = ErpLog.Begin(me, Db.Str(Db.G(a, "station")), job);
         var up = Erp.FileUpload(module, houseNo, bookingNo, doctype, v.Name, Convert.ToBase64String(v.Bytes), remark, Source.ForwarderCode(Db.Str(Db.G(a, "station"))));
         if (!up.Ok) { Auth.Audit(me, $"erp-file-upload {job} '{doctype}' FAILED: {up.Error}"); return new { error = "ERP upload failed: " + up.Error }; }
         // success: the upload is the proof - clear the milestone(s) locally
@@ -102,6 +104,7 @@ public static partial class Handlers
         var isAir = Db.Str(Db.G(a, "mode")) == "Air"; var module = isAir ? "AIR" : "SEA";
         var cands = FileCandidates(isAir, Db.Str(Db.G(a, "sono")).Trim(), Db.Str(Db.G(a, "house_bill")).Trim(), Db.Str(Db.G(a, "master_bill")).Trim());
         if (!cands.Any(c => c.Val.Trim() != "")) return null;
+        using var _erpScope = ErpLog.Begin(rs.Me, Db.Str(Db.G(a, "station")), job);
         var r = Erp.FileDownload(module, cands, file, Source.ForwarderCode(Db.Str(Db.G(a, "station"))));
         if (r.Mock || r.Bytes == null) return null;
         var name = r.FileName.Trim() != "" ? r.FileName.Trim() : (file != "" ? file : "erp-file");

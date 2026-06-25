@@ -27,7 +27,10 @@ jobs - then prove each worked from the browser.
       (`https://dotnet.microsoft.com/download/dotnet/10.0` -> "Hosting Bundle"; then run `iisreset`).
 - [ ] A **headless browser** present (Microsoft Edge or Google Chrome) - used to render issued bills to PDF.
 - [ ] A **TLS certificate** for the site hostname (real CA cert or imported into `LocalMachine\My`).
-- [ ] The **VPN is up** and the customer's source ERP SQL host is reachable, and the **ops DB server** is reachable.
+- [ ] **Network reachability** from this server to: the **ops DB**, the customer's **source ERP SQL** host (port 1433,
+      used by the scheduled seeders), and the **ERP HTTP API** host (used for push). **A VPN is only needed when you
+      deploy from *outside* the customer network** (e.g. our remote test box). Deployed **at the customer**, the server
+      is already on their network — **no VPN**; it just needs to reach those three endpoints (the ops DB can be local).
 - [ ] The build output (`server\publish\`) copied to the server, OR the .NET 10 **SDK** on a build box to publish.
 
 **Run these and confirm:**
@@ -80,7 +83,9 @@ Copy-Item "<OPS_ROOT>\ops.config.example.json" "<OPS_ROOT>\ops.config.<tenant>.j
     `opsServer` / `opsAuth` / `opsUser` / `opsPassword` (two-server mode); otherwise it uses the source server.
   - **Branding**: `appName`, `instanceName`, `appSubtitle`. **`stationCode`** = the home station this instance serves.
   - **`stations[]`**: one entry per branch `{ code, name, country, database }` (the source ERP DB per branch).
-  - **`erpApi`**: keep `"mock": true` until the customer's ERP write token is in hand.
+  - **`erpApi`**: keep `"mock": true` until the customer's ERP write token is in hand. (You can also set the **Base
+    URL / token / mock toggle later in the app** — **Admin -> ERP API** tab — which stores them in the ops DB and
+    applies immediately, no file edit or restart. The tab shows a **LIVE / MOCK** status.)
   - **`alerts`**: `webhookUrl` (Teams/Slack) and/or `smtp` for the watchdog (step 9). Empty = log only.
   - **`retention`**: the data-retention horizons - the defaults in the example are sensible; tune later if the
     customer's auditor specifies different periods.
@@ -97,21 +102,24 @@ re-running it is safe. The only prerequisite is that the login in your config ca
 DB already exists and the login is `db_owner`).
 
 - [ ] Run it:
-```powershell
+**One command does it (recommended):** `setup-database.bat` creates the ops DB (if absent) + all ~21 tables
+idempotently AND seeds the milestone matrix. Pass the tenant config through:
+```cmd
 cd "<OPS_ROOT>"
-.\setup-ops.ps1 -ConfigPath ".\ops.config.<tenant>.json"
+setup-database.bat -ConfigPath ".\ops.config.<tenant>.json"
 ```
-- [ ] Seed the milestone matrix (37 rule rows; reads config only, no ERP):
-```powershell
-.\seed-milestone-config.ps1 -ConfigPath ".\ops.config.<tenant>.json"
-```
-> **You should now see:** `Operational database [...] ready (18 tables + indexes)` from setup, and a milestone count
+(Or run the two scripts by hand: `.\setup-ops.ps1 -ConfigPath ...` then `.\seed-milestone-config.ps1 -ConfigPath ...`.)
+> **You should now see:** `Operational database [...] ready (21 tables + indexes)` from setup, and a milestone count
 > from the seeder. Confirm:
 > ```powershell
 > Invoke-Sqlcmd -ServerInstance "<opsServer>" -Database "<opsDb>" -Query "SELECT COUNT(*) AS tables FROM sys.tables; SELECT COUNT(*) AS milestones FROM dbo.milestone_def"
 > ```
-> `tables` >= 18 and `milestones` = 37. (No `Invoke-Sqlcmd`? Use SSMS, or you will also see the table list in the
+> `tables` >= 21 and `milestones` = 37. (No `Invoke-Sqlcmd`? Use SSMS, or you will also see the table list in the
 > app's **Audit & Health -> Storage** tab at step 10.)
+>
+> The logins/roles/scope now live in SQL (`dbo.app_user` + `dbo.app_user_scope`), not a JSON file. The first time the
+> app starts it seeds a **default admin (admin / admin123)** into `app_user` (or, if a legacy `users.json` is present,
+> imports it once and keeps the file only as a backup) - see step 10.
 
 ---
 
@@ -158,7 +166,13 @@ ALTER ROLE db_owner ADD MEMBER [IIS APPPOOL\<your-app-pool>];
 ## 7. Fill the operational data (seed, in this order)
 
 These read the **live ERP** (VPN must be up) and write only the ops DB. Run once now; step 8 schedules the repeats.
-Run per station listed in your config (`-Station` = the source DB name, `-StationCode` = the branch code).
+
+**One command does it (recommended):** `seed-data.bat` runs all the seeders below in order, looping every station in
+your config x Sea/Air:
+```cmd
+seed-data.bat -ConfigPath ".\ops.config.<tenant>.json"
+```
+Or run them by hand, per station (`-Station` = the source DB name, `-StationCode` = the branch code):
 
 - [ ] **Station map** (builds the cross-station routing): `.\seed-station-map.ps1 -ConfigPath ".\ops.config.<tenant>.json"`
 - [ ] **Ports**: `.\seed-ports.ps1 -ConfigPath ".\ops.config.<tenant>.json"`
@@ -173,9 +187,12 @@ Run per station listed in your config (`-Station` = the source DB name, `-Statio
 
 ## 8. Schedule the recurring jobs  **[admin]**
 
-`register-ops-tasks.ps1` registers every recurring job: the feed publishers (Sea 3x/day, Air 2h), the worklist
-refresh, the weekly master refreshes, **and the three governance jobs** - `Ops Backup` (nightly), `Ops Healthcheck`
-(every 25 min), `Ops Purge` (weekly). It MUST run elevated (it exits otherwise).
+`register-ops-tasks.ps1` registers every recurring job: the feed publishers (Sea 3x/day, Air 2h), the **delta
+worklist refresh** (`Ops Worklist *` = `seed-alerts.ps1 -Delta`, Air ~5 min / Sea ~15 min, so new & edited shipments
+show within minutes), the **new-booking factory-alert watcher** (`Ops Booking Watch *`, ~5 min), the weekly master
+refreshes, **and the three governance jobs** - `Ops Backup` (nightly), `Ops Healthcheck` (every 25 min), `Ops Purge`
+(weekly). Cadence is tunable: `-WorklistAirMins` / `-WorklistSeaMins` / `-BookingWatchMins`. It MUST run elevated (it
+exits otherwise). **Run the full data fill (step 7) first** - the delta tasks only pull *changes* after that baseline.
 
 - [ ] Run it from an **elevated** shell:
 ```powershell
@@ -208,16 +225,19 @@ refresh, the weekly master refreshes, **and the three governance jobs** - `Ops B
 
 ---
 
-## 10. Create the first user, then verify everything from the browser
+## 10. Sign in as the default admin, change its password, then add users
 
-Until a `users.json` exists the app is in **open mode** (no login). Creating the first admin turns auth ON.
+The app is **secure-by-default**: on first start it seeded a **default admin** into SQL, so there is no open/no-login
+mode to close. (If you migrated from an older deploy that had a `users.json`, those accounts were imported instead -
+sign in with an existing admin and skip the password step.)
 
-- [ ] Browse `https://<host>/` -> you are auto-admin (open mode). Open **Admin** (top-right) -> **Users** tab ->
-      **+ Add user**. Set username, **email (required - it is the sign-in key)**, a password, Role = admin, tick
-      "may manage users". Save. (For many users, add them all here; the form writes `users.json`.)
-- [ ] Sign out, then sign in with that email + password.
+- [ ] Browse `https://<host>/` and sign in with **`admin` / `admin123`**.
+- [ ] **Immediately change the password:** **Admin** (top-right) -> **Users** tab -> open `admin` -> set a new
+      password -> Save. (You can also rename it / set a real email here.)
+- [ ] Add the real users: **+ Add user** - set username, **email (required - it is the sign-in key)**, a password,
+      Role, stations/access. Save. (Users persist in `dbo.app_user` / `dbo.app_user_scope`, not a file.)
 > **You should now see (all in the browser, no database tools):**
-> - The **Users** tab lists the user(s) you created.
+> - The **Users** tab lists `admin` plus the user(s) you created.
 > - **Admin -> Audit & Health** tab:
 >   - **Health** board: `app`, `db`, `backup`, `storage:*` green; `tasks` green after the first watchdog run.
 >   - **Storage & growth**: the ops DB size, the largest tables (e.g. `shipment_alerts`), free disk.
@@ -225,6 +245,8 @@ Until a `users.json` exists the app is in **open mode** (no login). Creating the
 >   - **Change & access audit**: a `create user ...` line for the user you added, and a `login ok` line for your
 >     sign-in (proof the audit trail is recording).
 >   - **Server errors**: empty (or only benign entries). The date range + cap keep this readable even on a busy day.
+>   - **ERP API calls**: every Swivel ERP call (read & write) with its result; tick **failures only** to see just the
+>     errors. This is where you find "which ERP API errored and why" without a database login.
 
 ---
 
@@ -237,8 +259,9 @@ Until a `users.json` exists the app is in **open mode** (no login). Creating the
       (house rule - confirms the data is right, not just present).
 - [ ] `Get-ScheduledTask "Ops *"` all **Ready**; **Health board** all green (or only expected ambers).
 - [ ] One successful `.bak` exists in `<OPS_ROOT>\backups`, and an alert channel is configured.
-- [ ] When the ERP write token is provided, set `erpApi.token` and `erpApi.mock=false`, recycle the app pool,
-      and re-test one Save-to-ERP.
+- [ ] When the ERP write token is provided, set it in **Admin -> ERP API** (Base URL + token, untick "use mock") -
+      the status flips to **LIVE**, no restart - and re-test one Save-to-ERP. (Or set `erpApi.token` + `erpApi.mock=false`
+      in the config and recycle the pool.) Confirm the call in **Change log -> ERP API calls**.
 
 Handoff to support: **`docs/OPERATIONS-RUNBOOK.md`** (the daily glance is the **Audit & Health** tab).
 

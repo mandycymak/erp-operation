@@ -87,12 +87,18 @@ try {
     @{ d=$RetainFeedDays }
 
   # 3. append-only audit/event logs: keep AuditRetainMonths of history.
-  foreach($t in @('milestone_event_log','doc_event_log','erp_edit_log')){
+  foreach($t in @('milestone_event_log','doc_event_log','erp_edit_log','erp_api_log')){
     Step "$t.purge" `
       "SELECT COUNT(*) FROM dbo.$t WHERE occurred_at < DATEADD(month,-@m,SYSDATETIME())" `
       "DELETE FROM dbo.$t WHERE occurred_at < DATEADD(month,-@m,SYSDATETIME())" `
       @{ m=$AuditRetainMonths }
   }
+
+  # 3b. booking_alert: new-booking factory alerts; keep AuditRetainMonths (detected_at, not occurred_at).
+  Step "booking_alert.purge" `
+    "SELECT COUNT(*) FROM dbo.booking_alert WHERE detected_at < DATEADD(month,-@m,SYSDATETIME())" `
+    "DELETE FROM dbo.booking_alert WHERE detected_at < DATEADD(month,-@m,SYSDATETIME())" `
+    @{ m=$AuditRetainMonths }
 
   # 4. health_check_log: high-frequency; keep HealthRetainDays.
   Step "health_check_log.purge" `
