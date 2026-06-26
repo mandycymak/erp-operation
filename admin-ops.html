@@ -261,6 +261,9 @@
     <div class="frow">
       <div class="fcol" style="min-width:320px"><label>Book Now reference format</label><input id="eBookRef" autocomplete="off" placeholder="{station}{m}{yymmdd}{seq4}"><span class="muted" style="font-size:12px">Tokens: {station} {m}(A/S) {mode}(AIR/SEA) {yymmdd} {yy} {seq}/{seq5}. Must include a {seq} token. E.g. <code>{station}{m}{seq5}</code> &rarr; HKGA00001. Blank = default.</span></div>
     </div>
+    <div class="frow">
+      <div class="fcol" style="min-width:320px"><label>Customer review link base URL <span id="ePublicState" class="muted" style="font-weight:normal"></span></label><input id="ePublicUrl" autocomplete="off" placeholder="https://ops.customer.com"><span class="muted" style="font-size:12px">Prefix for the customer document-review links &rarr; <code>&lt;url&gt;/bl-review/&lt;token&gt;</code>. Set to the internet-facing HTTPS host so customers can open it. Blank = config file (else <code>http://localhost:&lt;port&gt;</code>).</span></div>
+    </div>
     <div class="bar">
       <button class="primary" id="erpSaveBtn">Save ERP settings</button>
       <span class="errline" id="erpErr"></span>
@@ -519,6 +522,8 @@ async function loadErp() {
   $('#eBaseUrl').value = d.erpBaseUrl || '';
   $('#eMock').checked = !!d.erpMock;
   $('#eBookRef').value = d.bookRefFormat || '';
+  $('#ePublicUrl').value = d.publicBaseUrl || '';
+  $('#ePublicState').textContent = d.publicBaseUrl ? (d.publicBaseUrlFromDb ? '(from SQL)' : '(from config)') : '(blank → localhost fallback)';
   $('#eToken').value = ''; $('#eClearToken').checked = false;
   renderErpLive(d);
 }
@@ -530,6 +535,7 @@ async function saveErp() {
     erpBaseUrl: $('#eBaseUrl').value.trim(),
     erpMock: $('#eMock').checked,
     bookRefFormat: $('#eBookRef').value.trim(),
+    publicBaseUrl: $('#ePublicUrl').value.trim(),
     clearToken: $('#eClearToken').checked,
   };
   const tok = $('#eToken').value;            // only send a token when one was typed (the field is masked/write-only)

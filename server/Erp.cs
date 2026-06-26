@@ -373,6 +373,16 @@ public static partial class Erp
         if (module == "SEA" && payload.ContainsKey("bookingContainers")) { mergeKeys.Add("carrierCode"); mergeKeys.Add("carrierName"); }
         foreach (var k in mergeKeys)
             if (!payload.ContainsKey(k)) { var v = StrProp(cur, k).Trim(); if (v != "") payload[k] = v; }
+        // AIR ONLY: the ERP writes the air detail line (awbdetl: mark2/desc2/good_desc2/rece_cbm) as a UNIT - it
+        // persists shipMarks/goodsDescription/commodity/cbm ONLY when the FULL cargo block is present in the payload.
+        // A minimal patch that omits qty/unit/weight is silently dropped on the detail line (verified live: the same
+        // marks/desc that vanished on a partial push persisted once quantity/quantityUnit/grossWeight/weightUnit were
+        // included). Read-merge the whole cargo block from the current booking, preserving JSON number types (a
+        // DeepClone is required - PropCI returns a node still parented to `cur`). Gate on module: Sea writes its
+        // detail via bookingContainers, not this block.
+        if (module == "AIR")
+            foreach (var k in new[] { "quantity", "quantityUnit", "grossWeight", "weightUnit", "cbm", "shipMarks", "goodsDescription", "isConsole" })
+                if (!payload.ContainsKey(k)) { var node = PropCI(cur, k); if (node != null) payload[k] = node.DeepClone(); }
         try { Call("/booking/update", payload); steps.Add("booking/update ok"); return new(true, false, false, steps, ""); }
         catch (Exception ex)
         {

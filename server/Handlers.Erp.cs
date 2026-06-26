@@ -113,6 +113,47 @@ public static partial class Handlers
         finally { try { src?.Close(); } catch { } }
     }
 
+    // ---- /api-ops/erp-master-detail?job=&kind=custsub&code=XXX ----
+    // "Fill from master": the FULL party record (English doc name/address/contact/email/phone) for one code, so the
+    // editor can optionally overwrite the party box from the master. Job-scoped like ErpMaster; custsub only.
+    public static object ErpMasterDetail(SqlConnection cn, Qs q, ReqState rs)
+    {
+        var job = (q["job"] ?? "").Trim();
+        var kind = (q["kind"] ?? "").Trim().ToLowerInvariant();
+        var code = (q["code"] ?? "").Trim();
+        if (job == "" || code == "") return new { error = "job and code required" };
+        var al = Db.RunQ(cn, "SELECT TOP 1 job_no,station,mode,bound FROM dbo.shipment_alerts WHERE job_no=@j", new Dictionary<string, object?> { ["j"] = job });
+        if (al.Count == 0 || !Scope.TestJobScope(rs, al[0])) return new { error = "not found" };
+        if (kind != "custsub") return new { error = "only the customer master supports fill" };
+        var station = Db.Str(Db.G(al[0], "station"));
+        var db = Source.DbFor(station);
+        if (db == null) return new { error = $"station '{station}' has no ERP database mapped" };
+
+        SqlConnection? src = null;
+        try
+        {
+            src = Source.Open(db);
+            var rows = Db.RunQ(src, "SELECT TOP 1 doc_e_name, doc_e_name2, doc_e_add1, doc_e_add2, doc_e_add3, doc_e_add4, doc_e_add5, contact, email1, phone FROM dbo.custsub WHERE code2=@c AND ISNULL(isdel,0)=0", new Dictionary<string, object?> { ["c"] = code }, 8);
+            if (rows.Count == 0) return new { error = "code not found in the master" };
+            var r = rows[0];
+            string S(string c) => Db.Str(Db.G(r, c)).Trim();
+            // bill convention: line 1 = company name; the rest (any 2nd name line + address lines) = the address box
+            var addr = new[] { "doc_e_name2", "doc_e_add1", "doc_e_add2", "doc_e_add3", "doc_e_add4", "doc_e_add5" }
+                .Select(S).Where(x => x != "");
+            return new
+            {
+                code,
+                name = S("doc_e_name"),
+                address = string.Join("\n", addr),
+                contact = S("contact"),
+                email = S("email1"),
+                phone = S("phone"),
+            };
+        }
+        catch (Exception ex) { return new { error = "master detail lookup failed: " + ex.Message }; }
+        finally { try { src?.Close(); } catch { } }
+    }
+
     // Incoterms 2020 filtered to the term (no DB). Shared by /api-ops/erp-master + /api-ops/book-now-master.
     static object[] IncotermResults(string term)
     {

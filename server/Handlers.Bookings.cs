@@ -43,7 +43,8 @@ public static partial class Handlers
             "OUTER APPLY (SELECT TOP 1 s.job_no, s.cargo_type, s.incoterm, s.commodity, s.container_summary, s.total_weight, s.total_cbm, " +
             "  s.consignee_name, s.shipper_code, s.consignee_code, s.agent_code, s.ctrl_code, s.cust_code, " +
             "  s.house_bill, s.master_bill, s.container_no, s.container_count, s.liner_so, s.cust_ref " +
-            "  FROM dbo.shipment_alerts s WHERE s.station=ba.station AND s.mode=ba.mode AND s.erp_ref=ba.erp_ref AND s.job_status='active' " +
+            "  FROM dbo.shipment_alerts s WHERE s.station=ba.station AND s.mode=ba.mode AND s.job_status='active' " +
+            "   AND (NULLIF(s.sono,'')=NULLIF(ba.booking_no,'') OR NULLIF(s.erp_ref,'')=NULLIF(ba.erp_ref,'')) " +   // link on the booking number (sono=booking_no) first; erp_ref is a fallback. A Book Now erp_ref is our system Ref, which never matches the ERP job ref - so the booking number is the reliable key (same as BookingJob/My Tasks).
             "  ORDER BY CASE WHEN s.bill_stage='booking' THEN 0 ELSE 1 END) sa " +
             w + " ORDER BY ba.detected_at DESC, ba.id DESC", p);
         bool truncated = rows.Count > limit;

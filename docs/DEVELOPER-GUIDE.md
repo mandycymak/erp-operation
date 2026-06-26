@@ -107,6 +107,16 @@ intermittently timing out the open.)
 > `bookingContainers`). Fields are added/retargeted in `erp-edit-fields.json` (`readFrom` / `writeKey`) — no
 > code change for a simple remap; a column on the **line** table needs a line read in `Handle-ErpEditSeed`.
 
+> ⚠️ **AIR detail-line saves need the WHOLE cargo block (verified live 2026-06-26).** The ERP writes the air
+> `awbdetl` line (`mark2`/`desc2`/`good_desc2`/`rece_cbm` ← `shipMarks`/`goodsDescription`/`commodity`/`cbm`) **only
+> when `/booking/update` carries the full cargo block together** — `quantity,quantityUnit,grossWeight,weightUnit,cbm,
+> shipMarks,goodsDescription`. A minimal patch that changes one detail field is silently dropped (the ERP echoes it
+> back unchanged). So `Erp.EditPush` **and** `ErpDoc.DocAgree` **read-merge the cargo block from the live
+> `/booking/get`** when `module=="AIR"` (preserve number types — `PropCI(...).DeepClone()`). The editor seeds air
+> `cbm` from `awbdetl.rece_cbm` (header `t_rece_cbm` is always 0 for air). HAWB/MAWB ARE writable (`houseNo`/
+> `masterNo`) — but a **consol-shared MAWB** is rejected (`Duplicated MAWB#`). **Fill-from-master** is a separate
+> `GET /api-ops/erp-master-detail` (full `custsub` party) wired to a ↻ icon in `erp-edit.js` (overwrite on click only).
+
 > ⚠️ **Never probe column metadata on a request path.** `INFORMATION_SCHEMA.COLUMNS` / `sys.columns` for the
 > read-only login on the **465-column** `awbhead` runs **40–70 s** (per-column permission checks) and can drop
 > the connection, while the keyed data SELECT is ~0.3 s. **`Get-ErpCols` does not probe metadata** — it trusts

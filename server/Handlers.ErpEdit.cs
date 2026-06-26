@@ -219,7 +219,7 @@ public static partial class Handlers
             {
                 try
                 {
-                    var adr = Db.RunQ(src, "SELECT TOP 1 mark2, desc2, good_desc1, good_desc2 FROM dbo.awbdetl WHERE blh=@r ORDER BY ref", new Dictionary<string, object?> { ["r"] = Db.G(b, "ref") }, 8);
+                    var adr = Db.RunQ(src, "SELECT TOP 1 mark2, desc2, good_desc1, good_desc2, rece_cbm FROM dbo.awbdetl WHERE blh=@r ORDER BY ref", new Dictionary<string, object?> { ["r"] = Db.G(b, "ref") }, 8);
                     if (adr.Count > 0)
                     {
                         if (fields.ContainsKey("ship_marks")) fields["ship_marks"] = Db.Str(Db.G(adr[0], "mark2")).Trim();
@@ -228,6 +228,9 @@ public static partial class Handlers
                         // differs from Sea (blitem.commodity). Override the header awbhead.commodity read with it when
                         // present; the header value remains a fallback if good_desc2 is blank.
                         if (fields.ContainsKey("commodity")) { var cm = Db.Str(Db.G(adr[0], "good_desc2")).Trim(); if (cm != "") fields["commodity"] = cm; }
+                        // Air CBM lives on the detail line (awbdetl.rece_cbm), NOT the header (awbhead.t_rece_cbm) -
+                        // air-specific, so the header read seeds 0. Override from the detail line.
+                        if (fields.ContainsKey("cargo_cbm")) fields["cargo_cbm"] = NumStr(Db.G(adr[0], "rece_cbm"));
                     }
                 }
                 catch { }

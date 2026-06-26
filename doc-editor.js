@@ -216,8 +216,8 @@
           '?subject=' + encodeURIComponent('Draft ' + h.docType + ' for your review - ' + h.jobNo) +
           '&body=' + encodeURIComponent('Dear ' + (name.trim() || 'customer') + ',\n\nPlease review the draft document at the secure link below. You can correct the text directly on screen and send it back to us.\n\n' + r.link + '\n\nThe link is valid for ' + r.expiresDays + ' days.\n\nBest regards');
         flash('Link created (v' + r.sentVersion + ', valid ' + r.expiresDays + ' days). Any earlier link is now dead.<br>' +
-          '<span style="display:inline-flex;align-items:center;gap:6px;margin:6px 0;max-width:100%">' +
-          '<input id="lnkBox" class="line" style="margin:0;flex:1;min-width:240px" value="' + esc(r.link) + '" readonly onclick="this.select()">' +
+          '<span style="display:flex;align-items:center;gap:6px;margin:6px 0;width:100%">' +
+          '<input id="lnkBox" class="line" style="margin:0;flex:1 1 auto;min-width:0" value="' + esc(r.link) + '" readonly onclick="this.select()">' +
           '<button id="lnkCopy" type="button" title="Copy link" aria-label="Copy link" ' +
           'style="display:inline-flex;align-items:center;justify-content:center;padding:5px 7px;cursor:pointer">' +
           '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +

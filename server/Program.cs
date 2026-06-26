@@ -449,6 +449,7 @@ MapAuthed("/api-ops/admin/{*rest}", new[] { "GET", "POST" }, async (ctx, sess, r
 MapData("/api-ops/erp-detail", Handlers.ErpDetail);   // source-ERP read (the one sanctioned ERP-on-request exception)
 MapData("/api-ops/erp-edit", Handlers.ErpEditSeed);   // seed the ERP-correction editor (source-ERP read)
 MapData("/api-ops/erp-master", Handlers.ErpMaster);   // master code type-ahead (source-ERP read)
+MapData("/api-ops/erp-master-detail", Handlers.ErpMasterDetail);   // full party master record (fill-from-master)
 MapData("/api-ops/book-now-seed", Handlers.BookNowSeed);     // Book Now: station + default POL/service per mode
 MapData("/api-ops/book-now-master", Handlers.BookNowMaster); // Book Now: station-scoped master type-ahead (no job)
 // ---- Stage 4b: Swivel ERP HTTP write client ----

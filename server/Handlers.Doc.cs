@@ -132,7 +132,7 @@ public static partial class Handlers
             new Dictionary<string, object?> { ["h"] = hash, ["d"] = docId, ["v"] = sentVer, ["e"] = email != "" ? email : null, ["n"] = cname != "" ? cname : null, ["days"] = days, ["u"] = me });
         Db.Exec(cn, "UPDATE dbo.doc_draft SET status='SENT',customer_email=COALESCE(NULLIF(@e,''),customer_email),customer_name=COALESCE(NULLIF(@n,''),customer_name),updated_at=SYSDATETIME() WHERE doc_id=@d", new Dictionary<string, object?> { ["e"] = email, ["n"] = cname, ["d"] = docId });
         Doc.Event(cn, docId, sentVer, "sent", me, hash, "", JsonSerializer.Serialize(new { to = email, expiresDays = days, revokedPrior = old.Count }, DocJson));
-        var basePrefix = Config.PublicBaseUrl.Trim() != "" ? Config.PublicBaseUrl.Trim().TrimEnd('/') : $"http://localhost:{Config.Port}";
+        var basePrefix = Settings.PublicBaseUrl.Trim() != "" ? Settings.PublicBaseUrl.Trim().TrimEnd('/') : $"http://localhost:{Config.Port}";
         Auth.Audit(me, $"doc-send {Db.Str(Db.G(h, "doc_type"))} {Db.Str(Db.G(h, "job_no"))} v{sentVer} to '{email}' (expires {days}d)");
         return new { ok = true, link = $"{basePrefix}/bl-review/{raw}", expiresDays = days, sentVersion = sentVer, status = "SENT" };
     }

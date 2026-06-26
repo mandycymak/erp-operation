@@ -232,6 +232,9 @@ public static partial class Handlers
                 erpMock = Settings.ErpMock,
                 erpTokenSet = Settings.ErpToken.Trim() != "",
                 erpFromDb = new { baseUrl = Settings.ErpBaseUrlFromDb, token = Settings.ErpTokenFromDb, mock = Settings.ErpMockFromDb },
+                // customer-review link prefix (doc-send builds <publicBaseUrl>/bl-review/<token>); blank -> localhost fallback
+                publicBaseUrl = Settings.PublicBaseUrl.Trim(),
+                publicBaseUrlFromDb = Settings.PublicBaseUrlFromDb,
                 live = !Erp.MockMode(),   // are real ERP calls actually happening now (url+token set AND mock off)
                 bookRefFormat = Settings.BookRefFormat,                     // Book Now reference template (admin-editable)
                 bookRefFormatFromDb = Settings.BookRefFormatFromDb,
@@ -257,6 +260,14 @@ public static partial class Handlers
             sset[Settings.ErpBaseUrlKey] = url == "" ? null : url;   // blank -> delete -> fall back to config
         }
         if (j.Has("erpMock")) sset[Settings.ErpMockKey] = (j.Bool("erpMock") == true) ? "true" : "false";
+        // public base URL for customer review links. http/https only; blank -> delete -> fall back to config (or localhost).
+        if (j.Has("publicBaseUrl"))
+        {
+            var pub = j.Str("publicBaseUrl").Trim();
+            if (pub != "" && !(pub.StartsWith("http://") || pub.StartsWith("https://"))) return new Resp(new { error = "Public base URL must start with http:// or https://" }, 400);
+            if (pub.Length > 400) return new Resp(new { error = "Public base URL too long" }, 400);
+            sset[Settings.PublicBaseUrlKey] = pub == "" ? null : pub;
+        }
         // token: only changed when a non-blank value is supplied (the field is masked / write-only). An explicit
         // clearToken=true reverts to the config token.
         if (j.Has("clearToken") && j.Bool("clearToken") == true) sset[Settings.ErpTokenKey] = null;
@@ -278,6 +289,7 @@ public static partial class Handlers
         var tokNote = sset.ContainsKey(Settings.ErpTokenKey) ? (sset[Settings.ErpTokenKey] == null ? " token=cleared" : " token=updated") : "";
         Auth.Audit(sess.Username, $"erp-settings partyGroupCode={pg}{(upd.ContainsKey("forwarderCode") ? " forwarderCode=" + upd["forwarderCode"] : "")}" +
             $"{(sset.ContainsKey(Settings.ErpBaseUrlKey) ? " baseUrl=" + (sset[Settings.ErpBaseUrlKey] ?? "(config)") : "")}" +
+            $"{(sset.ContainsKey(Settings.PublicBaseUrlKey) ? " publicBaseUrl=" + (sset[Settings.PublicBaseUrlKey] ?? "(config)") : "")}" +
             $"{(sset.ContainsKey(Settings.ErpMockKey) ? " mock=" + sset[Settings.ErpMockKey] : "")}{tokNote}");
         return new Resp(new { ok = true, live = !Erp.MockMode() });
     }

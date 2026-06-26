@@ -83,6 +83,14 @@ button:hover{filter:brightness(1.08)}
 .chip.nospace{color:#fff;background:var(--r);border-color:var(--r)}
 .chip.newbk{color:var(--accent);border-color:var(--accent);font-size:10px;padding:0 6px}
 .chip.bkgstage{color:#b8860b;border-color:#b8860b;background:#fff8e1;font-size:10px;padding:0 6px;font-weight:600}
+/* New bookings: date window on its own second row under the header (keeps the title line + Book button uncluttered) */
+.bkg-dates{padding:5px 14px 0;white-space:nowrap}
+.bkg-dates:empty{display:none}
+/* per-row viewability hint: openable rows show an accent "view" affordance; not-yet-pulled rows say so and don't
+   get the clickable cursor/hover (so a [confirmed] row that isn't in the worklist yet doesn't read as clickable) */
+.bkgopen{font-size:10.5px;color:var(--accent,#2d7ef7);font-weight:600;white-space:nowrap}
+.bkgrow.pending{cursor:default}
+.bkgrow.pending:hover{background:transparent}
 .chip.offshore{color:#7a3ea1;border-color:#7a3ea1;background:#f3eafc;font-size:10px;padding:0 6px;font-weight:600}
 /* vessel/voyage grouping */
 .vgroup{border:1px solid var(--line);border-radius:10px;margin-bottom:8px;overflow:hidden;background:var(--panel)}
@@ -252,8 +260,9 @@ button:hover{filter:brightness(1.08)}
 .bndots{display:inline-block;cursor:pointer;color:var(--accent,#2d7ef7);font-weight:700;letter-spacing:1px;padding:0 4px;user-select:none}
 .bndots:hover{background:var(--bg);border-radius:4px}
 .bnhint{font-size:10.5px;min-height:13px;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* cargo row: four mini inputs on one line */
-.bncargo{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+/* cargo row: four mini inputs on one line. Qty matches the Incoterm column width (110px) + same 12px gap so
+   Qty lines up under Incoterm and Unit lines up under Commodity (the icRow above uses .bnic 110px + 12px gap). */
+.bncargo{display:grid;grid-template-columns:110px repeat(3,1fr);gap:12px}
 .bnmini{display:flex;flex-direction:column;gap:1px}
 .bnmcap{font-size:10px;color:var(--mut)}
 .bnmini input{width:100%;padding:4px 6px;box-sizing:border-box;font-size:12px}

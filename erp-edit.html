@@ -48,6 +48,10 @@
   .codechip input{ border:1px solid var(--line); background:var(--bg); border-radius:5px; width:66px; font:700 11px ui-monospace,Consolas,monospace; color:var(--accent); padding:1px 5px; text-align:center }
   .codechip input:disabled{ color:var(--mut); background:transparent; border-color:transparent }
   .findbtn{ border:0; background:transparent; cursor:pointer; font-size:11px; padding:0 1px; color:var(--mut) }
+  .fillbtn{ border:0; background:transparent; cursor:pointer; font-size:12px; padding:0 2px; margin-left:2px; color:var(--accent,#2d7ef7) }
+  .fillbtn:hover{ text-shadow:0 0 1px currentColor }
+  .fillbtn.err{ color:var(--r,#c0392b) }
+  .fillbtn[disabled]{ opacity:.5; cursor:default }
   .rhint{ font-size:11px; color:var(--mut); margin:0 0 4px; min-height:13px }
   .boxval{ font-size:13px; color:var(--fg); min-height:16px; padding:1px 0 }
   .refline{ font-size:12px; color:var(--fg); padding:1px 0 }

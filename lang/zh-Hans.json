@@ -309,6 +309,11 @@
   "Signing in…": "登录中…",
 
   "Book Now": "立即订舱",
+  "Book": "订舱",
+  "view ›": "查看 ›",
+  "details after refresh": "刷新后可查看详情",
+  "Open to see full details": "点击查看完整详情",
+  "Details appear after the next worklist refresh": "详情将在下次工作单刷新后显示",
   "Create a new booking in the ERP": "在 ERP 中创建新订舱",
   "new ERP booking": "新建 ERP 订舱",
   "Mode": "运输方式",

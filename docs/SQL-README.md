@@ -113,7 +113,8 @@ as the agree flow).
 |---|---|---|---|
 | Shipper / consignee / notify code | `shpr_code` / `cgne_code` / `not1_code` (n8) | `custsub.code2 → doc_e_name` | `shipperPartyCode` / `consigneePartyCode` / `notifyPartyPartyCode` |
 | Party name / address / phone / tax | `*_name` / `*_add1..5` / `sphone`·`cphone` / `*_txncode` | — | `…PartyName` / `…PartyAddress` / `…PartyContactPhone` / `…PartyTaxCode` |
-| **Party contact name / email** (shipper, consignee) | blank-seeded (no verified ERP column) — editable | — | `…PartyContactName` / `…PartyContactEmail` |
+| **Party contact name / email** (shipper, consignee) | **`scontact`/`semail`** (shipper) · **`ccontact`/`cemail`** (consignee) — on both `awbhead`/`blhead` (verified 2026-06-26; previously blank-seeded, so a saved value never displayed) | — | `…PartyContactName` / `…PartyContactEmail` |
+| **HAWB / MAWB no.** (Air, editable) | `awbhead.hawb` / `awbhead.mawb` | — | `houseNo` / `masterNo` (verified writable 2026-06-26; a **consol-shared MAWB** is rejected — `Duplicated MAWB#`) |
 | Delivery agent code (on HBL/HAWB) | `agn2_code` | `custsub` | `agentPartyCode` |
 | **Liner agent** code (internal) | **Sea `blcont.lagent`** (party on the container line) → **`custsub`** · **Air `lin1_code`** → `linermstr` | `custsub` / `linermstr` | `linerAgentPartyCode` |
 | **Carrier** code / name (best-effort) | **Sea `iliner`** · **Air `rout_by_1`** (`carr` is usually blank) | — | `carrierCode` / `carrierName` |
@@ -133,6 +134,16 @@ as the agree flow).
 > All write keys **verified against the Swivel OpenAPI spec** (`3rd-erpapi.json` — `NewBooking.bookingParty`,
 > top-level, and the `flexData` IATA-leg object); each is tunable in `erp-edit-fields.json` (`writeKey`) with no
 > code change. A correction is only sent when the operator actually edits that field.
+>
+> **⚠️ AIR detail-line writes need the FULL cargo block (verified live 2026-06-26).** The ERP persists the air
+> detail line (`awbdetl`: `mark2`/`desc2`/`good_desc2`/`rece_cbm`) **only** when `/booking/update` carries the WHOLE
+> cargo block together — `quantity`+`quantityUnit`+`grossWeight`+`weightUnit`+`cbm`+`shipMarks`+`goodsDescription`. A
+> minimal patch that changes only marks/desc/commodity/cbm is **silently dropped** (the ERP echoes the values back
+> unchanged). So for AIR, `Erp.EditPush` **and** `ErpDoc.DocAgree` **read-merge the cargo block from the live
+> `/booking/get`** (preserving JSON number types via `DeepClone`) whenever a detail field is edited. The **editor
+> seeds air `cbm` from `awbdetl.rece_cbm`** (the header `t_rece_cbm` is always 0 for air). Gated on `module=="AIR"`
+> (Sea writes its detail via `blitem`/`bookingContainers`). **Fill-from-master** uses `GET /api-ops/erp-master-detail`
+> (full `custsub` party: `doc_e_name`/`doc_e_add1..5`/`contact`/`email1`/`phone`).
 >
 > **Routing identity (verified live 2026-06-15):** every `/booking/update` carries **`partyGroupCode`** (company
 > code, e.g. `DEV`) and **`bookingParty.forwarderPartyCode`** = the office **owncode** (`fm3kco.site` dbname→owncode:

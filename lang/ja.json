@@ -309,6 +309,11 @@
   "Signing in…": "ログイン中…",
 
   "Book Now": "今すぐ予約",
+  "Book": "予約",
+  "view ›": "表示 ›",
+  "details after refresh": "更新後に詳細表示",
+  "Open to see full details": "クリックして詳細を表示",
+  "Details appear after the next worklist refresh": "詳細は次のワークリスト更新後に表示されます",
   "Create a new booking in the ERP": "ERP に新規ブッキングを作成",
   "new ERP booking": "新規 ERP ブッキング",
   "Mode": "輸送モード",

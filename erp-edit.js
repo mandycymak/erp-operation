@@ -106,25 +106,56 @@
     const hint = el('div', 'rhint');
     if (codeDef) hint.textContent = RESOLVED[codeDef.code] || '';
     const cap = el('div', 'cap'); cap.appendChild(document.createTextNode(capText));
-    if (codeDef) cap.appendChild(codeChip(codeDef, hint));
+    let codeInp = null;
+    if (codeDef) { const chip = codeChip(codeDef, hint); codeInp = chip.querySelector('input'); cap.appendChild(chip); }
     box.appendChild(cap); box.appendChild(hint);
     const nameDef = DEF[prefix + '_name'], addrDef = DEF[prefix + '_address'];
+    let ta = null;
     if (nameDef) {
-      const ta = el('textarea', 'pin partybox'); ta.dataset.combine = prefix; ta.spellcheck = false; ta.rows = addrDef ? 3 : 1;
+      ta = el('textarea', 'pin partybox'); ta.dataset.combine = prefix; ta.spellcheck = false; ta.rows = addrDef ? 3 : 1;
       const sv = combineSeed(prefix); ta.value = sv; ta._seed = sv;
       ta.placeholder = addrDef ? 'Company name\nAddress line 1\nAddress line 2' : 'Company name';
       if (!nameDef.writeKey && (!addrDef || !addrDef.writeKey)) ta.disabled = true;
       ta.addEventListener('input', () => { if (norm(ta._seed) !== norm(ta.value)) ta.classList.add('chg'); else ta.classList.remove('chg'); });
       box.appendChild(ta);
     }
-    // contact rows: phone + tax, then contact name + email (each row a two-cell telrow)
+    // contact rows: phone + tax, then contact name + email (each row a two-cell telrow). Capture the inputs so
+    // "fill from master" can populate contact/email/phone too.
+    const inputs = {};
     [[prefix + '_phone', prefix + '_tax'], [prefix + '_contact', prefix + '_email']].forEach(codes => {
       const cells = codes.map(c => DEF[c]).filter(Boolean);
       if (!cells.length) return;
       const row = el('div', 'telrow');
-      cells.forEach(d => { const c = el('div', 'telcell'); c.appendChild(el('span', 'tl', esc(d.label))); c.appendChild(pInput(d)); row.appendChild(c); });
+      cells.forEach(d => { const c = el('div', 'telcell'); c.appendChild(el('span', 'tl', esc(d.label))); const inp = pInput(d); inputs[d.code] = inp; c.appendChild(inp); row.appendChild(c); });
       box.appendChild(row);
     });
+    // optional "fill from master" icon next to the code chip - picking a code only changes the code; clicking this
+    // overwrites name/address (+ contact/email/phone) from the master record, so the operator keeps full control.
+    const fillable = nameDef && (nameDef.writeKey || (addrDef && addrDef.writeKey));
+    if (codeDef && codeDef.lookup === 'custsub' && codeDef.writeKey && fillable) {
+      const fb = el('button', 'fillbtn', '↻'); fb.type = 'button';
+      fb.title = 'Fill name / address / contact from the master record';
+      fb.onclick = () => fillFromMaster(prefix, codeInp, ta, inputs, fb);
+      cap.appendChild(fb);
+    }
+  }
+  // pull the full master party record for the current code and overwrite the party box + contact fields
+  async function fillFromMaster(prefix, codeInp, ta, inputs, btn) {
+    const code = (codeInp && codeInp.value.trim()) || '';
+    if (!code) { btn.title = 'Enter or pick a code first'; return; }
+    const old = btn.textContent; btn.textContent = '…'; btn.disabled = true;
+    let d; try { d = await api('/api-ops/erp-master-detail?job=' + encodeURIComponent(job) + '&kind=custsub&code=' + encodeURIComponent(code)); }
+    catch (e) { d = { error: 'lookup failed' }; }
+    btn.textContent = old; btn.disabled = false;
+    if (!d || d.error) { btn.classList.add('err'); btn.title = (d && d.error) || 'master lookup failed'; setTimeout(() => btn.classList.remove('err'), 1500); return; }
+    const hasAddr = !!DEF[prefix + '_address'];   // name-only boxes (e.g. air agent) must not get address lines
+    if (ta && (d.name || (hasAddr && d.address))) {
+      const combined = hasAddr ? ((d.name || '') + (d.address ? '\n' + d.address : '')) : (d.name || '');
+      ta.value = combined;
+      if (norm(ta._seed) !== norm(combined)) ta.classList.add('chg'); else ta.classList.remove('chg');
+    }
+    const setIf = (c, v) => { const i = inputs[c]; if (i && v) { i.value = v; if (norm(SEED[c]) !== norm(v)) i.classList.add('chg'); else i.classList.remove('chg'); } };
+    setIf(prefix + '_contact', d.contact); setIf(prefix + '_email', d.email); setIf(prefix + '_phone', d.phone);
   }
   function chipCell(box, code, capText) {
     const def = DEF[code]; if (!def) return;

@@ -12,6 +12,7 @@ public static class Settings
     public const string ErpBaseUrlKey = "erpBaseUrl";
     public const string ErpTokenKey = "erpToken";
     public const string ErpMockKey = "erpMock";
+    public const string PublicBaseUrlKey = "publicBaseUrl";   // customer-review link prefix (doc-send), admin-editable
     public const string BookRefFormatKey = "bookRefFormat";
     // Book Now outbound-reference template. Tokens: {station} {m}(A/S) {mode}(AIR/SEA) {yymmdd} {yy} {seqN}(running
     // number, N-wide) / {seq}(=4-wide). The running number resets per day only when the format carries {yymmdd}/{yy};
@@ -44,6 +45,10 @@ public static class Settings
     public static bool ErpMock => Has(ErpMockKey)
         ? Raw(ErpMockKey)!.Trim().ToLowerInvariant() is "true" or "1" or "yes" or "on"
         : Config.ErpMock;
+
+    // customer-review link prefix (SQL override else config file); the consumer trims any trailing slash
+    public static string PublicBaseUrl => Has(PublicBaseUrlKey) ? Raw(PublicBaseUrlKey)!.Trim() : Config.PublicBaseUrl;
+    public static bool PublicBaseUrlFromDb => Has(PublicBaseUrlKey);
 
     public static string BookRefFormat => Has(BookRefFormatKey) ? Raw(BookRefFormatKey)!.Trim() : BookRefFormatDefault;
     public static bool BookRefFormatFromDb => Has(BookRefFormatKey);

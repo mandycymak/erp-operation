@@ -145,6 +145,10 @@ re-run `setup-ops.ps1` + the seeders there.
 Until the scheduled `listener-engine.ps1` is built, re-run `seed-alerts.ps1` per station/mode. To seed all
 stations:
 
+> 🆕 **One-click HKG refresh:** `seed-hkg.bat [config]` runs the HKG **Sea + Air** delta in one step (defaults to
+> `ops.config.demoerp.json`) — handy on a box with **no scheduled `Ops *` tasks** (where the worklist must be
+> seeded by hand). For unattended refresh, register the scheduled jobs with `register-ops-tasks.ps1` (elevated).
+
 ```powershell
 $today = (Get-Date).ToString('yyyy-MM-dd')
 $stations = @{ YVR='fm3kyvr'; SHA='fm3ksha'; HAM='fm3kham'; HKG='fm3khkg'; JKT='fm3kjkt'; NRT='fm3knrt';
@@ -242,6 +246,12 @@ Sign in as an **admin** and open the **Admin** link (admins only). `admin-ops.ht
   the **mock** toggle, stored in **`dbo.app_setting`** and overriding `ops.config.json` at runtime, with a
   **LIVE / MOCK** status indicator. Plus the non-secret ERP identity codes from `erp-api-map.json`:
   **`partyGroupCode`** (the company code, e.g. `DEV`) and the fallback **`forwarderCode`** (office owncode). See §7.
+  - 🆕 **Customer review link base URL** (`publicBaseUrl`, also in `app_setting`): the host prefix for the
+    customer document-review links — `doc-send` builds `<publicBaseUrl>/bl-review/<token>`. **Blank → falls back to
+    `http://localhost:<port>`, which a customer cannot open**, so at the customer site set this to the
+    internet-facing **HTTPS** host (e.g. `https://ops.customer.com`). Applies immediately, no restart; the field
+    shows whether the value is from SQL, the config file, or blank. (Behind a reverse proxy this is the proxy's
+    public hostname, not the internal port — see the public-review-surface note in §8.)
 
 **Auth model — users live in SQL, with a secure default admin.** Logins/roles/scope are stored in **`dbo.app_user`
 + `dbo.app_user_scope`** (created by `setup-ops.ps1`). On first start against an empty user table the app

@@ -137,14 +137,19 @@ async function loadBookings() {
   try { d = await api('/api-ops/new-bookings' + (qs.length ? ('?' + qs.join('&')) : '')); }
   catch (e) { feed.innerHTML = '<div class="find-msg">' + esc(tr('Could not load bookings.')) + '</div>'; return; }
   const rows = arr(d.rows);
-  // subtitle leads with the station scope shown — e.g. "station HKG : 91 booking(s) · 2026-06-18 → 2026-06-25"
+  // subtitle (top line) = station scope + count only — e.g. "station HKG : 91 booking(s)"; the date window drops to
+  // its own second row (#bkgDates) so the header stays on one line and the + Book button isn't pushed down.
   const stns = [...new Set(rows.map(r => r.station).filter(Boolean))];
   const stnLbl = stns.length === 1 ? (tr('station') + ' ' + stns[0]) : (stns.length > 1 ? stns.join('/') : '');
-  $('#bkgSub').textContent = (stnLbl ? stnLbl + ' : ' : '') + (d.count != null ? d.count : rows.length) + ' ' + tr('booking(s)') + ' · ' + (d.from || '') + ' → ' + (d.to || '');
+  $('#bkgSub').textContent = (stnLbl ? stnLbl + ' : ' : '') + (d.count != null ? d.count : rows.length) + ' ' + tr('booking(s)');
+  const dd = $('#bkgDates'); if (dd) dd.textContent = (d.from || d.to) ? ((d.from || '') + ' → ' + (d.to || '')) : '';
   if (!rows.length) { feed.innerHTML = '<div class="find-msg muted">' + esc(tr('No new bookings for your station(s) in this window.')) + '</div>'; return; }
   feed.innerHTML = '';
   rows.forEach(b => {
-    const card = el('div', 'mcard G bkgrow');
+    // a row only opens once it's been pulled into the worklist (shipJobNo set). The status chip ([confirmed] etc.)
+    // is about the ERP booking number, NOT about whether details are viewable - so show a clear, distinct hint.
+    const clickable = !!b.shipJobNo;
+    const card = el('div', 'mcard G bkgrow ' + (clickable ? 'clickable' : 'pending'));
     const lane = (b.pol || '') + (b.pod ? ' → ' + b.pod : '');
     const stChip = b.channel === 'book-now'
       ? (b.status === 'erp-failed' ? '<span class="chip nospace">' + esc(tr('ERP failed')) + '</span>'
@@ -175,19 +180,24 @@ async function loadBookings() {
     const ids = [hb, mb, ctr, po, sysref].filter(Boolean).join('  ·  ');
     const meta = [esc(b.station + ' ' + b.mode), esc(lane), contact ? esc(tr('shpr') + ' ' + contact) : '',
       b.srcCreated ? esc(tr('received') + ' ' + b.srcCreated) : ''].filter(Boolean).join('  ·  ');
+    // right side of r1: once the booking is openable, the "view" affordance REPLACES the status chip (a viewable row
+    // no longer needs the [confirmed] badge); a not-yet-openable row keeps its status chip (e.g. registering…/confirmed).
+    const right = clickable
+      ? '<span class="bkgopen" title="' + esc(tr('Open to see full details')) + '">' + esc(tr('view ›')) + '</span>'
+      : stChip;
     card.innerHTML =
       '<div class="r1"><span class="chip bkgstage">' + esc(tr('BOOKING')) + '</span>' +
         '<span class="mref">' + esc(b.bookingNo || b.jobNo || '—') + '</span>' + inco +
         '<span class="mwho">' + esc(who) + '</span>' +
-        '<span class="mspacer"></span>' + stChip + '</div>' +
+        '<span class="mspacer"></span>' + right + '</div>' +
       (sub ? '<div class="r2">' + sub + '</div>' : '') +
       (ids ? '<div class="r2">' + ids + '</div>' : '') +
       (pty ? '<div class="r2 pty-row">' + pty + '</div>' : '') +
       '<div class="r2 muted">' + meta + '</div>';
     // deep-link via the synthetic shipment_alerts key (ship_job); the raw ERP job_no does NOT match the shipment API.
     // No match yet (booking not in the worklist set) -> not clickable, with a hint instead of a dead/wrong click.
-    if (b.shipJobNo) card.onclick = () => { closeBookings(); openShipment(b.shipJobNo, b.bookingNo || b.jobNo); };
-    else { card.style.cursor = 'default'; card.title = tr('Details appear after the next worklist refresh'); }
+    if (clickable) card.onclick = () => { closeBookings(); openShipment(b.shipJobNo, b.bookingNo || b.jobNo); };
+    else card.title = tr('Details appear after the next worklist refresh');
     feed.appendChild(card);
   });
 }

@@ -86,6 +86,10 @@ Copy-Item "<OPS_ROOT>\ops.config.example.json" "<OPS_ROOT>\ops.config.<tenant>.j
   - **`erpApi`**: keep `"mock": true` until the customer's ERP write token is in hand. (You can also set the **Base
     URL / token / mock toggle later in the app** — **Admin -> ERP API** tab — which stores them in the ops DB and
     applies immediately, no file edit or restart. The tab shows a **LIVE / MOCK** status.)
+  - **`publicBaseUrl`**: the **internet-facing HTTPS host** for customer document-review links (`doc-send` builds
+    `<publicBaseUrl>/bl-review/<token>`). **Blank → `http://localhost:<port>`, which a customer cannot open.** Set it
+    to e.g. `https://ops.customer.com` — in the config file, **or** in **Admin -> ERP API -> Customer review link
+    base URL** (stored in the ops DB, applies immediately). Behind a reverse proxy this is the proxy's public host.
   - **`alerts`**: `webhookUrl` (Teams/Slack) and/or `smtp` for the watchdog (step 9). Empty = log only.
   - **`retention`**: the data-retention horizons - the defaults in the example are sensible; tune later if the
     customer's auditor specifies different periods.

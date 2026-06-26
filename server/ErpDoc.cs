@@ -169,6 +169,13 @@ public static partial class Erp
         if (StrProp(cur, "incoTermsCode").Trim() != "") booking["incoTermsCode"] = StrProp(cur, "incoTermsCode").Trim();
         if (StrProp(cur, "freightTermsCode").Trim() != "") booking["freightTermsCode"] = StrProp(cur, "freightTermsCode").Trim();
         ApplyOverrides(booking, fields, sa, new[] { "serviceCode", "incoTermsCode", "freightTermsCode" });
+        // AIR: the ERP writes the detail line (awbdetl: mark2/desc2/good_desc2/rece_cbm) only when the FULL cargo
+        // block is present - the doc boxes carry marks/desc/commodity but not the cargo numbers, so read-merge
+        // qty/unit/weight/cbm from the live booking (same fix as EditPush). Preserve JSON number types (DeepClone -
+        // PropCI returns a node parented to `cur`).
+        if (booking["moduleTypeCode"]?.ToString() == "AIR")
+            foreach (var k in new[] { "quantity", "quantityUnit", "grossWeight", "weightUnit", "cbm", "isConsole" })
+                if (!booking.ContainsKey(k)) { var node = PropCI(cur, k); if (node != null) booking[k] = node.DeepClone(); }
         var missing = new[] { "partyGroupCode", "bookingNo", "serviceCode", "commodity", "portOfLoadingCode", "portOfLoadingName", "portOfDischargeCode", "portOfDischargeName" }
             .Where(k => (booking[k]?.ToString() ?? "").Trim() == "").ToList();
         if (missing.Count > 0) return new(false, false, false, new() { "booking/get ok" }, $"booking/update payload incomplete: {string.Join(", ", missing)} - check erp-api-map.json (partyGroupCode/serviceCodeDefault) and the shipment data");
