@@ -50,6 +50,7 @@
   tr.overth td{background:#3a1b1b}
   .daterow{font-size:12px;color:var(--mut);display:inline-flex;align-items:center;gap:6px}
   .datebox{font-size:12px;padding:5px 7px;min-width:104px;width:104px}
+  .timebox{font-size:12px;padding:5px 6px;min-width:60px;width:60px}
   .trunc{font-size:12px;color:#ffb45f}
 </style>
 </head>
@@ -300,12 +301,18 @@
   <section id="tab-changelog" class="tabpane" style="display:none">
     <div class="toolbar">
       <span class="muted" style="font-size:12px">Who changed what, logins, and server errors. Bounded by a date range (default today) so the list stays readable.</span>
-      <button class="ghost" id="clRefresh" style="font-size:12px;margin-left:auto">↻ Refresh</button>
+      <select id="clSection" style="font-size:12.5px;margin-left:auto">
+        <option value="audit">Change &amp; access audit</option>
+        <option value="errors">Server errors</option>
+        <option value="api">ERP API calls</option>
+      </select>
+      <button class="ghost" id="clRefresh" style="font-size:12px">↻ Refresh</button>
     </div>
 
+    <div class="clsec" id="clsec-audit">
     <h3 style="margin:14px 0 4px;font-size:14px">Change &amp; access audit</h3>
     <div class="toolbar">
-      <span class="daterow">from <input id="auFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> to <input id="auTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"></span>
+      <span class="daterow">from <input id="auFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> <input id="auFromT" class="timebox" type="text" placeholder="hh:mm" maxlength="5"> to <input id="auTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> <input id="auToT" class="timebox" type="text" placeholder="hh:mm" maxlength="5"></span>
       <select id="auSource" style="font-size:12px">
         <option value="changes">All changes &amp; logins</option>
         <option value="erp">ERP data edits</option>
@@ -320,11 +327,13 @@
       <thead id="auAuditHead"></thead>
       <tbody id="auAuditBody"></tbody>
     </table>
+    </div>
 
+    <div class="clsec" id="clsec-errors" style="display:none">
     <h3 style="margin:18px 0 4px;font-size:14px">Server errors</h3>
     <div class="muted" style="font-size:12px;margin-bottom:6px">From <code>ops-error.log</code>. Hover a row for the stack trace. Quote the id when reporting a problem.</div>
     <div class="toolbar">
-      <span class="daterow">from <input id="errFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> to <input id="errTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"></span>
+      <span class="daterow">from <input id="errFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> <input id="errFromT" class="timebox" type="text" placeholder="hh:mm" maxlength="5"> to <input id="errTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> <input id="errToT" class="timebox" type="text" placeholder="hh:mm" maxlength="5"></span>
       <input id="errSearch" type="search" autocomplete="off" placeholder="Filter (route / message)…" style="font-size:12px">
       <span class="count" id="auErrCount"></span>
       <span class="trunc" id="auErrTrunc" style="display:none"></span>
@@ -333,12 +342,14 @@
       <thead><tr><th>When</th><th>Id</th><th>Where</th><th>Message</th></tr></thead>
       <tbody id="auErrBody"></tbody>
     </table>
+    </div>
 
+    <div class="clsec" id="clsec-api" style="display:none">
     <h3 style="margin:18px 0 4px;font-size:14px">ERP API calls</h3>
     <div class="muted" style="font-size:12px;margin-bottom:6px">Every Swivel ERP call (read &amp; write) from <code>dbo.erp_api_log</code> — so you can see which API errored and why. Rows sharing a <b>corr</b> id are one operation (e.g. an agree = booking/get + booking/update). Hover a row for the request/response.</div>
     <div class="toolbar">
-      <span class="daterow">from <input id="apiFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> to <input id="apiTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"></span>
-      <label style="font-size:12px"><input id="apiFail" type="checkbox"> failures only</label>
+      <span class="daterow">from <input id="apiFrom" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> <input id="apiFromT" class="timebox" type="text" placeholder="hh:mm" maxlength="5"> to <input id="apiTo" class="datebox" type="text" placeholder="yyyy-mm-dd" maxlength="10"> <input id="apiToT" class="timebox" type="text" placeholder="hh:mm" maxlength="5"></span>
+      <label style="font-size:12px"><input id="apiFail" type="checkbox" checked> failures only</label>
       <input id="apiSearch" type="search" autocomplete="off" placeholder="Filter (endpoint / ref / actor / error)…" style="font-size:12px">
       <span class="count" id="auApiCount"></span>
       <span class="trunc" id="auApiTrunc" style="display:none"></span>
@@ -347,6 +358,7 @@
       <thead><tr><th>When</th><th>Corr</th><th>Actor</th><th>Stn</th><th>Dir</th><th>Endpoint</th><th>Ref</th><th>Result</th><th>ms</th><th>Error</th></tr></thead>
       <tbody id="auApiBody"></tbody>
     </table>
+    </div>
   </section>
 </div>
 <script>
@@ -497,8 +509,10 @@ function switchTab(name) {
   if (name === 'audit' && !auditLoaded) { auditLoaded = true; loadAuditTab(); }   // lazy-load once
   if (name === 'changelog' && !changelogLoaded) {
     changelogLoaded = true;
-    const t = todayStr();
-    ['#auFrom', '#auTo', '#errFrom', '#errTo'].forEach(s => { if (!$(s).value) $(s).value = t; });   // default range = today
+    const t = todayStr(), a = agoParts(30);   // default window = the last 30 minutes (to-time left open)
+    ['#auTo', '#errTo', '#apiTo'].forEach(s => { if (!$(s).value) $(s).value = t; });               // to-date = today
+    ['#auFrom', '#errFrom', '#apiFrom'].forEach(s => { if (!$(s).value) $(s).value = a.date; });     // from-date = 30 min ago (handles midnight)
+    ['#auFromT', '#errFromT', '#apiFromT'].forEach(s => { if (!$(s).value) $(s).value = a.time; });
     loadChangelogTab();
   }
 }
@@ -733,10 +747,14 @@ function auAuditCols(source) {
 }
 // yyyy-mm-dd guard: blank passes (server defaults to today), else must match the pattern.
 const dateOk = v => v === '' || /^\d{4}-\d{2}-\d{2}$/.test(v);
-function rangeQs(fromSel, toSel) {
+const timeOk = v => v === '' || /^\d{1,2}:\d{2}$/.test(v);   // HH:mm (24h)
+function agoParts(mins) { const d = new Date(Date.now() - mins * 60000), p = n => String(n).padStart(2, '0'); return { date: d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()), time: p(d.getHours()) + ':' + p(d.getMinutes()) }; }
+function rangeQs(fromSel, toSel, fromTSel, toTSel) {
   const f = $(fromSel).value.trim(), t = $(toSel).value.trim();
   if (!dateOk(f) || !dateOk(t)) return null;   // invalid -> caller skips the query
-  return (f ? '&from=' + f : '') + (t ? '&to=' + t : '');
+  const ft = fromTSel ? $(fromTSel).value.trim() : '', tt = toTSel ? $(toTSel).value.trim() : '';
+  if (!timeOk(ft) || !timeOk(tt)) return null;
+  return (f ? '&from=' + f : '') + (t ? '&to=' + t : '') + (ft ? '&fromTime=' + encodeURIComponent(ft) : '') + (tt ? '&toTime=' + encodeURIComponent(tt) : '');
 }
 function showTrunc(sel, d) {
   const el = $(sel);
@@ -745,7 +763,7 @@ function showTrunc(sel, d) {
 }
 
 async function loadAudit() {
-  const r = rangeQs('#auFrom', '#auTo'); if (r === null) return;   // wait for a valid date
+  const r = rangeQs('#auFrom', '#auTo', '#auFromT', '#auToT'); if (r === null) return;   // wait for a valid date/time
   const source = $('#auSource').value, q = $('#auSearch').value.trim();
   const d = await api('/api-ops/admin/audit?source=' + encodeURIComponent(source) + (q ? ('&q=' + encodeURIComponent(q)) : '') + r);
   const head = $('#auAuditHead'), body = $('#auAuditBody');
@@ -763,7 +781,7 @@ async function loadAudit() {
 }
 
 async function loadErrors() {
-  const r = rangeQs('#errFrom', '#errTo'); if (r === null) return;
+  const r = rangeQs('#errFrom', '#errTo', '#errFromT', '#errToT'); if (r === null) return;
   const q = $('#errSearch').value.trim();
   const d = await api('/api-ops/admin/errors?' + r.replace(/^&/, '') + (q ? ('&q=' + encodeURIComponent(q)) : ''));
   const tb = $('#auErrBody');
@@ -781,7 +799,7 @@ async function loadErrors() {
 }
 
 async function loadErpApi() {
-  const r = rangeQs('#apiFrom', '#apiTo'); if (r === null) return;
+  const r = rangeQs('#apiFrom', '#apiTo', '#apiFromT', '#apiToT'); if (r === null) return;
   const q = $('#apiSearch').value.trim(), fail = $('#apiFail').checked ? '&fail=1' : '';
   const d = await api('/api-ops/admin/erp-api?' + r.replace(/^&/, '') + fail + (q ? ('&q=' + encodeURIComponent(q)) : ''));
   const tb = $('#auApiBody');
@@ -802,7 +820,13 @@ async function loadErpApi() {
 }
 
 function loadAuditTab() { loadHealth(); loadStorage(); }
-function loadChangelogTab() { loadAudit(); loadErrors(); loadErpApi(); }
+function clSel() { return ($('#clSection') && $('#clSection').value) || 'audit'; }
+function loadClSection() { const w = clSel(); if (w === 'errors') loadErrors(); else if (w === 'api') loadErpApi(); else loadAudit(); }
+function loadChangelogTab() {   // show only the selected section, then fetch just that one
+  const w = clSel();
+  ['audit', 'errors', 'api'].forEach(s => { const el = $('#clsec-' + s); if (el) el.style.display = (s === w) ? '' : 'none'; });
+  loadClSection();
+}
 
 (async function init() {
   const me = await api('/api-ops/me');
@@ -834,14 +858,18 @@ function loadChangelogTab() { loadAudit(); loadErrors(); loadErpApi(); }
   $('#eToken').oninput = () => { const n = $('#eToken').value.length; $('#eTokenState').textContent = n ? ('(' + n + ' characters entered — click Save to apply)') : '(none set)'; };
   loadErp();
   $('#auRefresh').onclick = loadAuditTab;
-  $('#clRefresh').onclick = loadChangelogTab;
+  $('#clRefresh').onclick = loadClSection;       // refresh the visible section
+  $('#clSection').onchange = loadChangelogTab;   // switch section -> show + load it
   $('#auSource').onchange = loadAudit;
   $('#auSearch').onchange = loadAudit;
   $('#auFrom').onchange = loadAudit; $('#auTo').onchange = loadAudit;
+  $('#auFromT').onchange = loadAudit; $('#auToT').onchange = loadAudit;
   $('#errSearch').onchange = loadErrors;
   $('#errFrom').onchange = loadErrors; $('#errTo').onchange = loadErrors;
+  $('#errFromT').onchange = loadErrors; $('#errToT').onchange = loadErrors;
   $('#apiSearch').onchange = loadErpApi; $('#apiFail').onchange = loadErpApi;
   $('#apiFrom').onchange = loadErpApi; $('#apiTo').onchange = loadErpApi;
+  $('#apiFromT').onchange = loadErpApi; $('#apiToT').onchange = loadErpApi;
 })();
 </script>
 </body>

@@ -478,10 +478,27 @@ public static partial class Handlers
         var rx = new System.Text.RegularExpressions.Regex(@"^\d{4}-\d{2}-\d{2}$");
         var today = DateTime.Now.Date;
         var fs = (qs["from"] ?? "").Trim(); var tsr = (qs["to"] ?? "").Trim();
-        var fromDt = rx.IsMatch(fs) ? DateTime.ParseExact(fs, "yyyy-MM-dd", null) : today;
-        var toDt = rx.IsMatch(tsr) ? DateTime.ParseExact(tsr, "yyyy-MM-dd", null) : today;
-        if (toDt < fromDt) toDt = fromDt;
-        return (fromDt, toDt.AddDays(1), fromDt.ToString("yyyy-MM-dd"), toDt.ToString("yyyy-MM-dd"));
+        var fromDate = rx.IsMatch(fs) ? DateTime.ParseExact(fs, "yyyy-MM-dd", null) : today;
+        var toDate = rx.IsMatch(tsr) ? DateTime.ParseExact(tsr, "yyyy-MM-dd", null) : today;
+        if (toDate < fromDate) toDate = fromDate;
+        // optional time-of-day window (HH:mm): fromTime -> start at that clock time; toTime -> end AT that time
+        // (exclusive); absent toTime = end of the toDate day. So 10:00-11:30 on today gives a 90-min slice.
+        var ft = ParseHm(qs["fromTime"]); var tt = ParseHm(qs["toTime"]);
+        var fromDt = fromDate + (ft ?? TimeSpan.Zero);
+        var toDt = tt.HasValue ? toDate + tt.Value : toDate.AddDays(1);
+        if (toDt <= fromDt) toDt = fromDt.AddMinutes(1);   // never empty/negative
+        var fromS = fromDt.ToString(ft.HasValue ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd");
+        var toS = tt.HasValue ? (toDate + tt.Value).ToString("yyyy-MM-dd HH:mm") : toDate.ToString("yyyy-MM-dd");
+        return (fromDt, toDt, fromS, toS);
+    }
+
+    // HH:mm (24h) -> TimeSpan, or null when blank/invalid.
+    static TimeSpan? ParseHm(string? v)
+    {
+        var s = (v ?? "").Trim(); if (s == "") return null;
+        var m = System.Text.RegularExpressions.Regex.Match(s, @"^(\d{1,2}):(\d{2})$"); if (!m.Success) return null;
+        int h = int.Parse(m.Groups[1].Value), mi = int.Parse(m.Groups[2].Value);
+        return (h <= 23 && mi <= 59) ? new TimeSpan(h, mi, 0) : (TimeSpan?)null;
     }
 
     // --- small helpers for the file-backed views ---
