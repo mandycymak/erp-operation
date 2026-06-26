@@ -21,6 +21,10 @@ var host = Environment.GetEnvironmentVariable("OPS_HOST");
 host = string.IsNullOrWhiteSpace(host) ? "localhost" : (host == "+" ? "0.0.0.0" : host);
 builder.WebHost.UseUrls($"http://{host}:{port}");
 
+// Book Now async push: drains dbo.book_pending off the request path (the ERP /booking/update takes ~10s, so the
+// operator never waits) and notifies the creator via My Tasks once the ERP confirms. Survives restarts.
+builder.Services.AddHostedService<BookingPusher>();
+
 var app = builder.Build();
 
 // Exact JSON shape parity with PS ConvertTo-Json: emit property names verbatim (no camelCase transform),
@@ -444,6 +448,8 @@ MapAuthed("/api-ops/admin/{*rest}", new[] { "GET", "POST" }, async (ctx, sess, r
 MapData("/api-ops/erp-detail", Handlers.ErpDetail);   // source-ERP read (the one sanctioned ERP-on-request exception)
 MapData("/api-ops/erp-edit", Handlers.ErpEditSeed);   // seed the ERP-correction editor (source-ERP read)
 MapData("/api-ops/erp-master", Handlers.ErpMaster);   // master code type-ahead (source-ERP read)
+MapData("/api-ops/book-now-seed", Handlers.BookNowSeed);     // Book Now: station + default POL/service per mode
+MapData("/api-ops/book-now-master", Handlers.BookNowMaster); // Book Now: station-scoped master type-ahead (no job)
 // ---- Stage 4b: Swivel ERP HTTP write client ----
 MapData("/api-ops/erp-files", Handlers.ErpFiles);                 // list ERP-held files (+ clearable doctypes)
 MapDataPost("/api-ops/erp-file-upload", Handlers.ErpFileUpload);  // upload a doc -> clear the milestone(s) it proves
@@ -485,6 +491,26 @@ app.MapPost("/api-ops/erp-edit-save", async (HttpContext ctx) =>
         using var cn = new SqlConnection(Config.ConnStr);
         cn.Open();
         await Json(ctx, Handlers.ErpEditSave(cn, body, rs, ip));
+    }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
+    finally { dbGate.Release(); }
+});
+
+// POST /api-ops/book-now — quick-create a NEW booking in the ERP (auto bookingNo). Needs the client IP for the
+// erp_edit_log audit row, so it's a custom route like erp-edit-save rather than MapDataPost.
+app.MapPost("/api-ops/book-now", async (HttpContext ctx) =>
+{
+    var sess = GetSession(ctx);
+    if (sess == null) { await Json(ctx, new { error = "Authentication required" }, 401); return; }
+    var rs = await Resolve(ctx, sess); if (rs == null) return;
+    var body = await ReadBody(ctx);
+    var ip = ctx.Connection.RemoteIpAddress?.ToString() ?? "";
+    await dbGate.WaitAsync();
+    try
+    {
+        using var cn = new SqlConnection(Config.ConnStr);
+        cn.Open();
+        await Json(ctx, Handlers.BookNowCreate(cn, body, rs, ip));
     }
     catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
     finally { dbGate.Release(); }

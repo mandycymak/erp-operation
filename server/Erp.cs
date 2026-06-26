@@ -381,4 +381,118 @@ public static partial class Erp
             return new(false, false, false, steps, "booking/update failed: " + msg);
         }
     }
+
+    // ============================================================================================================
+    // BOOK NOW - create a brand-new booking from minimal operator input. Same /booking/update endpoint ("New
+    // Booking / Update Booking"), but DELIBERATELY omits bookingNo so the ERP AUTO-GENERATES it, and skips the
+    // /booking/get existence guard EditPush uses (here we WANT a create, not a merge). forwarderPartyCode (owncode)
+    // routes it to the right office; partyGroupCode + serviceCode + commodity + POL/POD are the NewBooking-required
+    // set, supplied by the form (no live booking to read-merge from).
+    // ============================================================================================================
+    public sealed record NewBookingInput(
+        string Module, string Bound, string ForwarderCode,
+        string PolCode, string PolName, string PodCode, string PodName,
+        string ServiceCode, string Commodity,
+        string CargoReady, string Etd,
+        string Quantity, string QuantityUnit, string GrossWeight, string Cbm,
+        string Container20, string Container40, string ContainerHQ, string ContainerOthers,
+        string ShipperCode, string ShipperName, string ConsigneeCode, string ConsigneeName,
+        string Remark, string RefNo);
+
+    public static JsonObject BuildNewBookingPayload(NewBookingInput b)
+    {
+        var p = new JsonObject
+        {
+            ["partyGroupCode"] = ErpMap.Str("partyGroupCode").Trim(),
+            ["moduleTypeCode"] = b.Module,
+            ["boundTypeCode"] = b.Bound == "Import" ? "I" : "O",
+        };
+        void Str(string k, string? v) { if (!string.IsNullOrWhiteSpace(v)) p[k] = v!.Trim(); }
+        JsonNode? Numv(string? v)
+        {
+            var s = (v ?? "").Trim();
+            if (s != "" && double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var d))
+                return d == Math.Floor(d) ? (JsonNode)(long)d : (JsonNode)d;
+            return null;
+        }
+        void Num(string k, string? v) { var n = Numv(v); if (n != null) p[k] = n; }
+        void Count(string k, string? v)   // container counts: skip blanks AND zeros (keep the payload minimal)
+        {
+            var s = (v ?? "").Trim();
+            if (s != "" && double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) && d != 0)
+                p[k] = d == Math.Floor(d) ? (JsonNode)(long)d : (JsonNode)d;
+        }
+
+        Str("serviceCode", b.ServiceCode);
+        Str("commodity", b.Commodity);
+        Str("portOfLoadingCode", b.PolCode);
+        Str("portOfLoadingName", b.PolName);
+        Str("portOfDischargeCode", b.PodCode);
+        Str("portOfDischargeName", b.PodName);
+        Str("cargoReadyDateEstimated", b.CargoReady);
+        Str("departureDateEstimated", b.Etd);
+        Num("quantity", b.Quantity);
+        Str("quantityUnit", b.QuantityUnit);
+        Num("grossWeight", b.GrossWeight);
+        Num("cbm", b.Cbm);
+        if (b.Module == "SEA")
+        {
+            Count("container20", b.Container20);
+            Count("container40", b.Container40);
+            Count("containerHQ", b.ContainerHQ);
+            Count("containerOthers", b.ContainerOthers);
+        }
+        Str("remark", b.Remark);
+        if (!string.IsNullOrWhiteSpace(b.RefNo))
+            p["bookingReference"] = new JsonArray(new JsonObject { ["refName"] = "Shipment Reference ID", ["refDescription"] = b.RefNo.Trim() });
+
+        var party = new JsonObject();
+        var fwd = (b.ForwarderCode ?? "").Trim(); if (fwd == "") fwd = ErpMap.Str("forwarderCode").Trim();
+        if (fwd != "") party["forwarderPartyCode"] = fwd;
+        if (!string.IsNullOrWhiteSpace(b.ShipperCode)) party["shipperPartyCode"] = b.ShipperCode!.Trim();
+        if (!string.IsNullOrWhiteSpace(b.ShipperName)) party["shipperPartyName"] = b.ShipperName!.Trim();
+        if (!string.IsNullOrWhiteSpace(b.ConsigneeCode)) party["consigneePartyCode"] = b.ConsigneeCode!.Trim();
+        if (!string.IsNullOrWhiteSpace(b.ConsigneeName)) party["consigneePartyName"] = b.ConsigneeName!.Trim();
+        if (party.Count > 0) p["bookingParty"] = party;
+        return p;
+    }
+
+    public sealed record CreateResult(bool Ok, bool Mock, string BookingNo, string Error, List<string> Steps);
+
+    // Push a new-booking create. NO /booking/get guard (the point is to create). Returns the ERP-assigned bookingNo
+    // when the response echoes one. Mock mode writes erp-mock/book-now-*.json and returns a synthetic number.
+    public static CreateResult CreateBookingPush(JsonObject payload, string refNo, string by, string station)
+    {
+        if (MockMode())
+        {
+            try
+            {
+                var bn = "MOCK-" + (refNo != "" ? refNo : DateTime.Now.ToString("yyyyMMddHHmmss"));
+                MockWrite($"book-now-{Regex.Replace(refNo != "" ? refNo : bn, @"[^A-Za-z0-9_-]", "_")}-{DateTime.Now:yyyyMMddHHmmss}.json",
+                    new JsonObject { ["at"] = DateTime.Now.ToString("o"), ["createdBy"] = by, ["station"] = station, ["mockBookingNo"] = bn, ["booking"] = payload.DeepClone() });
+                return new(true, true, bn, "", new() { "booking/update (mock create)" });
+            }
+            catch (Exception ex) { return new(false, true, "", "mock create failed: " + ex.Message, new()); }
+        }
+        using var _erpScope = ErpLog.Begin(by, station, refNo);
+        try
+        {
+            var resp = Call("/booking/update", payload);
+            return new(true, false, ExtractBookingNo(resp), "", new() { "booking/update ok (created)" });
+        }
+        catch (Exception ex) { return new(false, false, "", "booking/update failed: " + ex.Message, new()); }
+    }
+
+    // Pull the ERP-assigned bookingNo out of a /booking/update response (bare object/array, or nested under
+    // message/data). Returns "" when the ERP doesn't echo one (the caller then reports "created, number pending").
+    static string ExtractBookingNo(JsonNode? resp)
+    {
+        foreach (var el in AsArray(resp))
+        {
+            var v = StrProp(el, "bookingNo").Trim(); if (v != "") return v;
+            foreach (var c in new[] { PropCI(el, "message"), PropCI(el, "data") })
+                foreach (var x in AsArray(c)) { var w = StrProp(x, "bookingNo").Trim(); if (w != "") return w; }
+        }
+        return "";
+    }
 }

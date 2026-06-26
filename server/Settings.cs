@@ -12,6 +12,11 @@ public static class Settings
     public const string ErpBaseUrlKey = "erpBaseUrl";
     public const string ErpTokenKey = "erpToken";
     public const string ErpMockKey = "erpMock";
+    public const string BookRefFormatKey = "bookRefFormat";
+    // Book Now outbound-reference template. Tokens: {station} {m}(A/S) {mode}(AIR/SEA) {yymmdd} {yy} {seqN}(running
+    // number, N-wide) / {seq}(=4-wide). The running number resets per day only when the format carries {yymmdd}/{yy};
+    // otherwise it is a continuous per-(station,mode) sequence. Default keeps the dated form e.g. HKGA2606260001.
+    public const string BookRefFormatDefault = "{station}{m}{yymmdd}{seq4}";
 
     static readonly object _lock = new();
     static volatile IReadOnlyDictionary<string, string> _snap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -39,6 +44,9 @@ public static class Settings
     public static bool ErpMock => Has(ErpMockKey)
         ? Raw(ErpMockKey)!.Trim().ToLowerInvariant() is "true" or "1" or "yes" or "on"
         : Config.ErpMock;
+
+    public static string BookRefFormat => Has(BookRefFormatKey) ? Raw(BookRefFormatKey)!.Trim() : BookRefFormatDefault;
+    public static bool BookRefFormatFromDb => Has(BookRefFormatKey);
 
     // whether each value currently comes from SQL (for the admin UI to show "from SQL" vs "from config file")
     public static bool ErpBaseUrlFromDb => Has(ErpBaseUrlKey);

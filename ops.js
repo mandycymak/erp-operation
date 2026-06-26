@@ -120,6 +120,8 @@ function wireBookings() {
   const c = $('#bkgClose'); if (c) c.onclick = closeBookings;
   const v = $('#bkgView'); if (v) v.addEventListener('click', e => { if (e.target === v) closeBookings(); });
   const s = $('#bkgSearch'); if (s) s.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadBookings(); } else if (e.key === 'Escape') closeBookings(); });
+  const m = $('#bkgMode'); if (m) m.onchange = loadBookings;   // Air / Sea filter
+  const bn = $('#bookNowBtn'); if (bn) bn.onclick = openBookNow;
 }
 function openBookings() { const v = $('#bkgView'); if (!v) return; v.style.display = 'flex'; loadBookings(); }
 function closeBookings() { const v = $('#bkgView'); if (v) v.style.display = 'none'; }
@@ -127,30 +129,292 @@ async function loadBookings() {
   const feed = $('#bkgFeed'); if (!feed) return;
   feed.innerHTML = '<div class="find-msg muted">' + esc(tr('Loading…')) + '</div>';
   const q = ($('#bkgSearch') && $('#bkgSearch').value.trim()) || '';
+  const mode = ($('#bkgMode') && $('#bkgMode').value) || '';
+  const qs = [];
+  if (q) qs.push('q=' + encodeURIComponent(q));
+  if (mode) qs.push('mode=' + encodeURIComponent(mode));
   let d;
-  try { d = await api('/api-ops/new-bookings' + (q ? ('?q=' + encodeURIComponent(q)) : '')); }
+  try { d = await api('/api-ops/new-bookings' + (qs.length ? ('?' + qs.join('&')) : '')); }
   catch (e) { feed.innerHTML = '<div class="find-msg">' + esc(tr('Could not load bookings.')) + '</div>'; return; }
   const rows = arr(d.rows);
-  $('#bkgSub').textContent = (d.count != null ? d.count : rows.length) + ' ' + tr('booking(s)') + ' · ' + (d.from || '') + ' → ' + (d.to || '');
+  // subtitle leads with the station scope shown — e.g. "station HKG : 91 booking(s) · 2026-06-18 → 2026-06-25"
+  const stns = [...new Set(rows.map(r => r.station).filter(Boolean))];
+  const stnLbl = stns.length === 1 ? (tr('station') + ' ' + stns[0]) : (stns.length > 1 ? stns.join('/') : '');
+  $('#bkgSub').textContent = (stnLbl ? stnLbl + ' : ' : '') + (d.count != null ? d.count : rows.length) + ' ' + tr('booking(s)') + ' · ' + (d.from || '') + ' → ' + (d.to || '');
   if (!rows.length) { feed.innerHTML = '<div class="find-msg muted">' + esc(tr('No new bookings for your station(s) in this window.')) + '</div>'; return; }
   feed.innerHTML = '';
   rows.forEach(b => {
     const card = el('div', 'mcard G bkgrow');
     const lane = (b.pol || '') + (b.pod ? ' → ' + b.pod : '');
-    const stChip = b.status === 'notified' ? '<span class="chip arrived">' + esc(tr('notified')) + '</span>'
+    const stChip = b.channel === 'book-now'
+      ? (b.status === 'erp-failed' ? '<span class="chip nospace">' + esc(tr('ERP failed')) + '</span>'
+        : b.status === 'erp-pending' ? '<span class="chip">' + esc(tr('registering…')) + '</span>'
+        : '<span class="chip arrived">' + esc(tr('created')) + '</span>')
+      : b.status === 'notified' ? '<span class="chip arrived">' + esc(tr('notified')) + '</span>'
       : (b.status === 'failed' ? '<span class="chip nospace">' + esc(tr('alert failed')) + '</span>' : '');
+    const inco = b.incoterm ? '<span class="minco" title="' + esc(tr('Incoterm — your delivery responsibility')) + '">' + esc(b.incoterm) + '</span>' : '';
+    // headline owner = controlling customer (ctrl), falling back to the shipper/customer when none is recorded
+    const who = (b.ctrlCode ? compName(b.ctrlCode) : '') || b.shipperName || b.custCode || '';
+    const cargo = cargoProfile(b);   // reuses the worklist profile (Air pcs+kg / FCL containers / LCL kg+cbm)
+    const commod = b.commodity ? '<span title="' + esc(b.commodity) + '">' + esc(b.commodity.length > 28 ? b.commodity.slice(0, 28) + '…' : b.commodity) + '</span>' : '';
+    // parties subline (worklist style): shipper / consignee / agent company names
+    const pn = (code, fb) => code ? esc(compName(code)) : (fb ? esc(fb) : '');
+    const mkPty = (lbl, txt) => txt ? '<span class="pty">' + tr(lbl) + ' ' + txt + '</span>' : '';
+    const pty = [mkPty('shpr', pn(b.shipperCode, b.shipperName)), mkPty('cgne', pn(b.consigneeCode, b.consigneeName)), mkPty('agnt', pn(b.agentCode))].filter(Boolean).join('  ·  ');
     const contact = [b.factoryContact, b.factoryEmail].filter(Boolean).join(' · ');
+    const sub = [cargo, commod].filter(Boolean).join('  ·  ');
+    // identifiers that appear as the booking progresses (blank at pure booking stage): bills, container/SO, PO/ship-id
+    const isAir = b.mode === 'Air';
+    const ctr = b.containerNo ? tr('ctr') + ' ' + esc(b.containerNo) + (b.containerCount > 1 ? ' +' + (b.containerCount - 1) : '')
+      : (b.linerSo ? tr('SO') + ' ' + esc(b.linerSo) : '');
+    const hb = b.houseBill ? (isAir ? 'HAWB' : tr('House BL')) + ' ' + esc(b.houseBill) : '';
+    const mb = b.masterBill ? (isAir ? 'MAWB' : tr('Master BL')) + ' ' + esc(b.masterBill) : '';
+    const po = b.custRef ? (isAir ? 'PO ' : tr('ship-id') + ' ') + esc(b.custRef) : '';
+    const ids = [hb, mb, ctr, po].filter(Boolean).join('  ·  ');
+    const meta = [esc(b.station + ' ' + b.mode), esc(lane), contact ? esc(tr('shpr') + ' ' + contact) : '',
+      b.srcCreated ? esc(tr('received') + ' ' + b.srcCreated) : ''].filter(Boolean).join('  ·  ');
     card.innerHTML =
       '<div class="r1"><span class="chip bkgstage">' + esc(tr('BOOKING')) + '</span>' +
-        '<span class="mref">' + esc(b.bookingNo || b.jobNo || '—') + '</span>' +
-        '<span class="mwho">' + esc(b.shipperName || '') + '</span>' +
+        '<span class="mref">' + esc(b.bookingNo || b.jobNo || '—') + '</span>' + inco +
+        '<span class="mwho">' + esc(who) + '</span>' +
         '<span class="mspacer"></span>' + stChip + '</div>' +
-      '<div class="r2">' + [esc(b.station + ' ' + b.mode), esc(lane), contact ? esc(tr('factory') + ': ' + contact) : '',
-        b.srcCreated ? esc(tr('received') + ' ' + b.srcCreated) : ''].filter(Boolean).join('  ·  ') + '</div>';
-    if (b.jobNo) card.onclick = () => { closeBookings(); openShipment(b.jobNo, b.bookingNo || b.jobNo); };
+      (sub ? '<div class="r2">' + sub + '</div>' : '') +
+      (ids ? '<div class="r2">' + ids + '</div>' : '') +
+      (pty ? '<div class="r2 pty-row">' + pty + '</div>' : '') +
+      '<div class="r2 muted">' + meta + '</div>';
+    // deep-link via the synthetic shipment_alerts key (ship_job); the raw ERP job_no does NOT match the shipment API.
+    // No match yet (booking not in the worklist set) -> not clickable, with a hint instead of a dead/wrong click.
+    if (b.shipJobNo) card.onclick = () => { closeBookings(); openShipment(b.shipJobNo, b.bookingNo || b.jobNo); };
+    else { card.style.cursor = 'default'; card.title = tr('Details appear after the next worklist refresh'); }
     feed.appendChild(card);
   });
 }
+// ---------- Book Now (quick-create a NEW booking in the ERP; auto bookingNo) ----------
+// Container-mix parser lifted from erp-quotation Quote builder (app.js normContainer/containerCounts) so the
+// captions + behaviour match. "1x20GP, 2x40HQ" -> {20GP,40GP,40HQ,45GP}; 45GP maps to the ERP containerOthers.
+function normContainer(t) {
+  t = ('' + t).toUpperCase().replace(/['\s"]/g, '');
+  if (t === '20' || t === '20GP' || t === '20DC' || t === '20DV' || t === '20FT') return '20GP';
+  if (t === '40' || t === '40GP' || t === '40DC' || t === '40DV' || t === '40FT') return '40GP';
+  if (t === '40H' || t === '40HQ' || t === '40HC') return '40HQ';
+  if (t === '45' || t === '45GP' || t === '45HQ' || t === '45HC') return '45GP';
+  return '';
+}
+function containerCounts(mix) {
+  const m = { '20GP': 0, '40GP': 0, '40HQ': 0, '45GP': 0 };
+  ('' + (mix || '')).split(/[,;]+/).forEach(tok => {
+    tok = tok.trim(); if (!tok) return;
+    const mm = tok.match(/(\d+(?:\.\d+)?)\s*[xX*]\s*([0-9A-Za-z'"]+)/);
+    const n = mm ? +mm[1] : 1, t = normContainer(mm ? mm[2] : tok);
+    if (t && m[t] != null) m[t] += n;
+  });
+  return m;
+}
+
+let _bnCtx = null;   // { station, mode } shared with the master-lookup dropdown
+// plain text/number/date/textarea cell: caption above the input.
+function bnText(label, o) {
+  o = o || {};
+  const cell = el('label', 'bncell' + (o.wide ? ' wide' : ''));
+  cell.appendChild(el('span', 'bncap', esc(label)));
+  const inp = o.area ? el('textarea') : el('input');
+  if (!o.area) inp.type = 'text';
+  inp.autocomplete = 'off';
+  if (o.ph) inp.placeholder = o.ph;
+  if (o.val != null) inp.value = o.val;
+  if (o.num) inp.inputMode = 'decimal';
+  if (o.max) inp.maxLength = o.max;
+  cell.appendChild(inp);
+  return { cell, inp, val: () => inp.value.trim() };
+}
+// the ERP master display format: "NAME (CODE) - city, country" (e.g. "HONG KONG (HKHKG)", "ABC CO LTD (A0023) - USLAX, US").
+function bnFmtMaster(r) {
+  const code = (r.code || '').trim(), name = (r.name || '').trim(), loc = (r.loc || '').trim();
+  return (name || code) + (name && code ? ' (' + code + ')' : '') + (loc ? ' - ' + loc : '');
+}
+// master-lookup cell, Edit-ERP style: the "..." trigger sits INLINE next to the caption (no separate button). The
+// VISIBLE field holds the NAME (people type/recognise names, e.g. "HONG KONG", "ABC FOOTWEAR LTD") - the code is
+// resolved behind it: from a "..." pick (stored on dataset.code) or, when the user just types a name, by the ERP on
+// submit. So typing a name directly is fine and is NOT validated here. Mode-aware (the dropdown queries _bnCtx.mode).
+function bnLook(label, kind, o) {
+  o = o || {};
+  const cell = el('label', 'bncell' + (o.wide ? ' wide' : ''));
+  const cap = el('span', 'bncap'); cap.appendChild(document.createTextNode(label + ' '));
+  const dots = el('span', 'bndots', '...'); dots.title = tr('Look up'); cap.appendChild(dots); cell.appendChild(cap);
+  const inp = el('input', 'bncodein'); inp.type = 'text'; inp.autocomplete = 'off'; inp.spellcheck = false;
+  inp.value = o.name || o.code || '';
+  if (o.code) inp.dataset.code = o.code;
+  const hint = el('span', 'bnhint'); hint.textContent = (o.name || o.code) ? bnFmtMaster({ code: o.code, name: o.name }) : '';
+  cell.appendChild(inp); cell.appendChild(hint);
+  inp.oninput = () => { inp.dataset.code = ''; hint.textContent = ''; };   // a freshly typed name -> let the ERP resolve the code
+  dots.onclick = (e) => { e.preventDefault(); bnLookup(kind, cell, inp, hint); };
+  return { cell, code: () => (inp.dataset.code || '').trim(), name: () => inp.value.trim(),
+    setVal: (c, n) => { inp.value = n || c || ''; inp.dataset.code = c || ''; hint.textContent = (n || c) ? bnFmtMaster({ code: c, name: n }) : ''; } };
+}
+// a tiny labelled input for the compact cargo row (Qty / Unit / Gross weight / CBM on one line).
+function bnMini(label, o) {
+  o = o || {};
+  const w = el('div', 'bnmini'); w.appendChild(el('span', 'bnmcap', esc(label)));
+  const i = el('input'); i.type = 'text'; i.autocomplete = 'off'; if (o.num) i.inputMode = 'decimal';
+  if (o.val != null) i.value = o.val; if (o.max) i.maxLength = o.max;
+  w.appendChild(i); return { w, val: () => i.value.trim() };
+}
+
+// type-ahead dropdown (ported from erp-edit.js openLookup; repointed at /api-ops/book-now-master, station-scoped).
+function bnLookup(kind, anchorEl, inp, hintEl) {
+  const ex = anchorEl.querySelector('.lookbox'); if (ex) { ex.remove(); return; }
+  const box = el('div', 'lookbox');
+  const q = el('input', 'lq'); q.type = 'text'; q.placeholder = tr('code or name…'); q.spellcheck = false; box.appendChild(q);
+  const list = el('div'); box.appendChild(list); anchorEl.appendChild(box);
+  const ar = inp.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight, bw = box.offsetWidth || 240;
+  box.style.position = 'fixed'; box.style.left = Math.max(8, Math.min(ar.left, vw - 8 - bw)) + 'px'; box.style.right = 'auto';
+  const below = vh - ar.bottom - 10, above = ar.top - 10;
+  if (below >= 160 || below >= above) { box.style.top = (ar.bottom + 3) + 'px'; box.style.bottom = 'auto'; box.style.maxHeight = Math.max(120, below) + 'px'; }
+  else { box.style.bottom = (vh - ar.top + 3) + 'px'; box.style.top = 'auto'; box.style.maxHeight = Math.max(120, above) + 'px'; }
+  try { q.focus({ preventScroll: true }); } catch (e) { q.focus(); }
+  let t = null;
+  const run = async () => {
+    list.innerHTML = '<div class="li">' + esc(tr('searching…')) + '</div>';
+    let d; try {
+      d = await api('/api-ops/book-now-master?station=' + encodeURIComponent(_bnCtx.station) + '&mode=' + encodeURIComponent(_bnCtx.mode) +
+        '&kind=' + encodeURIComponent(kind) + '&q=' + encodeURIComponent(q.value.trim()));
+    } catch (e) { d = { error: tr('lookup failed') }; }
+    list.innerHTML = '';
+    if (d.error) { list.innerHTML = '<div class="li">' + esc(d.error) + '</div>'; return; }
+    const res = arr(d.results);
+    if (!res.length) { list.innerHTML = '<div class="li">' + esc(tr('no matches')) + '</div>'; return; }
+    res.forEach(r => {
+      const li = el('div', 'li', esc(bnFmtMaster(r)));
+      li.onclick = () => { inp.value = r.name || r.code; inp.dataset.code = r.code || ''; if (hintEl) hintEl.textContent = bnFmtMaster(r); box.remove(); };
+      list.appendChild(li);
+    });
+  };
+  q.oninput = () => { clearTimeout(t); t = setTimeout(run, 220); };
+  run();
+  setTimeout(() => { document.addEventListener('click', function h(e) { if (!anchorEl.contains(e.target)) { box.remove(); document.removeEventListener('click', h); } }); }, 0);
+}
+
+function bnToast(text) {
+  const t = el('div', 'bn-toast', esc(text)); document.body.appendChild(t);
+  setTimeout(() => { t.classList.add('show'); }, 10);
+  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 6000);
+}
+
+async function openBookNow() {
+  const mode0 = (state.tmode === 'Air') ? 'Air' : 'Sea';
+  let seed; try { seed = await api('/api-ops/book-now-seed?mode=' + encodeURIComponent(mode0)); }
+  catch (e) { seed = { error: tr('Could not start a new booking.') }; }
+  if (!seed || seed.error) { alert((seed && seed.error) || tr('Could not start a new booking.')); return; }
+  _bnCtx = { station: seed.station, mode: mode0 };
+
+  const bg = el('div', 'modal-bg'); const box = el('div', 'modal booknow');
+  box.appendChild(el('h3', '', esc(tr('Book Now')) + ' — ' + esc(tr('new ERP booking'))));
+
+  // --- compact top strip: Mode · Export/Import · Station · Ref No (small controls on one line) ---
+  const top = el('div', 'bntop');
+  const modeSel = el('select'); ['Sea', 'Air'].forEach(m => { const o = el('option'); o.value = m; o.textContent = tr(m); if (m === mode0) o.selected = true; modeSel.appendChild(o); });
+  const boundSel = el('select'); ['Export', 'Import'].forEach(v => { const o = el('option'); o.value = v; o.textContent = tr(v); boundSel.appendChild(o); });
+  const stns = arr(seed.stations);
+  let stationCtl;
+  if (stns.length > 1) { stationCtl = el('select'); stns.forEach(s => { const o = el('option'); o.value = s; o.textContent = s; if (s === seed.station) o.selected = true; stationCtl.appendChild(o); }); }
+  else { stationCtl = el('input'); stationCtl.type = 'text'; stationCtl.value = seed.station; stationCtl.readOnly = true; }
+  const refInp = el('input'); refInp.type = 'text'; refInp.autocomplete = 'off';
+  const stationVal = () => (stationCtl.value || seed.station || '').trim();
+  const tcell = (lab, ctl) => { const c = el('div', 'bntf'); c.appendChild(el('span', 'bncap', esc(lab))); c.appendChild(ctl); return c; };
+  top.appendChild(tcell(tr('Mode'), modeSel));
+  top.appendChild(tcell(tr('Export/Import'), boundSel));
+  top.appendChild(tcell(tr('Station'), stationCtl));
+  top.appendChild(tcell(tr('Ref No'), refInp));
+  box.appendChild(top);
+
+  // --- main grid (two columns; paired fields keep it short) ---
+  const f = el('div', 'bnf'); box.appendChild(f);
+  const cargoReady = bnText(tr('Cargo ready'), { ph: 'yyyy-mm-dd' });
+  const etd = bnText(tr('ETD (departure)'), { ph: 'yyyy-mm-dd', val: seed.today || '' });   // ETD defaults to today
+  f.appendChild(cargoReady.cell); f.appendChild(etd.cell);
+
+  const pol = bnLook(tr('Port of loading'), 'port', { code: seed.defaultPol && seed.defaultPol.code, name: seed.defaultPol && seed.defaultPol.name });
+  const pod = bnLook(tr('Port of discharge'), 'port', {});
+  f.appendChild(pol.cell); f.appendChild(pod.cell);
+
+  // Service type is not shown - it's auto-set per mode on the server (AIR for air, the Sea default for sea).
+  const commodity = bnText(tr('Commodity'), { wide: true, max: 21 });
+  f.appendChild(commodity.cell);
+
+  // cargo row: Qty · Unit · Gross weight · CBM on one line
+  const mQty = bnMini(tr('Qty'), { num: true }), mUnit = bnMini(tr('Unit'), { val: seed.quantityUnit || 'CTN', max: 10 });
+  const mGwt = bnMini(tr('Gross weight'), { num: true }), mCbm = bnMini(tr('CBM'), { num: true });
+  const cargoCell = el('div', 'bncell wide'); cargoCell.appendChild(el('span', 'bncap', esc(tr('Cargo'))));
+  const cargoG = el('div', 'bncargo'); [mQty, mUnit, mGwt, mCbm].forEach(m => cargoG.appendChild(m.w)); cargoCell.appendChild(cargoG);
+  f.appendChild(cargoCell);
+
+  // container mix - Sea freight only (hidden for Air); live deduced preview underneath
+  const mix = bnText(tr('Container mix') + ' (' + tr('sea freight only') + ')', { wide: true, ph: '1x20GP, 2x40HQ' });
+  const mixPrev = el('div', 'bnmix-prev muted'); mix.cell.appendChild(mixPrev);
+  const updatePrev = () => { const c = containerCounts(mix.val()); mixPrev.textContent = "20':" + c['20GP'] + "  40':" + c['40GP'] + "  HQ:" + c['40HQ'] + "  " + tr('Other') + ':' + c['45GP']; };
+  mix.inp.oninput = updatePrev; updatePrev(); f.appendChild(mix.cell);
+  if (mode0 === 'Air') mix.cell.style.display = 'none';   // initial state (applyMode keeps it in sync on toggle)
+
+  // optional parties (code + name, both sent)
+  const shipper = bnLook(tr('Shipper') + ' (' + tr('optional') + ')', 'custsub', {});
+  const consignee = bnLook(tr('Consignee') + ' (' + tr('optional') + ')', 'custsub', {});
+  f.appendChild(shipper.cell); f.appendChild(consignee.cell);
+
+  const remark = bnText(tr('Remark'), { wide: true, area: true, max: 2000 });
+  f.appendChild(remark.cell);
+
+  const msg = el('div', 'bn-msg'); box.appendChild(msg);
+  const bar = el('div', 'modal-bar'); const cancel = el('button', 'ghost', tr('Cancel')); const ok = el('button', 'primary', tr('Create booking'));
+  bar.appendChild(cancel); bar.appendChild(ok); box.appendChild(bar);
+  bg.appendChild(box); document.body.appendChild(bg);
+  const done = () => bg.remove();
+  cancel.onclick = done; bg.onclick = e => { if (e.target === bg) done(); };
+
+  // mode/station change: keep the lookup context current AND re-default POL + service for the new mode so the
+  // port dropdown (and the prefilled codes) follow Air/Sea, mirroring Edit ERP.
+  let lastMode = mode0;
+  const applyMode = async () => {
+    _bnCtx.mode = modeSel.value; _bnCtx.station = stationVal();
+    const air = modeSel.value === 'Air';
+    mix.cell.style.display = air ? 'none' : '';
+    refInp.placeholder = stationVal() + (air ? 'A' : 'S') + 'yymmdd0001';
+    if (modeSel.value !== lastMode || stationCtl.tagName === 'SELECT') {
+      lastMode = modeSel.value;
+      try {
+        const sd = await api('/api-ops/book-now-seed?mode=' + encodeURIComponent(modeSel.value) + '&station=' + encodeURIComponent(stationVal()));
+        if (sd && !sd.error && sd.defaultPol) pol.setVal(sd.defaultPol.code, sd.defaultPol.name);   // POL follows the mode
+      } catch (e) { }
+    }
+  };
+  modeSel.onchange = applyMode; if (stns.length > 1) stationCtl.onchange = applyMode;
+  refInp.placeholder = stationVal() + (mode0 === 'Air' ? 'A' : 'S') + 'yymmdd0001';
+
+  ok.onclick = async () => {
+    if (!isYmd(cargoReady.val()) || !isYmd(etd.val())) { msg.className = 'bn-msg'; msg.textContent = tr('Dates must be yyyy-mm-dd.'); return; }
+    const okLabel = ok.textContent;
+    ok.disabled = true; ok.textContent = tr('Creating…'); msg.className = 'bn-msg'; msg.textContent = '';
+    const air = modeSel.value === 'Air', c = containerCounts(mix.val());
+    const body = {
+      station: stationVal(), mode: modeSel.value, bound: boundSel.value, refNo: refInp.value.trim(),
+      cargoReady: cargoReady.val(), etd: etd.val(),
+      polCode: pol.code(), polName: pol.name(), podCode: pod.code(), podName: pod.name(),
+      serviceCode: '', commodity: commodity.val(),
+      quantity: mQty.val(), quantityUnit: mUnit.val() || 'CTN', grossWeight: mGwt.val(), cbm: mCbm.val(),
+      shipperCode: shipper.code(), shipperName: shipper.name(), consigneeCode: consignee.code(), consigneeName: consignee.name(),
+      remark: remark.val(),
+    };
+    if (!air) { body.container20 = c['20GP']; body.container40 = c['40GP']; body.containerHQ = c['40HQ']; body.containerOthers = c['45GP']; }
+    let d; try { d = await api('/api-ops/book-now', { method: 'POST', body }); } catch (e) { d = { error: tr('Request failed.') }; }
+    if (!d || d.error || d.ok === false) { msg.className = 'bn-msg'; msg.textContent = (d && d.error) || tr('Could not create the booking.'); ok.disabled = false; ok.textContent = okLabel; return; }
+    done();
+    // async: the booking is registered instantly with our Ref No; the ERP push runs in the background and the
+    // creator gets a My Tasks note when it confirms. No waiting on the ~10s ERP call.
+    bnToast(tr('Booking registered') + ': ' + (d.refNo || '') + (d.mock ? ' [' + tr('mock') + ']' : '') + ' — ' + tr('creating in the ERP; you will get a My Tasks note when confirmed.'));
+    loadBookings(); if (typeof loadTasks === 'function') loadTasks();
+  };
+}
+
 function buildUserPicker() {
   const sel = $('#userPicker'); sel.innerHTML = '';
   state.roster.forEach(u => { const o = el('option'); o.value = u; o.textContent = u; if (u === state.user) o.selected = true; sel.appendChild(o); });
@@ -1433,14 +1697,19 @@ function taskCard(t, fromOthers, today) {
     const lbl = cls === ' over' ? ' · ' + tr('overdue') : (cls === ' now' ? ' · ' + tr('today') : '');
     due = '<span class="due' + cls + '">🔔 ' + esc(t.remindOn) + lbl + '</span>';
   }
-  const kindTag = t.arrType ? '<span class="kind">' + esc(tr(t.arrType)) + '</span> ' : '';
+  // a Book Now confirmation (kind 'booking') is informational - it has no worklist shipment, so it does NOT open the
+  // drawer / Edit-ERP (that would 'die' on a job that isn't in shipment_alerts). Show it with a tag, tick-done only.
+  const isBooking = t.kind === 'booking';
+  const kindTag = isBooking ? '<span class="kind">' + esc(tr('booking')) + '</span> '
+    : (t.arrType ? '<span class="kind">' + esc(tr(t.arrType)) + '</span> ' : '');
   const ctx = [t.cargo, t.vesselVoyage, t.lane].filter(Boolean).map(esc).join(' · ');
   d.innerHTML =
     '<button class="tk-done" title="' + esc(tr('Mark done')) + '">✓</button>' +
     '<div class="tk-head">' + kindTag + '<strong>' + esc(who) + '</strong>' + due + '</div>' +
     '<div class="tk-sub mut">' + esc(t.job_no) + (fromOthers ? ' · ' + esc(tr('from')) + ' ' + esc(t.user) : '') + (ctx ? ' · ' + ctx : '') + '</div>' +
     '<div class="tk-note">' + esc(t.note) + '</div>';
-  d.onclick = () => openShipment(t.job_no);   // whole card opens the shipment
+  if (isBooking) d.classList.add('tk-info');
+  else d.onclick = () => openShipment(t.job_no);   // whole card opens the shipment
   d.querySelector('.tk-done').onclick = async e => { e.stopPropagation(); await api('/api-ops/note-done', { method: 'POST', body: { id: t.id, done: true } }); loadTasks(); };
   return d;
 }

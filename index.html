@@ -21,7 +21,7 @@
   <select class="ghost" id="langPicker" title="Language"></select>
   <button class="ghost themebtn" id="themeBtn" data-i18n-title title="Switch theme (Auto / Light / Dark)">Auto</button>
   <button class="ghost" id="findBtn" data-i18n-title title="Find a shipment by typing what you remember (company, lane, commodity, a message, a date)">🔎 <span data-i18n>Find</span></button>
-  <button class="ghost" id="bkgBtn" data-i18n-title title="New bookings received for your station(s)">📋 <span data-i18n>New bookings</span> <span class="badge" id="bkgBadge" style="display:none">0</span></button>
+  <button class="ghost" id="bkgBtn" data-i18n-title title="New bookings received for your station(s)"><span data-i18n>New bookings</span> <span class="badge" id="bkgBadge" style="display:none">0</span></button>
   <button class="ghost" id="tasksBtn" data-i18n-title title="My Tasks inbox"><span data-i18n>My Tasks</span> <span class="badge" id="taskBadge" style="display:none">0</span></button>
   <button class="ghost" id="refreshBtn" data-i18n-title title="Refresh">↻</button>
 </header>
@@ -118,10 +118,16 @@
 <div id="bkgView" class="find-view" style="display:none">
   <div class="find-box">
     <div class="find-top">
-      <strong data-i18n>📋 New bookings</strong>
+      <strong data-i18n>New bookings</strong>
       <span class="muted sm" id="bkgSub" style="margin-left:8px"></span>
       <span class="spacer"></span>
-      <input type="search" id="bkgSearch" autocomplete="off" data-i18n-placeholder placeholder="Filter (booking / factory / lane)…" style="font-size:13px;max-width:240px">
+      <button class="bnlink" id="bookNowBtn" data-i18n-title title="Create a new booking in the ERP">+ <span data-i18n>Book Now</span></button>
+      <select id="bkgMode" class="ghost" data-i18n-title title="Air / Sea" style="font-size:13px">
+        <option value="" data-i18n>All</option>
+        <option value="Air" data-i18n>Air</option>
+        <option value="Sea" data-i18n>Sea</option>
+      </select>
+      <input type="search" id="bkgSearch" autocomplete="off" data-i18n-placeholder placeholder="booking no / shipper" style="font-size:13px;max-width:240px">
       <button class="ghost" id="bkgClose" data-i18n-title title="Close (Esc)">✕</button>
     </div>
     <div id="bkgFeed" class="find-feed"></div>

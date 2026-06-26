@@ -609,6 +609,46 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_bkalert_det' AND object_
   CREATE INDEX IX_bkalert_det ON dbo.booking_alert(detected_at);
 "@
 
+# --- X.4d book_ref_seq - per-(station, mode, day) counter for the "Book Now" outbound reference
+#     (bookingReference 'Shipment Reference ID' = <station>+A/S+yymmdd+NNNN, e.g. HKGA2606260001). The .NET
+#     BookNowCreate handler increments it atomically (UPDATE ... OUTPUT) when the operator leaves Ref No blank,
+#     so two concurrent submits never collide on a number. day_key = yyMMdd (string) so a new day restarts at 1. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.book_ref_seq') IS NULL
+CREATE TABLE dbo.book_ref_seq (
+  station  nvarchar(10) NOT NULL,
+  mode     char(3)      NOT NULL,
+  day_key  char(6)      NOT NULL,        -- period bucket: yyMMdd when the ref format carries a date, else blank (global running no.)
+  seq      int          NOT NULL,
+  CONSTRAINT PK_book_ref_seq PRIMARY KEY (station, mode, day_key)
+);
+"@
+
+# --- X.4e book_pending - the Book Now ASYNC push queue. The create endpoint registers the booking (generates our
+#     reference, returns instantly) and enqueues the /booking/update payload here; the BookingPusher background
+#     service drains it (the ERP call takes ~10s, so the operator never waits), stamps the ERP booking number back
+#     onto booking_alert and drops a My Tasks note to the creator. status pending|processing|retry|done|failed;
+#     survives a restart (the worker re-picks pending/retry rows on boot) so a create is never lost. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.book_pending') IS NULL
+CREATE TABLE dbo.book_pending (
+  ref_no     nvarchar(40)  NOT NULL CONSTRAINT PK_book_pending PRIMARY KEY,
+  station    nvarchar(10)  NOT NULL,
+  mode       nvarchar(4)   NOT NULL,        -- Air|Sea
+  actor      nvarchar(80)  NULL,            -- who created it (for the My Tasks notify)
+  payload    nvarchar(max) NOT NULL,        -- the /booking/update JSON to push
+  status     nvarchar(16)  NOT NULL CONSTRAINT DF_bookpend_st DEFAULT 'pending',  -- pending|processing|retry|done|failed
+  attempts   int           NOT NULL CONSTRAINT DF_bookpend_at DEFAULT 0,
+  booking_no nvarchar(60)  NULL,            -- ERP-assigned number once confirmed
+  last_error nvarchar(max) NULL,
+  next_at    datetime2     NULL,            -- earliest retry time
+  created_at datetime2     NOT NULL CONSTRAINT DF_bookpend_cr DEFAULT SYSDATETIME(),
+  updated_at datetime2     NULL
+);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_bookpend_status' AND object_id=OBJECT_ID('dbo.book_pending'))
+  CREATE INDEX IX_bookpend_status ON dbo.book_pending(status, next_at);
+"@
+
 # ============================================================================================================
 #  DRAFT DOCUMENT REVIEW (House BL / HAWB customer agreement loop; see plan file)
 #  Staff create a DRAFT document from shipment data, send the customer a tokenized review link (no login),
@@ -794,11 +834,12 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_health_check' AND object
   CREATE INDEX IX_health_check ON dbo.health_check_log(check_name, occurred_at);
 "@
 
-Write-Host "Operational database [$opsDb] ready (24 tables + indexes):" -ForegroundColor Green
+Write-Host "Operational database [$opsDb] ready (26 tables + indexes):" -ForegroundColor Green
 Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
 Write-Host "  milestone_event_log, company_dim, port_dim, liner_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
 Write-Host "  doc_draft, doc_version, doc_review_token, doc_event_log, doc_attachment (draft document review)" -ForegroundColor Green
 Write-Host "  erp_edit_log (ERP master-code corrections audit), health_check_log (watchdog status trail)" -ForegroundColor Green
 Write-Host "  app_user + app_user_scope (logins/roles/scope), erp_api_log (ERP API call+error log), app_setting (runtime ERP connection)" -ForegroundColor Green
 Write-Host "  alert_watermark (delta-pull high-water for seed-alerts -Delta), booking_alert (new-booking factory alerts)" -ForegroundColor Green
+Write-Host "  book_ref_seq (Book Now outbound-reference counter), book_pending (Book Now async ERP-push queue)" -ForegroundColor Green
 Write-Host "Next: run seed-milestone-config.ps1, then start the .NET server (it seeds a default admin/admin123 on first run)." -ForegroundColor Cyan

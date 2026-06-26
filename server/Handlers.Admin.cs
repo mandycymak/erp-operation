@@ -233,6 +233,8 @@ public static partial class Handlers
                 erpTokenSet = Settings.ErpToken.Trim() != "",
                 erpFromDb = new { baseUrl = Settings.ErpBaseUrlFromDb, token = Settings.ErpTokenFromDb, mock = Settings.ErpMockFromDb },
                 live = !Erp.MockMode(),   // are real ERP calls actually happening now (url+token set AND mock off)
+                bookRefFormat = Settings.BookRefFormat,                     // Book Now reference template (admin-editable)
+                bookRefFormatFromDb = Settings.BookRefFormatFromDb,
             });
         var pg = j.Str("partyGroupCode").Trim();
         if (pg == "" || pg.Length > 32) return new Resp(new { error = "Party group code required (max 32 chars) - the company code, e.g. DEV" }, 400);
@@ -259,6 +261,18 @@ public static partial class Handlers
         // clearToken=true reverts to the config token.
         if (j.Has("clearToken") && j.Bool("clearToken") == true) sset[Settings.ErpTokenKey] = null;
         else { var tok = j.Str("erpToken"); if (tok.Trim() != "") sset[Settings.ErpTokenKey] = tok.Trim(); }
+        // Book Now reference template. Must carry a running-number token ({seq} or {seqN}) so refs can't collide; blank
+        // reverts to the default. Allowed tokens: {station} {m} {mode} {yymmdd} {yy} {seq} {seqN}.
+        if (j.Has("bookRefFormat"))
+        {
+            var bf = j.Str("bookRefFormat").Trim();
+            if (bf != "")
+            {
+                if (bf.Length > 60) return new Resp(new { error = "Reference format too long (max 60 chars)" }, 400);
+                if (!System.Text.RegularExpressions.Regex.IsMatch(bf, @"\{seq\d*\}")) return new Resp(new { error = "Reference format must include a running-number token: {seq} or {seq5}" }, 400);
+            }
+            sset[Settings.BookRefFormatKey] = bf == "" ? null : bf;
+        }
         if (sset.Count > 0) Settings.Set(sset);
 
         var tokNote = sset.ContainsKey(Settings.ErpTokenKey) ? (sset[Settings.ErpTokenKey] == null ? " token=cleared" : " token=updated") : "";

@@ -88,8 +88,9 @@ $new=0; $sent=0
 foreach($r in $rows){
   $ref="$($r.ref)".Trim(); if(-not $ref){ continue }
   $bk="$($r.$noCol)".Trim(); $job="$($r.jobn)".Trim(); $sc="$($r.shpr_code)".Trim()
-  # already alerted? (deduped per booking)
-  $ex = Query $opsDb "SELECT 1 x FROM dbo.booking_alert WHERE station=@s AND mode=@m AND erp_ref=@r" @{ s=$StationCode; m=$Mode; r=$ref }
+  # already recorded? deduped by ERP ref OR booking number (the latter so an in-app "Book Now" row - which stores
+  # our external booking number as erp_ref, not the internal ref - is not duplicated when we later scan the ERP).
+  $ex = Query $opsDb "SELECT 1 x FROM dbo.booking_alert WHERE station=@s AND mode=@m AND (erp_ref=@r OR (NULLIF(@b,'') IS NOT NULL AND booking_no=@b))" @{ s=$StationCode; m=$Mode; r=$ref; b=$bk }
   if($ex.Count){ continue }
   # resolve the factory (shipper) contact from the customer master
   $contact=$null; $email=$null

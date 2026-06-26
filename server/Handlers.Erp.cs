@@ -95,50 +95,62 @@ public static partial class Handlers
         var a = al[0];
         var isAir = Db.Str(Db.G(a, "mode")) == "Air";
 
-        if (kind == "incoterm")
-        {
-            var ql = term.ToLowerInvariant();
-            var res = Incoterms.Where(x => ql == "" || x.Code.ToLowerInvariant().Contains(ql) || x.Name.ToLowerInvariant().Contains(ql))
-                               .Select(x => new { code = x.Code, name = x.Name }).ToArray();
-            return new { kind = "incoterm", results = res };
-        }
+        if (kind == "incoterm") return new { kind = "incoterm", results = IncotermResults(term) };
 
         var station = Db.Str(Db.G(a, "station"));
         var db = Source.DbFor(station);
         if (db == null) return new { error = $"station '{station}' has no ERP database mapped" };
-        var like = "%" + System.Text.RegularExpressions.Regex.Replace(term, @"[%_\[\]]", "") + "%";
 
         SqlConnection? src = null;
         try
         {
             src = Source.Open(db);
-            List<Row> rows;
-            bool hasLoc = false;
-            switch (kind)
-            {
-                case "custsub":
-                    rows = Db.RunQ(src, "SELECT TOP 20 code2 code, doc_e_name name, city, country FROM dbo.custsub WHERE ISNULL(isdel,0)=0 AND NULLIF(code2,'') IS NOT NULL AND (code2 LIKE @q OR doc_e_name LIKE @q) ORDER BY code2", new Dictionary<string, object?> { ["q"] = like }, 8); hasLoc = true; break;
-                case "liner":
-                    rows = Db.RunQ(src, "SELECT TOP 20 code, name FROM dbo.linermstr WHERE NULLIF(code,'') IS NOT NULL AND (code LIKE @q OR name LIKE @q) ORDER BY code", new Dictionary<string, object?> { ["q"] = like }, 8); break;
-                case "port":
-                    rows = Db.RunQ(src, "SELECT TOP 20 code, port_ldes1 name FROM dbo.portmstr WHERE NULLIF(code,'') IS NOT NULL AND (NULLIF(module,'') IS NULL OR module=@m) AND (code LIKE @q OR port_ldes1 LIKE @q) ORDER BY code", new Dictionary<string, object?> { ["q"] = like, ["m"] = isAir ? "AIR" : "SEA" }, 8); break;
-                case "service":
-                    rows = Db.RunQ(src, "SELECT TOP 20 service code, desc1 name FROM dbo.servmstr WHERE NULLIF(service,'') IS NOT NULL AND (service LIKE @q OR desc1 LIKE @q) ORDER BY service", new Dictionary<string, object?> { ["q"] = like }, 8); break;
-                default: return new { error = $"unknown lookup kind '{kind}'" };
-            }
-            var results = rows.Select(r =>
-            {
-                var o = new Dictionary<string, object?> { ["code"] = Db.Str(Db.G(r, "code")).Trim(), ["name"] = Db.Str(Db.G(r, "name")).Trim() };
-                if (hasLoc)
-                {
-                    var loc = string.Join(", ", new[] { Db.Str(Db.G(r, "city")).Trim(), Db.Str(Db.G(r, "country")).Trim() }.Where(x => x != ""));
-                    if (loc != "") o["loc"] = loc;
-                }
-                return o;
-            }).ToArray();
+            var (results, mErr) = MasterResults(src, kind, term, isAir);
+            if (mErr != null) return new { error = mErr };
             return new { kind, results };
         }
         catch (Exception ex) { return new { error = "master lookup failed: " + ex.Message }; }
         finally { try { src?.Close(); } catch { } }
+    }
+
+    // Incoterms 2020 filtered to the term (no DB). Shared by /api-ops/erp-master + /api-ops/book-now-master.
+    static object[] IncotermResults(string term)
+    {
+        var ql = term.ToLowerInvariant();
+        return Incoterms.Where(x => ql == "" || x.Code.ToLowerInvariant().Contains(ql) || x.Name.ToLowerInvariant().Contains(ql))
+                        .Select(x => (object)new { code = x.Code, name = x.Name }).ToArray();
+    }
+
+    // The bounded live LIKE seek over the source-ERP masters (custsub / liner / port / service). Shared by the
+    // job-scoped editor lookup (ErpMaster) and the station-scoped Book Now lookup (BookNowMaster); the caller owns
+    // the open source connection + auth/scope. Returns (results, null) or (empty, error) for an unknown kind.
+    static (object[] Results, string? Error) MasterResults(SqlConnection src, string kind, string term, bool isAir)
+    {
+        var like = "%" + System.Text.RegularExpressions.Regex.Replace(term, @"[%_\[\]]", "") + "%";
+        List<Row> rows;
+        bool hasLoc = false;
+        switch (kind)
+        {
+            case "custsub":
+                rows = Db.RunQ(src, "SELECT TOP 20 code2 code, doc_e_name name, city, country FROM dbo.custsub WHERE ISNULL(isdel,0)=0 AND NULLIF(code2,'') IS NOT NULL AND (code2 LIKE @q OR doc_e_name LIKE @q) ORDER BY code2", new Dictionary<string, object?> { ["q"] = like }, 8); hasLoc = true; break;
+            case "liner":
+                rows = Db.RunQ(src, "SELECT TOP 20 code, name FROM dbo.linermstr WHERE NULLIF(code,'') IS NOT NULL AND (code LIKE @q OR name LIKE @q) ORDER BY code", new Dictionary<string, object?> { ["q"] = like }, 8); break;
+            case "port":
+                rows = Db.RunQ(src, "SELECT TOP 20 code, port_ldes1 name FROM dbo.portmstr WHERE NULLIF(code,'') IS NOT NULL AND (NULLIF(module,'') IS NULL OR module=@m) AND (code LIKE @q OR port_ldes1 LIKE @q) ORDER BY code", new Dictionary<string, object?> { ["q"] = like, ["m"] = isAir ? "AIR" : "SEA" }, 8); break;
+            case "service":
+                rows = Db.RunQ(src, "SELECT TOP 20 service code, desc1 name FROM dbo.servmstr WHERE NULLIF(service,'') IS NOT NULL AND (service LIKE @q OR desc1 LIKE @q) ORDER BY service", new Dictionary<string, object?> { ["q"] = like }, 8); break;
+            default: return (Array.Empty<object>(), $"unknown lookup kind '{kind}'");
+        }
+        var results = rows.Select(r =>
+        {
+            var o = new Dictionary<string, object?> { ["code"] = Db.Str(Db.G(r, "code")).Trim(), ["name"] = Db.Str(Db.G(r, "name")).Trim() };
+            if (hasLoc)
+            {
+                var loc = string.Join(", ", new[] { Db.Str(Db.G(r, "city")).Trim(), Db.Str(Db.G(r, "country")).Trim() }.Where(x => x != ""));
+                if (loc != "") o["loc"] = loc;
+            }
+            return (object)o;
+        }).ToArray();
+        return (results, null);
     }
 }
