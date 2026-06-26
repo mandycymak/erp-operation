@@ -392,6 +392,32 @@ public static partial class Handlers
                 ["stp"] = JsonSerializer.Serialize(erp.Steps, jsonc), ["err"] = erp.Error,
             });
         Auth.Audit(me, $"erp-edit {job} [{string.Join(",", changedCodes)}] -> erp:{status}{(erp.Error != "" ? " ERR " + erp.Error : "")}");
+        // Reflect the saved identifier fields in the worklist snapshot right away, so the operator isn't left
+        // thinking the save failed until the next scheduled reseed. Only the directly-mapped scan columns the
+        // worklist card shows; full milestone re-eval still happens on the next seed. Only on a real ERP write.
+        if (status == "saved")
+        {
+            var colMap = new Dictionary<string, string>
+            {
+                ["bl_no"] = "house_bill", ["master_no"] = "master_bill", ["po_no"] = "cust_ref", ["commodity"] = "commodity",
+                ["carrier_code"] = "carrier", ["incoterm"] = "incoterm", ["container_no"] = "container_no",
+                ["shipper_code"] = "shipper_code", ["shipper_name"] = "shipper_name",
+                ["consignee_code"] = "consignee_code", ["consignee_name"] = "consignee_name",
+                ["agent_code"] = "agent_code", ["ctrl_code"] = "ctrl_code", ["pol_code"] = "pol", ["pod_code"] = "pod",
+            };
+            var sets = new List<string>(); var up = new Dictionary<string, object?> { ["j"] = job };
+            int wi = 0;
+            foreach (var c in changedCodes)
+            {
+                if (!colMap.TryGetValue(c, out var column)) continue;
+                var pk = "wv" + wi++;
+                sets.Add($"{column}=@{pk}");
+                up[pk] = DocUtil.ValStr(clean.TryGetValue(c, out var nv) ? nv : null);
+            }
+            if (sets.Count > 0)
+                try { Db.Exec(cn, $"UPDATE dbo.shipment_alerts SET {string.Join(",", sets)}, updated_at=SYSDATETIME() WHERE job_no=@j", up); }
+                catch (Exception ex) { Log.Error("erp-edit worklist sync", ex); }
+        }
         return new
         {
             ok = true, changed = changedCodes, sent, status,

@@ -131,7 +131,8 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_alerts_arrival' AND obje
 #       master_bill  = carrier/master BL/AWB (blhead.mobl | awbhead.mawb).
 #       incoterm     = trade term (blhead.routing | awbhead.frt_terms): tells the operator if delivery is to
 #                      the buyer's door or only to the port.
-#       cust_ref     = customer PO / order ref (awbhead.po_no; no reliable sea field -> NULL for sea).
+#       cust_ref     = customer PO / order ref (sea blhead.spotid; air awbhead.po_no).
+#       spot_id      = shipment reference id (the Book-Now ref no we generate; sea blhead.spotid; air awbhead.spot).
 #       container_no = first container number (blcont.container) — the strongest sea differentiator.
 #       liner_so     = liner shipping-order number (blcont.lsno) — fallback differentiator when no container.
 #       cargo_ready  = cargo-ready date (cargoready) — export urgency even before a vessel/flight is booked.
@@ -140,6 +141,7 @@ IF COL_LENGTH('dbo.shipment_alerts','house_bill')   IS NULL ALTER TABLE dbo.ship
 IF COL_LENGTH('dbo.shipment_alerts','master_bill')  IS NULL ALTER TABLE dbo.shipment_alerts ADD master_bill  nvarchar(40) NULL;
 IF COL_LENGTH('dbo.shipment_alerts','incoterm')     IS NULL ALTER TABLE dbo.shipment_alerts ADD incoterm     nvarchar(12) NULL;
 IF COL_LENGTH('dbo.shipment_alerts','cust_ref')     IS NULL ALTER TABLE dbo.shipment_alerts ADD cust_ref     nvarchar(40) NULL;
+IF COL_LENGTH('dbo.shipment_alerts','spot_id')      IS NULL ALTER TABLE dbo.shipment_alerts ADD spot_id      nvarchar(40) NULL;
 IF COL_LENGTH('dbo.shipment_alerts','container_no') IS NULL ALTER TABLE dbo.shipment_alerts ADD container_no nvarchar(40) NULL;
 IF COL_LENGTH('dbo.shipment_alerts','liner_so')     IS NULL ALTER TABLE dbo.shipment_alerts ADD liner_so     nvarchar(40) NULL;
 IF COL_LENGTH('dbo.shipment_alerts','cargo_ready')  IS NULL ALTER TABLE dbo.shipment_alerts ADD cargo_ready  date          NULL;

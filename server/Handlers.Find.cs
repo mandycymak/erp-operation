@@ -110,11 +110,14 @@ public static partial class Handlers
         {
             p["ref"] = "%" + Db.LikeEsc(refq) + "%";
             if (refField == "job") w += " AND (job_no LIKE @ref OR erp_job_no LIKE @ref) ";
+            // PO / Ref / Ship ID: the customer PO and the shipment reference id (our Book-Now ref no, the ERP
+            // spot/spotid column) are searched together so either number pulls up the booking.
+            else if (refField == "po" || refField == "shipid") w += " AND (cust_ref LIKE @ref OR spot_id LIKE @ref) ";
             else
             {
-                var map = new Dictionary<string, string> { ["booking"] = "sono", ["po"] = "cust_ref", ["shipid"] = "cust_ref", ["house"] = "house_bill", ["master"] = "master_bill", ["liner"] = "liner_so", ["container"] = "container_no", ["conv"] = "vessel_voyage", ["vessel"] = "vessel_voyage" };
+                var map = new Dictionary<string, string> { ["booking"] = "sono", ["house"] = "house_bill", ["master"] = "master_bill", ["liner"] = "liner_so", ["container"] = "container_no", ["conv"] = "vessel_voyage", ["vessel"] = "vessel_voyage" };
                 if (map.TryGetValue(refField, out var col)) w += $" AND {col} LIKE @ref ";
-                else w += " AND (job_no LIKE @ref OR erp_job_no LIKE @ref OR sono LIKE @ref OR house_bill LIKE @ref OR master_bill LIKE @ref OR cust_ref LIKE @ref OR container_no LIKE @ref OR liner_so LIKE @ref) ";
+                else w += " AND (job_no LIKE @ref OR erp_job_no LIKE @ref OR sono LIKE @ref OR house_bill LIKE @ref OR master_bill LIKE @ref OR cust_ref LIKE @ref OR spot_id LIKE @ref OR container_no LIKE @ref OR liner_so LIKE @ref OR vessel_voyage LIKE @ref) ";
             }
         }
 
@@ -158,7 +161,7 @@ public static partial class Handlers
 
         var cols = "job_no,erp_job_no,station,mode,bound,cargo_type,lane,carrier,pol,pod,route_summary,commodity,incoterm," +
             "shipper_name,consignee_name,shipper_code,consignee_code,agent_code,ctrl_code,cust_code,cust_contact," +
-            "sono,house_bill,master_bill,cust_ref,container_no,liner_so,vessel_voyage,container_summary,container_count,total_weight,total_cbm," +
+            "sono,house_bill,master_bill,cust_ref,spot_id,container_no,liner_so,vessel_voyage,container_summary,container_count,total_weight,total_cbm," +
             "pic_user,created_by,last_updated_by," +
             "worst_light,arrival_state,job_status," +
             "CONVERT(varchar(10),anchor_date,23) anchor_date,CONVERT(varchar(10),etd,23) etd," +
@@ -318,6 +321,7 @@ public static partial class Handlers
         houseBill = Db.Str(Db.G(r, "house_bill")),
         masterBill = Db.Str(Db.G(r, "master_bill")),
         custRef = Db.Str(Db.G(r, "cust_ref")),
+        spotId = Db.Str(Db.G(r, "spot_id")),
         containerNo = Db.Str(Db.G(r, "container_no")),
         containerSummary = Db.Str(Db.G(r, "container_summary")),
         containerCount = Db.IntOf(Db.G(r, "container_count")),

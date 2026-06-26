@@ -69,11 +69,14 @@ public static partial class Handlers
         {
             p["ref"] = "%" + Db.LikeEsc(refq) + "%";
             if (refField == "job") w += " AND (job_no LIKE @ref OR erp_job_no LIKE @ref) ";
+            // PO / Ref / Ship ID: one option covering both the customer PO and the shipment reference id (our
+            // Book-Now ref no, the ERP spot/spotid column) — so the operator finds the booking by either number.
+            else if (refField == "po" || refField == "shipid") w += " AND (cust_ref LIKE @ref OR spot_id LIKE @ref) ";
             else
             {
-                var map = new Dictionary<string, string> { ["booking"] = "sono", ["po"] = "cust_ref", ["house"] = "house_bill", ["master"] = "master_bill", ["liner"] = "liner_so", ["container"] = "container_no", ["conv"] = "vessel_voyage" };
+                var map = new Dictionary<string, string> { ["booking"] = "sono", ["house"] = "house_bill", ["master"] = "master_bill", ["liner"] = "liner_so", ["container"] = "container_no", ["conv"] = "vessel_voyage" };
                 if (map.TryGetValue(refField, out var col)) w += $" AND {col} LIKE @ref ";
-                else w += " AND (job_no LIKE @ref OR erp_job_no LIKE @ref OR sono LIKE @ref OR house_bill LIKE @ref OR master_bill LIKE @ref OR cust_ref LIKE @ref OR container_no LIKE @ref OR liner_so LIKE @ref) ";
+                else w += " AND (job_no LIKE @ref OR erp_job_no LIKE @ref OR sono LIKE @ref OR house_bill LIKE @ref OR master_bill LIKE @ref OR cust_ref LIKE @ref OR spot_id LIKE @ref OR container_no LIKE @ref OR liner_so LIKE @ref OR vessel_voyage LIKE @ref) ";
             }
         }
 
@@ -103,7 +106,7 @@ public static partial class Handlers
             "CONVERT(varchar(10),atd,23) atd,CONVERT(varchar(10),ata,23) ata,worst_light,open_amber,open_red," +
             "CONVERT(varchar(10),next_due,23) next_due,auto_done,manual_done,consignee_name,shipper_name,cust_contact,cust_phone," +
             "cust_email,vessel_voyage,container_summary,container_count,total_weight,total_cbm,arrival_state," +
-            "house_bill,master_bill,incoterm,cust_ref,container_no,liner_so,CONVERT(varchar(10),cargo_ready,23) cargo_ready," +
+            "house_bill,master_bill,incoterm,cust_ref,spot_id,container_no,liner_so,CONVERT(varchar(10),cargo_ready,23) cargo_ready," +
             "shipper_code,consignee_code,agent_code,ctrl_code," +
             "commodity,sono,bill_stage,route_summary,CONVERT(varchar(10),available_date,23) available_date," +
             "CONVERT(varchar(10),eta_delivery,23) eta_delivery,CONVERT(varchar(10),goods_delivery,23) goods_delivery," +
@@ -193,6 +196,7 @@ public static partial class Handlers
                 masterBill = Db.Str(Db.G(r, "master_bill")),
                 incoterm = Db.Str(Db.G(r, "incoterm")),
                 custRef = Db.Str(Db.G(r, "cust_ref")),
+                spotId = Db.Str(Db.G(r, "spot_id")),
                 containerNo = Db.Str(Db.G(r, "container_no")),
                 linerSo = Db.Str(Db.G(r, "liner_so")),
                 cargoReady = Db.Str(Db.G(r, "cargo_ready")),

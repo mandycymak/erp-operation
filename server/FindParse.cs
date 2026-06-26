@@ -105,7 +105,11 @@ public static class OpsQuery
         if (leftover != "")
         {
             var words = leftover.Split(' ').Length;
-            if (o.Who == "" && !((o.Pol != "" || o.Pod != "") && words <= 2)) o.Who = leftover;
+            // a single bare token that looks like a reference number (has digits) -> identifier search across all
+            // id columns, bypassing the "mine" lens, so pasting a number finds it (mirrors ops.js parseOpsQuery).
+            if (o.Ref == "" && words == 1 && Regex.IsMatch(leftover, @"^[A-Za-z0-9][A-Za-z0-9\-/]{4,}$") && Regex.IsMatch(leftover, @"\d"))
+            { o.Ref = leftover; o.RefField = ""; }
+            else if (o.Who == "" && !((o.Pol != "" || o.Pod != "") && words <= 2)) o.Who = leftover;
             else if (o.Commodity == "") o.Commodity = leftover;
             else if (o.Who == "") o.Who = leftover;
         }

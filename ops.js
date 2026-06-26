@@ -669,7 +669,7 @@ function setCompany(code) {
 // filters by role code). Any identifier field (job/booking/PO/house/master) = a server lookup that ignores the
 // date window AND the ownership lens, so you can pull up any file by its number even if it's outside this week
 // or another operator's. The date boxes are disabled in identifier mode to make that explicit.
-const SEARCH_PH = { company: 'Company name…', job: 'Job number…', booking: 'Booking / SO number…', po: 'PO number…', house: 'House B/L number…', master: 'Master B/L number…', conv: 'Vessel / voyage (sea) or flight no (air)…' };
+const SEARCH_PH = { company: 'Company name…', job: 'Job number…', booking: 'Booking / SO number…', po: 'PO / Ref / Ship ID number…', house: 'House B/L number…', master: 'Master B/L number…', conv: 'Vessel / voyage (sea) or flight no (air)…' };
 function setDateBoxesEnabled(on) {
   ['#fFrom', '#fTo', '#thisWeek'].forEach(s => { const e = $(s); if (e) { e.disabled = !on; e.style.opacity = on ? '' : '.5'; } });
 }
@@ -1827,7 +1827,10 @@ function parseOpsQuery(text) {
   OPS_FIND_STOP.lastIndex = 0;
   if (leftover) {
     var words = leftover.split(' ').length;
-    if (!out.who && !((out.pol || out.pod) && words <= 2)) out.who = leftover;
+    // a single bare token that looks like a reference number (has digits) -> identifier search across all id
+    // columns (booking/bill/container/PO/ship-id/flight), bypassing the "mine" lens, so pasting a number finds it.
+    if (!out.ref && words === 1 && /^[A-Za-z0-9][A-Za-z0-9\-\/]{4,}$/.test(leftover) && /\d/.test(leftover)) { out.ref = leftover; out.refField = ''; }
+    else if (!out.who && !((out.pol || out.pod) && words <= 2)) out.who = leftover;
     else if (!out.commodity) out.commodity = leftover;
     else if (!out.who) out.who = leftover;
   }
@@ -1862,7 +1865,7 @@ function opsFindSummary(p, aiNote) {
   if (p.noteText) bits.push('💬 “' + esc(p.noteText) + '”');
   if (p.pol || p.pod) bits.push(esc(p.pol || '…') + ' → ' + esc(p.pod || '…'));
   if (p.commodity) bits.push(esc(tr('commodity')) + ': ' + esc(p.commodity));
-  if (p.ref) { var rfL = { conv: 'vessel', vessel: 'vessel', shipid: 'ship-id', booking: 'booking', po: 'PO', house: 'HBL', master: 'MBL', container: 'container', liner: 'liner SO', job: 'job' }; bits.push(esc(rfL[p.refField] || p.refField || 'ref') + ' ' + esc(p.ref)); }
+  if (p.ref) { var rfL = { conv: 'vessel', vessel: 'vessel', shipid: 'Ship ID', booking: 'booking', po: 'PO / Ref', house: 'HBL', master: 'MBL', container: 'container', liner: 'liner SO', job: 'job' }; bits.push(esc(rfL[p.refField] || p.refField || 'ref') + ' ' + esc(p.ref)); }
   if (p.bound) bits.push(esc(p.bound));
   bits.push(p.mode ? esc(p.mode) : "<span class='muted'>" + esc(tr('Air + Sea')) + '</span>');
   if (p.dateLabel) bits.push('📅 ' + esc(p.dateLabel));

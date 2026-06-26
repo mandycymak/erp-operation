@@ -17,8 +17,8 @@ public static partial class Handlers
     // SAME ERP-API plumbing as Edit ERP (Erp.Call / ErpLog / mock mode) and the SAME master lookup SQL (MasterResults).
     // ============================================================================================================
 
-    // The station this Book Now acts on: an explicit (in-scope) station, else the caller's first scoped station,
-    // else the instance's configured station. Out-of-scope requests are refused.
+    // The station this Book Now acts on: an explicit (in-scope) station, else the caller's primary station (when it
+    // is in scope), else their first scoped station, else the instance's configured station. Out-of-scope refused.
     static (string Station, string? Err) ResolveBookStation(ReqState rs, string requested)
     {
         var cur = Scope.CurStations(rs);
@@ -27,7 +27,14 @@ public static partial class Handlers
             if (rs.Open || cur.Contains(requested)) return (requested, null);
             return ("", "station not in your scope");
         }
-        if (cur.Length > 0) return (cur[0], null);
+        // prefer the user's primary station (e.g. HKG) over cur[0] — the scoped list is alphabetical, so a
+        // multi-station admin would otherwise default to the wrong office (BKK).
+        if (cur.Length > 0)
+        {
+            var prim = (rs.User?.PrimaryStation ?? "").Trim();
+            if (prim != "" && cur.Contains(prim, StringComparer.OrdinalIgnoreCase)) return (prim, null);
+            return (cur[0], null);
+        }
         var def = Config.StationCode;
         if (def == "") def = Config.Stations.FirstOrDefault()?.Code ?? "";
         return def == "" ? ("", "no station configured") : (def, null);

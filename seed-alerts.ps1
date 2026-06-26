@@ -89,7 +89,7 @@ if($Delta){
 }
 if($Mode -eq 'Air'){
   # awbhead = the air waybill table; awb_type H=house, S=straight/direct are the operator's shipments (M=consol master, B=booking)
-  $cols="jobn,hawb,mawb,po_no,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,upddate,t_book_qty,t_book_wgt,t_book_cwt,t_rece_qty,ttl_cwt,t_book_cbm,t_rece_cbm,to1,to3,dest,deli,flight2,flight3,f_date2,f_date3,f_time1,f_time2,f_time3,fa_date1,fa_date2,fa_date3,rout_by_1,pol_name,pod_name,to1_name,to3_name,dest_name,deli_name,goods_delivery,remark,special_remark"
+  $cols="jobn,hawb,mawb,po_no,spot,frt_terms,routing,booking,bound,awb_type,flight1,carr,pol,pod,shpr_code,shpr_name,cgne_code,cgne_name,agn2_code,rcustomer,ref,picuser,crtuser,upduser,status,declaration_complete,atd_date,ata_date,cargoready,f_date1,inform_cnee,cnee_pickup,customer_pickup,comp_date,crtdate,upddate,t_book_qty,t_book_wgt,t_book_cwt,t_rece_qty,ttl_cwt,t_book_cbm,t_rece_cbm,to1,to3,dest,deli,flight2,flight3,f_date2,f_date3,f_time1,f_time2,f_time3,fa_date1,fa_date2,fa_date3,rout_by_1,pol_name,pod_name,to1_name,to3_name,dest_name,deli_name,goods_delivery,remark,special_remark"
   $cols=Filter-Cols $Station 'awbhead' $cols
   $cols=Wrap-Ntext $cols @('remark','special_remark')
   # include awb_type 'B' (booking) so newly-received bookings show in the worklist (flagged bill_stage='booking')
@@ -237,7 +237,7 @@ WHEN MATCHED THEN UPDATE SET station=@station,mode=@mode,cargo_type=@cargo,bound
   next_due=@nextdue,auto_done=@auto,manual_done=@man,consignee_name=@cgname,shipper_name=@shipname,
   cust_contact=@ccontact,cust_phone=@cphone,cust_email=@cemail,vessel_voyage=@vv,container_summary=@csum,
   container_count=@ccount,total_weight=@twgt,total_cbm=@tcbm,arrival_state=@astate,sort_key=@skey,
-  house_bill=@house,master_bill=@master,incoterm=@inco,cust_ref=@cref,container_no=@cno,liner_so=@lso,cargo_ready=@cready,
+  house_bill=@house,master_bill=@master,incoterm=@inco,cust_ref=@cref,spot_id=@spotid,container_no=@cno,liner_so=@lso,cargo_ready=@cready,
   shipper_code=@shpr,consignee_code=@cgne,agent_code=@agent,ctrl_code=@ctrl,pol=@pol,pod=@pod,
   route_summary=@rsum,route_json=@rjson,detail_json=@djson,commodity=@commod,sono=@sono,
   available_date=@avail,eta_delivery=@etadel,goods_delivery=@gdel,erp_ref=@eref,erp_job_no=@erpjob,
@@ -245,13 +245,13 @@ WHEN MATCHED THEN UPDATE SET station=@station,mode=@mode,cargo_type=@cargo,bound
 WHEN NOT MATCHED THEN INSERT(job_no,station,mode,cargo_type,bound,lane,carrier,cust_code,salesman,pic_user,created_by,
   last_updated_by,anchor_date,etd,eta,atd,ata,job_status,worst_light,open_amber,open_red,next_due,auto_done,manual_done,
   consignee_name,shipper_name,cust_contact,cust_phone,cust_email,vessel_voyage,container_summary,container_count,
-  total_weight,total_cbm,arrival_state,sort_key,house_bill,master_bill,incoterm,cust_ref,container_no,liner_so,cargo_ready,
+  total_weight,total_cbm,arrival_state,sort_key,house_bill,master_bill,incoterm,cust_ref,spot_id,container_no,liner_so,cargo_ready,
   shipper_code,consignee_code,agent_code,ctrl_code,pol,pod,
   route_summary,route_json,detail_json,commodity,sono,available_date,eta_delivery,goods_delivery,erp_ref,erp_job_no,
   bill_stage,milestone_checklist,updated_at)
   VALUES(@job,@station,@mode,@cargo,@bound,@lane,@carrier,@cust,@salesman,@pic,@cby,@uby,@anchor,@etd,@eta,@atd,@ata,
   @jstat,@worst,@amber,@red,@nextdue,@auto,@man,@cgname,@shipname,@ccontact,@cphone,@cemail,@vv,@csum,@ccount,
-  @twgt,@tcbm,@astate,@skey,@house,@master,@inco,@cref,@cno,@lso,@cready,
+  @twgt,@tcbm,@astate,@skey,@house,@master,@inco,@cref,@spotid,@cno,@lso,@cready,
   @shpr,@cgne,@agent,@ctrl,@pol,@pod,
   @rsum,@rjson,@djson,@commod,@sono,@avail,@etadel,@gdel,@eref,@erpjob,
   @bstage,@chk,SYSDATETIME());
@@ -292,6 +292,7 @@ foreach($b in $ships){
     $etdV=$ship.f_date1; $etaV=$null; $atdV=$ship.atd_date; $ataV=$ship.ata_date
     $dep=$ship.atd_date; $eta=$null; $assigned=($fl -ne '')   # space is "assigned" once a flight is confirmed (airline-only is not enough)
     $houseBill=$ship.hawb; $masterBill=$ship.mawb; $incoterm=$ship.incoterm; $custRef=$ship.po_no
+    $spotId=("$($b.spot)").Trim()   # air shipment reference id (the Book-Now ref no) = awbhead.spot
     $cargoReady=$ship.cargoready; $carrierVal=$cr
     $sono=$ship.booking; $availDate=$null; $etaDel=$null; $gdsDel=$b.goods_delivery
   } else {
@@ -312,6 +313,7 @@ foreach($b in $ships){
     $dep=$etdV; $eta=$etaV; $assigned=($vsl -ne '' -or $voy -ne '')
     $houseBill=("$($b.blno)").Trim(); $masterBill=("$($b.mobl)").Trim(); $incoterm=$ship.incoterm
     $custRef=("$($b.spotid)").Trim()   # sea customer ref = shipment/spot ID
+    $spotId=$custRef                   # sea shipment reference id = the same blhead.spotid column
     $cargoReady=$ship.cargoready
     $carrierVal=("$($b.carr)").Trim(); if(-not $carrierVal -and $cp.liner){ $carrierVal=$cp.liner }   # carr is empty in these copies -> use blcont.liner
     $sono=("$($b.sono)").Trim(); $availDate=$b.available_date; $etaDel=$ship.eta_delivery; $gdsDel=$ship.goods_delivery
@@ -361,7 +363,7 @@ foreach($b in $ships){
   if(-not $cgname){$cgname=$null}; if(-not $shipname){$shipname=$null}
   if(-not $ccontact){$ccontact=$null}; if(-not $cphone){$cphone=$null}; if(-not $cemail){$cemail=$null}; if(-not $vv){$vv=$null}
   if(-not $houseBill){$houseBill=$null}; if(-not $masterBill){$masterBill=$null}; if(-not $incoterm){$incoterm=$null}
-  if(-not $custRef){$custRef=$null}; if(-not $containerNo){$containerNo=$null}; if(-not $linerSo){$linerSo=$null}
+  if(-not $custRef){$custRef=$null}; if(-not $spotId){$spotId=$null}; if(-not $containerNo){$containerNo=$null}; if(-not $linerSo){$linerSo=$null}
   if(-not $shprCode){$shprCode=$null}; if(-not $cgneCode){$cgneCode=$null}; if(-not $agentCode){$agentCode=$null}
   if(-not $ctrlCode){$ctrlCode=$null}; if(-not $polCode){$polCode=$null}; if(-not $podCode){$podCode=$null}
   # STABLE per-shipment identity, ALWAYS anchored on the immutable ERP ref (the header PK: always present,
@@ -383,7 +385,7 @@ foreach($b in $ships){
     jstat='active'; worst=$res.worst; amber=$res.open_amber; red=$res.open_red; nextdue=$res.next_due; auto=$res.auto_done; man=$res.manual_done;
     cgname=$cgname; shipname=$shipname; ccontact=$ccontact; cphone=$cphone; cemail=$cemail; vv=$vv;
     csum=$cp.summary; ccount=$cp.count; twgt=$cp.wgt; tcbm=$cp.cbm; astate=$astate; skey=(DOnly $skey);
-    house=$houseBill; master=$masterBill; inco=$incoterm; cref=$custRef; cno=$containerNo; lso=$linerSo; cready=(DOnly $cargoReady);
+    house=$houseBill; master=$masterBill; inco=$incoterm; cref=$custRef; spotid=$spotId; cno=$containerNo; lso=$linerSo; cready=(DOnly $cargoReady);
     shpr=$shprCode; cgne=$cgneCode; agent=$agentCode; ctrl=$ctrlCode; pol=$polCode; pod=$podCode;
     rsum=$routeSummary; rjson=$routeJson; djson=$detailJson; commod=$commod; sono=$(if("$sono".Trim()){"$sono".Trim()}else{$null});
     avail=(DOnly $availDate); etadel=(DOnly $etaDel); gdel=(DOnly $gdsDel); eref=$(if($null -ne $b.ref){"$($b.ref)"}else{$null});
