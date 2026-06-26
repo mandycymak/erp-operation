@@ -392,7 +392,7 @@ public static partial class Erp
     public sealed record NewBookingInput(
         string Module, string Bound, string ForwarderCode,
         string PolCode, string PolName, string PodCode, string PodName,
-        string ServiceCode, string Commodity,
+        string ServiceCode, string Incoterm, string Commodity,
         string CargoReady, string Etd,
         string Quantity, string QuantityUnit, string GrossWeight, string Cbm,
         string Container20, string Container40, string ContainerHQ, string ContainerOthers,
@@ -424,6 +424,7 @@ public static partial class Erp
         }
 
         Str("serviceCode", b.ServiceCode);
+        Str("incoTermsCode", b.Incoterm);
         Str("commodity", b.Commodity);
         Str("portOfLoadingCode", b.PolCode);
         Str("portOfLoadingName", b.PolName);

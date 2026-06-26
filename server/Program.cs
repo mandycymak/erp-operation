@@ -361,6 +361,7 @@ MapData("/api-ops/companies", Handlers.Companies);
 MapData("/api-ops/ports", Handlers.Ports);
 MapData("/api-ops/inbound", Handlers.Inbound);
 MapData("/api-ops/new-bookings", Handlers.NewBookings);   // newly-received bookings, scoped to the caller's station(s)
+MapData("/api-ops/booking-job", Handlers.BookingJob);     // resolve a booking number -> its worklist job_no (Book Now note edit)
 MapData("/api-ops/my-tasks", Handlers.MyTasks);
 MapData("/api-ops/worklist", Handlers.Worklist);
 MapData("/api-ops/find", Handlers.Find);

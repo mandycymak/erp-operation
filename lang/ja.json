@@ -316,6 +316,7 @@
   "Station": "拠点",
   "Ref No": "参照番号",
   "Cargo ready": "カーゴレディ日",
+  "Cargo ready date": "カーゴレディ日",
   "ETD (departure)": "出発予定 (ETD)",
   "Port of loading": "船積港",
   "Port of discharge": "荷揚港",
@@ -353,5 +354,8 @@
   "creating in the ERP; you will get a My Tasks note when confirmed.": "ERP で作成中です。確定したら「マイタスク」に通知が届きます。",
   "registering…": "登録中…",
   "ERP failed": "ERP 失敗",
-  "booking": "ブッキング"
+  "booking": "ブッキング",
+  "ref": "参照",
+  "Booking": "ブッキング",
+  "not in the worklist yet — it becomes editable after the next refresh.": "まだワークリストにありません - 次回の更新後に編集できます。"
 }

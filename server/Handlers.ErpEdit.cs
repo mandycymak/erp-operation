@@ -115,7 +115,13 @@ public static partial class Handlers
     static (SeedResult? Seed, object? Err) ErpEditSeedCore(SqlConnection cn, string job, ReqState rs)
     {
         var al = Db.RunQ(cn, "SELECT TOP 1 job_no,station,mode,bound,erp_ref,sono FROM dbo.shipment_alerts WHERE job_no=@j", new Dictionary<string, object?> { ["j"] = job });
-        if (al.Count == 0) return (null, new { error = "not found" });
+        // A 'FEED:<station>:<booking>' job is a cross-station INBOUND pre-arrival item the operator follows up but does
+        // not own yet (it isn't in the local worklist until it arrives). Say so plainly - framed as a status, NOT as a
+        // permission/"not found" error - so the operator doesn't read it as an access-rights problem.
+        if (al.Count == 0)
+            return (null, new { error = job.StartsWith("FEED:", StringComparison.OrdinalIgnoreCase)
+                ? "The shipment has not arrived yet, so you cannot change the ERP data."
+                : "not found" });
         if (!Scope.TestJobScope(rs, al[0])) return (null, new { error = "not found" });
         var a = al[0];
         var isAir = Db.Str(Db.G(a, "mode")) == "Air";

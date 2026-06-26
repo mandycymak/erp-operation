@@ -235,12 +235,13 @@ button:hover{filter:brightness(1.08)}
 .bnlink:hover{text-decoration:underline}
 .modal.booknow{width:600px;max-width:94vw}
 .modal.booknow h3{margin-bottom:10px}
-/* compact top strip: small controls inline */
-.bntop{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
-.bntf{display:flex;flex-direction:column;gap:2px}
-.bntf:nth-child(1),.bntf:nth-child(2),.bntf:nth-child(3){flex:0 0 auto}
-.bntf:nth-child(4){flex:1 1 160px}
-.bntf select,.bntf input{padding:4px 7px;font-size:12.5px}
+/* top strip: same 2-col grid as the form so Station aligns with Cargo ready date and Ref aligns with ETD */
+.bntop{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-bottom:10px;align-items:end}
+.bntop-l{display:flex;gap:10px;min-width:0}
+.bntop-l .bntf{flex:0 0 auto}
+.bntop-l .bntf-grow{flex:1 1 auto;min-width:0}
+.bntf{display:flex;flex-direction:column;gap:2px;min-width:0}
+.bntf select,.bntf input{padding:4px 7px;font-size:12.5px;width:100%;box-sizing:border-box}
 /* main grid */
 .bnf{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
 .bnf .wide{grid-column:1 / -1}
@@ -257,6 +258,11 @@ button:hover{filter:brightness(1.08)}
 .bnmcap{font-size:10px;color:var(--mut)}
 .bnmini input{width:100%;padding:4px 6px;box-sizing:border-box;font-size:12px}
 .bnmix-prev{font-size:11px;margin-top:2px;font-family:ui-monospace,Consolas,monospace}
+/* Incoterm (narrow, code-only) + Commodity (wide) on one row */
+.bnic-row{display:flex;gap:12px;align-items:flex-start}
+.bnic-row .bncell{margin:0}
+.bnic-row .bnic{flex:0 0 110px}
+.bnic-row .bncom{flex:1}
 .bn-msg{color:var(--r,#c0392b);font-size:12px;margin-top:8px;min-height:15px}
 .bn-msg.busy{color:var(--mut)}
 /* master-lookup dropdown (shared look with the ERP editor) */

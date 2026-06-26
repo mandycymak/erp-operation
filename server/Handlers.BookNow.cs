@@ -184,6 +184,7 @@ public static partial class Handlers
         var podCode = Clamp(j.Str("podCode"), 5);
         var podName = Clamp(j.Str("podName"), 100);
         var serviceCode = Clamp(j.Str("serviceCode"), 10); if (serviceCode == "") serviceCode = BookServiceDefault(isAir);
+        var incoterm = Clamp(j.Str("incoterm"), 15);
         var commodity = Clamp(j.Str("commodity"), 21);
         var quantity = j.Str("quantity").Trim();
         var quantityUnit = Clamp(j.Str("quantityUnit"), 10); if (quantityUnit == "") quantityUnit = "CTN";
@@ -226,7 +227,7 @@ public static partial class Handlers
         var input = new Erp.NewBookingInput(
             isAir ? "AIR" : "SEA", bound, fwd,
             polCode, polName, podCode, podName,
-            serviceCode, commodity,
+            serviceCode, incoterm, commodity,
             j.Str("cargoReady").Trim(), j.Str("etd").Trim(),
             quantity, quantityUnit, grossWeight, cbm,
             j.Str("container20").Trim(), j.Str("container40").Trim(), j.Str("containerHQ").Trim(), j.Str("containerOthers").Trim(),

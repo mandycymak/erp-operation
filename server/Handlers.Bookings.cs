@@ -34,7 +34,7 @@ public static partial class Handlers
             p["q"] = "%" + Db.LikeEsc(qf) + "%";
         }
         var rows = Db.RunQ(cn,
-            "SELECT TOP (@n) CONVERT(varchar(19),ba.detected_at,120) detected_at, ba.station, ba.mode, ba.booking_no, ba.job_no, ba.shipper_name, " +
+            "SELECT TOP (@n) CONVERT(varchar(19),ba.detected_at,120) detected_at, ba.station, ba.mode, ba.booking_no, ba.job_no, ba.erp_ref, ba.shipper_name, " +
             "ba.factory_contact, ba.factory_email, ba.pol, ba.pod, CONVERT(varchar(19),ba.src_created,120) src_created, ba.status, ba.channel, " +
             "sa.job_no ship_job, sa.cargo_type, sa.incoterm, sa.commodity, sa.container_summary, sa.total_weight, sa.total_cbm, " +
             "sa.consignee_name, sa.shipper_code, sa.consignee_code, sa.agent_code, sa.ctrl_code, sa.cust_code, " +
@@ -59,6 +59,8 @@ public static partial class Handlers
                 mode = Db.Str(Db.G(r, "mode")),
                 bookingNo = Db.Str(Db.G(r, "booking_no")),
                 jobNo = Db.Str(Db.G(r, "job_no")),
+                erpRef = Db.Str(Db.G(r, "erp_ref")),       // our system reference (= Book Now Ref No); ERP booking no is bookingNo
+
                 shipperName = Db.Str(Db.G(r, "shipper_name")),
                 factoryContact = Db.Str(Db.G(r, "factory_contact")),
                 factoryEmail = Db.Str(Db.G(r, "factory_email")),
@@ -90,5 +92,20 @@ public static partial class Handlers
                 custRef = Db.Str(Db.G(r, "cust_ref")),
             }).ToArray()
         };
+    }
+
+    // GET /api-ops/booking-job?ref=<booking number> - resolve a booking number (shipment_alerts.sono) to its worklist
+    // job_no, row-level scoped, so a Book Now confirmation note can open the EDITABLE shipment once the delta seed has
+    // pulled the booking in. Returns {jobNo:""} when it isn't in the worklist yet (the caller shows a "not yet" hint).
+    public static object BookingJob(SqlConnection cn, Qs q, ReqState rs)
+    {
+        var refv = (q["ref"] ?? "").Trim();
+        if (refv == "") return new { jobNo = "" };
+        var p = new Dictionary<string, object?> { ["r"] = refv };
+        var w = " WHERE (sono=@r OR job_no=@r OR erp_job_no=@r) AND job_status='active' ";
+        w += Scope.StationClause(rs, p);
+        w += Scope.PairClause(rs, p);
+        var rows = Db.RunQ(cn, "SELECT TOP 1 job_no FROM dbo.shipment_alerts " + w + " ORDER BY anchor_date DESC", p);
+        return new { jobNo = rows.Count > 0 ? Db.Str(Db.G(rows[0], "job_no")) : "" };
     }
 }

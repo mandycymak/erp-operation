@@ -64,7 +64,9 @@ public sealed class BookingPusher : BackgroundService
                 new Dictionary<string, object?> { ["b"] = bn, ["s"] = station, ["m"] = mode, ["r"] = refNo });
             LogEdit(cn, refNo, station, mode, actor, bn, erp.Mock ? "mock" : "created", "", erp.Steps);
             var lane = Lane(payload);
-            Notify(actor, refNo, $"Book Now: booking confirmed in the ERP {(erp.Mock ? "(mock) " : "")}as {bn} - ref {refNo}{(lane != "" ? " - " + lane : "")}.");
+            // key the note by the ERP booking number (bn) so the My Tasks header shows it AND a click can resolve it
+            // to the editable worklist shipment (shipment_alerts.sono = bn); keep our Ref No in the text.
+            Notify(actor, bn, $"Book Now: booking confirmed in the ERP {(erp.Mock ? "(mock) " : "")}as {bn} - ref {refNo}{(lane != "" ? " - " + lane : "")}.");
         }
         else
         {

@@ -316,6 +316,7 @@
   "Station": "站点",
   "Ref No": "参考编号",
   "Cargo ready": "货好日期",
+  "Cargo ready date": "货好日期",
   "ETD (departure)": "预计开船/起飞 (ETD)",
   "Port of loading": "起运港",
   "Port of discharge": "卸货港",
@@ -353,5 +354,8 @@
   "creating in the ERP; you will get a My Tasks note when confirmed.": "正在 ERP 中创建；确认后会在「我的任务」收到通知。",
   "registering…": "登记中…",
   "ERP failed": "ERP 失败",
-  "booking": "订舱"
+  "booking": "订舱",
+  "ref": "参考",
+  "Booking": "订舱",
+  "not in the worklist yet — it becomes editable after the next refresh.": "尚未进入工作清单 - 下次刷新后即可编辑。"
 }
