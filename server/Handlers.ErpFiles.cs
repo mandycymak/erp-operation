@@ -37,13 +37,65 @@ public static partial class Handlers
         // ALL configured ERP document types (admin Documents tab) - so an operator can upload any document,
         // not only one that clears an alert. The upload handler accepts any doctype; clearing is a bonus.
         var allDoctypes = dmap.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray();
+        // configured Generate-document options for this module (admin Generate-documents tab): documentTypeCode ->
+        // its houseTypeCode(s) + whether each needs an invoice number. Drives the drawer's Generate box.
+        var genOptions = DocGenMap.ForModule(cn, module)
+            .GroupBy(o => o.DocumentTypeCode, StringComparer.Ordinal)
+            .Select(g => new
+            {
+                documentTypeCode = g.Key,
+                houseTypes = g.Select(o => new { houseTypeCode = o.HouseTypeCode, invoiceRequired = o.InvoiceRequired }).ToArray(),
+            }).ToArray();
 
         return new
         {
             keyUsed = r.KeyUsed, keyKind = r.KeyKind, keyField = r.KeyField, mock = r.Mock,
             files = r.Files, error = r.Error, clearableDoctypes = clearable.Distinct().ToArray(),
-            uploadDoctypes = allDoctypes,
+            uploadDoctypes = allDoctypes, generateOptions = genOptions,
         };
+    }
+
+    // result of a generate: stream the PDF bytes (success), or a JSON body + status (error / mock-no-file).
+    public sealed record DocGenHttp(int Status, byte[]? Bytes, string FileName, object? Json);
+
+    // ---- POST /api-ops/erp-doc-generate (custom streaming route in Program.cs) ----
+    // Generate a document in the ERP (/document/generate) for this shipment, from an admin-configured
+    // documentTypeCode + houseTypeCode (per module). The combo MUST be configured (DocGenMap) - operators can only
+    // generate what admin allows. Verified live: includeFile=true returns the PDF inline and the ERP does NOT store
+    // it, so the bytes are streamed straight back to the browser as a download. Body: { job, documentTypeCode,
+    // houseTypeCode, invoiceNumber? }.
+    public static DocGenHttp ErpDocGenerate(SqlConnection cn, JsonElement j, ReqState rs)
+    {
+        var me = rs.Me;
+        if (j.ValueKind != JsonValueKind.Object || !j.Has("job")) return new(400, null, "", new { error = "invalid payload" });
+        var job = j.Str("job").Trim();
+        var doc = j.Str("documentTypeCode").Trim();
+        var house = j.Str("houseTypeCode").Trim();
+        var invoice = j.Str("invoiceNumber").Trim();
+        if (doc == "") return new(400, null, "", new { error = "choose a document type" });
+        var al = Db.RunQ(cn, "SELECT TOP 1 job_no,station,mode,bound,sono,house_bill,master_bill,spot_id FROM dbo.shipment_alerts WHERE job_no=@j", new Dictionary<string, object?> { ["j"] = job });
+        if (al.Count == 0) return new(404, null, "", new { error = "not found" });
+        if (!Scope.TestJobScope(rs, al[0])) return new(404, null, "", new { error = "not found" });
+        var a = al[0];
+        var isAir = Db.Str(Db.G(a, "mode")) == "Air"; var module = isAir ? "AIR" : "SEA";
+        var station = Db.Str(Db.G(a, "station"));
+        // the combo must be admin-configured for this module (users select, never free-type)
+        var opt = DocGenMap.Lookup(cn, module, doc, house);
+        if (opt == null) return new(400, null, "", new { error = "that document type / house type is not configured for this module" });
+        if (opt.InvoiceRequired && invoice == "") return new(400, null, "", new { error = "this document needs an invoice number" });
+        using var _erpScope = ErpLog.Begin(me, station, job);
+        var g = Erp.DocGenerate(module, doc, house,
+            Db.Str(Db.G(a, "house_bill")).Trim(), Db.Str(Db.G(a, "sono")).Trim(), Db.Str(Db.G(a, "master_bill")).Trim(),
+            Db.Str(Db.G(a, "spot_id")).Trim(), opt.UseMasterBill, invoice, Source.ForwarderCode(station));
+        if (!g.Ok) { Auth.Audit(me, $"erp-doc-generate {job} '{doc}'/'{house}' FAILED: {g.Error}"); return new(502, null, "", new { error = "ERP generate failed: " + g.Error }); }
+        Auth.Audit(me, $"erp-doc-generate {job} '{doc}'/'{house}'{(g.Mock ? " [mock]" : "")}{(g.FileName != "" ? " -> " + g.FileName : "")}");
+        if (g.Bytes != null && g.Bytes.Length > 0)
+        {
+            var name = g.FileName.Trim() != "" ? g.FileName.Trim() : $"{doc}.pdf";
+            return new(200, g.Bytes, name, null);
+        }
+        // mock mode (no real file) or no inline file returned - JSON so the client can show a message.
+        return new(200, null, "", new { ok = true, mock = g.Mock, documentTypeCode = doc, houseTypeCode = house, fileName = g.FileName });
     }
 
     // ---- POST /api-ops/erp-file-upload (serve-ops.ps1 Handle-ErpFileUpload 746-781) ----

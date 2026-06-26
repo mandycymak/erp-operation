@@ -67,6 +67,7 @@
     <button class="tabbtn on" data-tab="users">Users</button>
     <button class="tabbtn" data-tab="milestones">Milestones &amp; alerts</button>
     <button class="tabbtn" data-tab="documents">Documents</button>
+    <button class="tabbtn" data-tab="docgen">Generate documents</button>
     <button class="tabbtn" data-tab="erp">ERP API</button>
     <button class="tabbtn" data-tab="audit">Audit &amp; Health</button>
     <button class="tabbtn" data-tab="changelog">Change log</button>
@@ -223,6 +224,45 @@
         <button class="primary" id="docSaveBtn">Save document type</button>
         <button class="ghost" id="docResetBtn">Clear form</button>
         <span class="errline" id="docErr"></span>
+      </div>
+    </div>
+  </div>
+  </section>
+
+  <section id="tab-docgen" class="tabpane" style="display:none">
+  <div class="editor" id="dgSection">
+    <h3>Generate documents</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">
+      Each row is a <b>document an operator can generate from the ERP</b> on a shipment (the worklist drawer's
+      <i>Generate document</i> box). Pick the <b>module</b>, then the <b>Document type code</b> and the related
+      <b>House type code</b> — both must match the <b>ERP codes exactly</b> (e.g. <code>AWB</code> /
+      <code>NEUTRAL L 23</code>); they are sent verbatim to <code>/document/generate</code>. One document type can
+      have several house types (add a row per pair). Tick <b>Master bill</b> for a master-level document (it keys the
+      call on the master bill); tick <b>Invoice</b> if the document needs an invoice number entered.
+      Changes apply immediately — no restart.
+    </div>
+    <table class="usr" id="dgTable">
+      <thead><tr>
+        <th>Module</th><th>Document type (ERP code)</th><th>House type (ERP code)</th><th>Master bill</th><th>Invoice</th><th>Active</th><th></th>
+      </tr></thead>
+      <tbody id="dgBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+    </table>
+
+    <div class="editor" style="margin-top:12px" id="dgEditor">
+      <h3 id="dgTitle">Add document type</h3>
+      <div class="frow">
+        <div class="fcol"><label>Module</label><select id="dgModule"><option>AIR</option><option>SEA</option></select></div>
+        <div class="fcol" style="min-width:220px"><label>Document type code (ERP)</label><input id="dgDoc" autocomplete="off" placeholder="e.g. AWB"></div>
+        <div class="fcol" style="min-width:220px"><label>House type code (ERP, optional)</label><input id="dgHouse" autocomplete="off" placeholder="e.g. NEUTRAL L 23"></div>
+        <div class="fcol"><label>Master bill</label><label class="ck" style="margin-top:6px"><input type="checkbox" id="dgMaster"> use master bill</label></div>
+        <div class="fcol"><label>Invoice</label><label class="ck" style="margin-top:6px"><input type="checkbox" id="dgInvoice"> needs invoice no.</label></div>
+        <div class="fcol"><label>Active</label><label class="ck" style="margin-top:6px"><input type="checkbox" id="dgActive" checked> in use</label></div>
+      </div>
+      <div class="hint">Leave <b>House type code</b> blank for a document type that has no house type. Master bill keys the generate call on the master bill (e.g. an MAWB document) instead of the house-bill → booking → master priority.</div>
+      <div class="bar">
+        <button class="primary" id="dgSaveBtn">Save document type</button>
+        <button class="ghost" id="dgResetBtn">Clear form</button>
+        <span class="errline" id="dgErr"></span>
       </div>
     </div>
   </div>
@@ -695,6 +735,60 @@ async function loadDocs() {
   DOCS = arr(d.docs); DOCMS = arr(d.milestones); fillDocMsOptions(); renderDocTable();
 }
 
+/* ---------- generate documents (doc_generate_map: documentTypeCode + houseTypeCode per module) ---------- */
+let DGEN = [], dgEditing = 0;   // dgEditing = row id when editing an existing row
+function renderDgTable() {
+  const tb = $('#dgBody'); tb.innerHTML = '';
+  if (!DGEN.length) { tb.innerHTML = '<tr><td colspan="7" class="muted">No document types yet — add one below so operators can generate it from a shipment.</td></tr>'; return; }
+  DGEN.forEach(d => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + esc(d.module) + '</td>' +
+      '<td><b>' + esc(d.document_type_code) + '</b></td>' +
+      '<td>' + (d.house_type_code ? esc(d.house_type_code) : '<span class="muted">none</span>') + '</td>' +
+      '<td>' + (d.use_master_bill ? '✓' : '<span class="muted">—</span>') + '</td>' +
+      '<td>' + (d.invoice_required ? '✓' : '<span class="muted">—</span>') + '</td>' +
+      '<td>' + (d.active ? '✓' : '<span class="muted">off</span>') + '</td>' +
+      '<td class="rowact"><button class="ghost ed">Edit</button> <button class="ghost del">Delete</button></td>';
+    tr.querySelector('.ed').onclick = () => { fillDgForm(d); $('#dgEditor').scrollIntoView({ behavior: 'smooth' }); };
+    tr.querySelector('.del').onclick = async () => {
+      if (!confirm('Delete ' + d.module + ' "' + d.document_type_code + '" / "' + (d.house_type_code || '(no house type)') + '"?')) return;
+      const r = await api('/api-ops/admin/docgen-delete', { method: 'POST', body: { id: d.id } });
+      if (r.error) { $('#dgErr').textContent = r.error; return; }
+      loadDgen();
+    };
+    tb.appendChild(tr);
+  });
+}
+function fillDgForm(d) {
+  dgEditing = d ? d.id : 0;
+  $('#dgTitle').textContent = d ? 'Edit document type — ' + d.module + ' ' + d.document_type_code : 'Add document type';
+  $('#dgModule').value = d ? d.module : 'AIR';
+  $('#dgDoc').value = d ? d.document_type_code : '';
+  $('#dgHouse').value = d ? (d.house_type_code || '') : '';
+  $('#dgMaster').checked = d ? !!d.use_master_bill : false;
+  $('#dgInvoice').checked = d ? !!d.invoice_required : false;
+  $('#dgActive').checked = d ? !!d.active : true;
+  $('#dgErr').textContent = '';
+}
+async function saveDgen() {
+  $('#dgErr').textContent = '';
+  const body = {
+    id: dgEditing || 0, module: $('#dgModule').value,
+    document_type_code: $('#dgDoc').value.trim(), house_type_code: $('#dgHouse').value.trim(),
+    use_master_bill: $('#dgMaster').checked, invoice_required: $('#dgInvoice').checked, active: $('#dgActive').checked
+  };
+  if (!body.document_type_code) { $('#dgErr').textContent = 'Document type code required'; return; }
+  const r = await api('/api-ops/admin/docgen', { method: 'POST', body });
+  if (r.error) { $('#dgErr').textContent = r.error; return; }
+  $('#dgErr').innerHTML = '<span class="okline">✓ saved</span>';
+  fillDgForm(null); loadDgen();
+}
+async function loadDgen() {
+  const d = await api('/api-ops/admin/docgen');
+  if (d.error) { $('#dgBody').innerHTML = '<tr><td colspan="7" class="muted">' + esc(d.error) + '</td></tr>'; return; }
+  DGEN = arr(d.rows); renderDgTable();
+}
+
 /* ---------- IT-Admin: Audit & Health (read-only views; lazy-loaded on first tab switch) ---------- */
 let auditLoaded = false, changelogLoaded = false;
 const mb = n => (n == null ? 0 : Number(n)).toLocaleString(undefined, { maximumFractionDigits: 1 });
@@ -853,6 +947,9 @@ function loadChangelogTab() {   // show only the selected section, then fetch ju
   $('#docSaveBtn').onclick = saveDoc;
   $('#docResetBtn').onclick = () => fillDocForm(null);
   loadDocs();
+  $('#dgSaveBtn').onclick = saveDgen;
+  $('#dgResetBtn').onclick = () => fillDgForm(null);
+  loadDgen();
   $('#erpSaveBtn').onclick = saveErp;
   // live feedback while typing/pasting the (masked) token, so you can tell the paste landed without revealing it
   $('#eToken').oninput = () => { const n = $('#eToken').value.length; $('#eTokenState').textContent = n ? ('(' + n + ' characters entered — click Save to apply)') : '(none set)'; };

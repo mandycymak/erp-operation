@@ -237,6 +237,77 @@ public static partial class Erp
         catch (Exception ex) { return new(false, false, ex.Message); }
     }
 
+    public sealed record DocGenResult(bool Ok, bool Mock, string FileName, byte[]? Bytes, string Error);
+
+    // Generate a document in the ERP via /document/generate (the drawer "Generate document" feature). The booking/
+    // bill key is chosen by priority houseBillNo -> bookingNo -> masterBillNo, EXCEPT a master-level document
+    // (useMasterBill) keys on masterBillNo; 3rdBookingID is the last-resort fallback. includeFile=true asks the ERP
+    // to return the file inline - parsed defensively here (the ERP may instead just store it, fetched via
+    // /file/enquiry+/file/download). Distinct from ErpDoc.DocIssue's generate side-effect, which is left untouched.
+    public static DocGenResult DocGenerate(string module, string documentTypeCode, string houseTypeCode,
+        string houseBillNo, string bookingNo, string masterBillNo, string thirdBookingId, bool useMasterBill,
+        string invoiceNumber, string forwarderCode)
+    {
+        var hbl = (houseBillNo ?? "").Trim(); var bk = (bookingNo ?? "").Trim();
+        var mbl = (masterBillNo ?? "").Trim(); var third = (thirdBookingId ?? "").Trim();
+        // priority-ordered identifier candidates (each is one payload key): houseBillNo -> bookingNo -> masterBillNo
+        // -> 3rdBookingID, EXCEPT a master-level doc leads with masterBillNo. The ERP keys on ONE field; a stale/
+        // dummy bill yields 422 "No corresponding shipment", so we fall through to the next candidate (mirrors how
+        // FileEnquiry/FileDownload iterate candidates) - e.g. a typed-but-not-issued HAWB falls back to the bookingNo.
+        var cands = new List<(string Field, string Val)>();
+        void Add(string f, string v) { if (v != "" && !cands.Any(c => c.Field == f)) cands.Add((f, v)); }
+        if (useMasterBill) { Add("masterBillNo", mbl); Add("bookingNo", bk); Add("houseBillNo", hbl); }
+        else { Add("houseBillNo", hbl); Add("bookingNo", bk); Add("masterBillNo", mbl); }
+        Add("3rdBookingID", third);
+        if (cands.Count == 0) return new(false, MockMode(), "", null, "no booking / bill number on this shipment to generate the document");
+        var fwd = forwarderCode.Trim(); if (fwd == "") fwd = ErpMap.Str("forwarderCode").Trim();
+        var inv = (invoiceNumber ?? "").Trim();
+        JsonObject Build(string field, string val) => new JsonObject
+        {
+            ["partyGroupCode"] = ErpMap.Str("partyGroupCode").Trim(), ["forwarderCode"] = fwd, ["moduleTypeCode"] = module,
+            ["documentTypeCode"] = documentTypeCode,
+            ["bookingNo"] = field == "bookingNo" ? val : "", ["houseBillNo"] = field == "houseBillNo" ? val : "",
+            ["masterBillNo"] = field == "masterBillNo" ? val : "", ["3rdBookingID"] = field == "3rdBookingID" ? val : "",
+            ["houseTypeCode"] = houseTypeCode, ["invoiceNumber"] = inv, ["includeFile"] = true,
+        };
+        if (MockMode())
+        {
+            try { MockWrite($"generate-{Guid.NewGuid():N}.json", new JsonObject { ["at"] = DateTime.Now.ToString("o"), ["payload"] = Build(cands[0].Field, cands[0].Val).DeepClone() }); } catch { }
+            return new(true, true, "", null, "");
+        }
+        var lastErr = "";
+        foreach (var (field, val) in cands)
+        {
+            try
+            {
+                var resp = Call("/document/generate", Build(field, val));
+                // includeFile=true returns the PDF inline (verified live: under the top-level "file" array; the ERP
+                // does NOT store it). Walk the likely containers and extract the first base64 item.
+                List<JsonObject>? items = null;
+                foreach (var cc in new[] { PropCI(resp, "file"), resp, PropCI(PropCI(resp, "message"), "message"), PropCI(resp, "message"), PropCI(resp, "data") })
+                {
+                    if (cc == null) continue;
+                    var lst = ObjItems(cc);
+                    if (lst.Count > 0 && PropCI(lst[0], "base64") != null) { items = lst; break; }
+                }
+                if (items != null && items.Count > 0)
+                {
+                    var b64 = StrProp(items[0], "base64").Trim();
+                    if (b64 != "") return new(true, false, StrProp(items[0], "fileName").Trim(), Convert.FromBase64String(b64), "");
+                }
+                return new(true, false, "", null, "");   // generated but no inline file returned (defensive)
+            }
+            catch (Exception ex)
+            {
+                lastErr = ex.Message;
+                // only fall through to the next identifier when THIS one didn't match a shipment; any other error
+                // (bad documentType/houseType, auth, etc.) won't be fixed by another key, so stop.
+                if (!ex.Message.Contains("No corresponding")) return new(false, false, "", null, lastErr);
+            }
+        }
+        return new(false, false, "", null, lastErr != "" ? lastErr : "no corresponding shipment in the ERP for this booking / bill");
+    }
+
     // ============================================================================================================
     // ERP MASTER-CODE CORRECTION patch build + push (staff-internal). Build a MINIMAL /booking/update payload that
     // carries the booking identity keys + ONLY the fields the operator changed (mapped by each dict field's
@@ -329,6 +400,14 @@ public static partial class Erp
             if (fm.Success) { flex[fm.Groups[1].Value] = svs; sent.Add(new { field = code, writeKey = wk, value = svs }); continue; }
             if (Regex.IsMatch(wk, "Party")) party[wk] = svs; else p[wk] = svs;
             sent.Add(new { field = code, writeKey = wk, value = svs });
+        }
+        // AIR ONLY: the ERP keys the AWB on houseNo + masterNo as a PAIR. Submitting only one (e.g. a MAWB change
+        // with the HAWB omitted) makes it treat the write as a different job -> "job duplicate" error. So when EITHER
+        // is being changed, send BOTH - the unchanged one at its current value (from `all`, the live-seeded form set).
+        if (ident.Module == "AIR" && (changed.ContainsKey("bl_no") || changed.ContainsKey("master_no")) && all != null)
+        {
+            if (!p.ContainsKey("houseNo")) { var hv = (all.TryGetValue("bl_no", out var h) ? h?.ToString() : "")?.Trim() ?? ""; if (hv != "") { p["houseNo"] = hv; sent.Add(new { field = "bl_no", writeKey = "houseNo", value = hv + " (paired)" }); } }
+            if (!p.ContainsKey("masterNo")) { var mv = (all.TryGetValue("master_no", out var m) ? m?.ToString() : "")?.Trim() ?? ""; if (mv != "") { p["masterNo"] = mv; sent.Add(new { field = "master_no", writeKey = "masterNo", value = mv + " (paired)" }); } }
         }
         // forwarderPartyCode (owncode) is REQUIRED by the NewBooking schema and routes the write to the right
         // office - always send it, even when no party field was edited.

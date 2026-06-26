@@ -241,6 +241,13 @@ Sign in as an **admin** and open the **Admin** link (admins only). `admin-ops.ht
   (the box is always shown when the ERP is live), and the ones that would also **clear a milestone** on that
   shipment are flagged with a `*`. Keep these matched to the ERP Document Type master, or `/file/upload` is
   rejected. (If the list is empty the picker falls back to a free-text doctype field.)
+- **Generate documents** — CRUD over `doc_generate_map`: the **documentTypeCode + houseTypeCode** pairs (per
+  module **AIR/SEA**) an operator may generate from a shipment (the drawer's **Generate document** box). One
+  documentTypeCode can have several houseTypeCodes (one row each). **Master bill** keys the generate call on the
+  master bill (master-level docs); **Invoice** prompts the operator for an invoice number. Both codes are sent
+  **verbatim** to `/document/generate`, so they must match the ERP exactly. Changes apply immediately (cached, no
+  restart). The generated PDF is returned **inline** and streamed to the operator as a download — the ERP does not
+  file it, so it does not appear in the ERP-files list.
 - **ERP API** — the ERP **connection**, editable at the customer site with no file edit and no restart: the
   **Base URL**, the **bearer token** (write-only — masked, "leave blank to keep"; never returned by the API) and
   the **mock** toggle, stored in **`dbo.app_setting`** and overriding `ops.config.json` at runtime, with a
@@ -350,6 +357,13 @@ The draft HBL/HAWB **Issue** posts to the **Swivel 3rd-party ERP API**. Two conf
 
 > 🔑 **`documentTypeCode: BL_REVIEW` must exist in the ERP Document Type master**, or `/file/upload` is
 > rejected. Likewise `event.status` and `serviceCode` must match their ERP masters.
+
+> 🖨️ **Generate document (operator, drawer).** Separate from Issue: `POST /api-ops/erp-doc-generate` calls
+> `/document/generate` for an admin-configured `documentTypeCode` + `houseTypeCode` (the **Generate documents**
+> tab → `doc_generate_map`). The booking/bill key is chosen by priority **houseBillNo → bookingNo → masterBillNo**
+> (a *Master bill* row leads with the master bill), and **falls through on a "No corresponding shipment" 422** to
+> the next identifier — so a typed-but-not-issued house bill still resolves via the booking number. `includeFile`
+> returns the PDF **inline** (the ERP does **not** store it), so the endpoint streams the bytes back as a download.
 
 > ℹ️ **Auto PDF.** On Issue, the server renders the agreed bill to PDF with headless Edge/Chrome (reusing the
 > print layout) and uploads it. Set `pdfEngine` in the config to override the browser path; if no browser is

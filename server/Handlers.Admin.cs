@@ -22,6 +22,8 @@ public static partial class Handlers
             case "/api-ops/admin/milestone-delete": return AdminMilestoneDelete(j, sess);
             case "/api-ops/admin/evidence": return AdminEvidence(j, sess, post);
             case "/api-ops/admin/evidence-delete": return AdminEvidenceDelete(j, sess);
+            case "/api-ops/admin/docgen": return AdminDocGen(j, sess, post);
+            case "/api-ops/admin/docgen-delete": return AdminDocGenDelete(j, sess);
             case "/api-ops/admin/erp-settings": return AdminErpSettings(j, sess, post);
             // ---- IT-Admin "Audit & Health" tab: read-only views so support can see audit/health/storage/errors
             //      WITHOUT database access (all GET; admin-gated by the check above). ----
@@ -217,6 +219,51 @@ public static partial class Handlers
         using (var cn = new SqlConnection(Config.ConnStr)) { cn.Open(); Db.Exec(cn, "DELETE FROM dbo.milestone_evidence_map WHERE id=@id AND source_kind='pic_doctype'", new Dictionary<string, object?> { ["id"] = id }); }
         DoctypeMap.Reset();
         Auth.Audit(sess.Username, $"delete evidence doc id={id}");
+        return new Resp(new { ok = true });
+    }
+
+    // Admin "Generate documents" tab: CRUD the documentTypeCode + houseTypeCode map (per module) used by the
+    // drawer Generate feature. One documentTypeCode can have many houseTypeCodes; mirrors AdminEvidence.
+    static Resp AdminDocGen(JsonElement j, Session sess, bool post)
+    {
+        using var cn = new SqlConnection(Config.ConnStr); cn.Open();
+        if (!post)
+        {
+            var rows = Db.RunQ(cn, "SELECT id,module,document_type_code,house_type_code,use_master_bill,invoice_required,active FROM dbo.doc_generate_map ORDER BY module,document_type_code,house_type_code", new Dictionary<string, object?>());
+            return new Resp(new { rows = rows.Select(RawRow).ToArray() });
+        }
+        var mod = j.Str("module").Trim().ToUpperInvariant();
+        if (mod is not ("SEA" or "AIR")) return new Resp(new { error = "Module must be SEA or AIR" }, 400);
+        var doc = j.Str("document_type_code").Trim();
+        if (doc == "" || doc.Length > 60) return new Resp(new { error = "Document type code required (max 60 chars) - must match the ERP exactly" }, 400);
+        var house = j.Str("house_type_code").Trim();
+        if (house.Length > 80) return new Resp(new { error = "House type code too long (max 80 chars)" }, 400);
+        var useMaster = j.Bool("use_master_bill") == true ? 1 : 0;
+        var invReq = j.Bool("invoice_required") == true ? 1 : 0;
+        var active = ActiveFlag(j);
+        int.TryParse(j.Str("id"), out var id);
+        try
+        {
+            if (id > 0)
+                Db.Exec(cn, "UPDATE dbo.doc_generate_map SET module=@mo,document_type_code=@d,house_type_code=@h,use_master_bill=@um,invoice_required=@ir,active=@a WHERE id=@id",
+                    new Dictionary<string, object?> { ["mo"] = mod, ["d"] = doc, ["h"] = house, ["um"] = useMaster, ["ir"] = invReq, ["a"] = active, ["id"] = id });
+            else
+                Db.Exec(cn, "INSERT INTO dbo.doc_generate_map(module,document_type_code,house_type_code,use_master_bill,invoice_required,active) VALUES(@mo,@d,@h,@um,@ir,@a)",
+                    new Dictionary<string, object?> { ["mo"] = mod, ["d"] = doc, ["h"] = house, ["um"] = useMaster, ["ir"] = invReq, ["a"] = active });
+        }
+        catch (SqlException ex) when (ex.Number == 2627 || ex.Number == 2601)   // unique key (module, doc, house) already exists
+        { return new Resp(new { error = $"That {mod} {doc} / {(house == "" ? "(no house type)" : house)} combination already exists" }, 400); }
+        DocGenMap.Reset();
+        Auth.Audit(sess.Username, $"upsert docgen {mod} '{doc}' / '{house}' (master={useMaster}, invoice={invReq}, active={active})");
+        return new Resp(new { ok = true });
+    }
+
+    static Resp AdminDocGenDelete(JsonElement j, Session sess)
+    {
+        if (!int.TryParse(j.Str("id"), out var id) || id <= 0) return new Resp(new { error = "id required" }, 400);
+        using (var cn = new SqlConnection(Config.ConnStr)) { cn.Open(); Db.Exec(cn, "DELETE FROM dbo.doc_generate_map WHERE id=@id", new Dictionary<string, object?> { ["id"] = id }); }
+        DocGenMap.Reset();
+        Auth.Audit(sess.Username, $"delete docgen id={id}");
         return new Resp(new { ok = true });
     }
 

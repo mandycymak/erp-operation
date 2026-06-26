@@ -1503,8 +1503,66 @@ function erpFilesPanel(job, sh) {
     const clearable = arr(d.clearableDoctypes);
     const allDt = arr(d.uploadDoctypes);
     bodyEl.appendChild(erpUploadRow(job, allDt.length ? allDt : clearable, clearable));
+    // generate a document straight from the ERP (admin-configured documentTypeCode + houseTypeCode)
+    const genOpts = arr(d.generateOptions);
+    if (genOpts.length) bodyEl.appendChild(erpGenerateRow(job, genOpts));
   }).catch(() => { bodyEl.innerHTML = '<div class="empty">' + esc(tr('Could not reach the ERP for files.')) + '</div>'; });
   return wrap;
+}
+// Generate a document in the ERP from an admin-configured documentTypeCode + its related houseTypeCode(s). `options`
+// = [{ documentTypeCode, houseTypes:[{houseTypeCode, invoiceRequired}] }]. Pick a document type -> the house-type
+// dropdown cascades; an invoice-required type reveals an invoice-no field. On success the whole drawer refreshes so
+// the ERP returns the generated PDF inline (it does NOT store it), so Generate streams it straight to a download.
+function erpGenerateRow(job, options) {
+  const row = el('div', 'erpupload erpgen');
+  row.appendChild(el('div', 'erpupload-lbl', esc(tr('Generate a document from the ERP:'))));
+  const line = el('div', 'erpupload-line');
+  const docSel = el('select');
+  options.forEach(o => { const op = el('option'); op.value = o.documentTypeCode; op.textContent = o.documentTypeCode; docSel.appendChild(op); });
+  const houseSel = el('select');
+  const inv = el('input'); inv.type = 'text'; inv.placeholder = tr('Invoice no.'); inv.style.cssText = 'width:120px;display:none';
+  const btn = el('button', 'primary', tr('Generate')); btn.style.fontSize = '11px';
+  const msg = el('span', 'mut'); msg.style.cssText = 'font-size:11px;margin-left:4px';
+  const curOpt = () => options.find(o => o.documentTypeCode === docSel.value) || { houseTypes: [] };
+  const curHouse = () => arr(curOpt().houseTypes).find(h => h.houseTypeCode === houseSel.value) || null;
+  function fillHouses() {
+    houseSel.innerHTML = '';
+    const hs = arr(curOpt().houseTypes);
+    if (!hs.length) { const op = el('option'); op.value = ''; op.textContent = tr('(no house type)'); houseSel.appendChild(op); }
+    hs.forEach(h => { const op = el('option'); op.value = h.houseTypeCode; op.textContent = h.houseTypeCode || tr('(no house type)'); houseSel.appendChild(op); });
+    toggleInvoice();
+  }
+  function toggleInvoice() { const h = curHouse(); inv.style.display = (h && h.invoiceRequired) ? '' : 'none'; if (inv.style.display === 'none') inv.value = ''; }
+  docSel.onchange = fillHouses;
+  houseSel.onchange = toggleInvoice;
+  line.appendChild(docSel); line.appendChild(houseSel); line.appendChild(inv); line.appendChild(btn); line.appendChild(msg);
+  row.appendChild(line);
+  fillHouses();
+  btn.onclick = async () => {
+    const old = btn.textContent; btn.disabled = true; btn.textContent = tr('Generating…'); msg.textContent = '';
+    try {
+      const r = await fetch('/api-ops/erp-doc-generate', {
+        method: 'POST', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-Ops-User': state.user || '(open)' },
+        body: JSON.stringify({ job: job, documentTypeCode: docSel.value, houseTypeCode: houseSel.value, invoiceNumber: inv.value.trim() })
+      });
+      const ctype = r.headers.get('content-type') || '';
+      if (r.ok && ctype.indexOf('application/pdf') >= 0) {
+        const blob = await r.blob();
+        const cd = r.headers.get('content-disposition') || ''; const mm = cd.match(/filename="?([^"]+)"?/);
+        const name = (mm && mm[1]) || (docSel.value + '.pdf');
+        const url = URL.createObjectURL(blob); const a = el('a'); a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+        msg.textContent = tr('Generated') + ' · ' + name;
+      } else {
+        let j = {}; try { j = await r.json(); } catch (e) { }
+        if (j.ok && j.mock) msg.textContent = tr('Generated') + ' [' + tr('mock') + ']';
+        else msg.textContent = j.error || tr('generate failed');
+      }
+    } catch (e) { msg.textContent = tr('generate failed'); }
+    btn.disabled = false; btn.textContent = old;
+  };
+  return row;
 }
 // Upload a document straight to the ERP. `doctypes` = the configured ERP Document Type codes (admin Documents tab);
 // `clearable` = the subset that would also clear a milestone on this shipment. The file is base64'd in the browser

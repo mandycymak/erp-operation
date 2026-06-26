@@ -404,6 +404,23 @@ IF COL_LENGTH('dbo.milestone_evidence_map','module_match') IS NULL
   ALTER TABLE dbo.milestone_evidence_map ADD module_match nvarchar(8) NULL;
 "@
 
+# --- 2.1b doc_generate_map — admin-configured documentTypeCode + related houseTypeCode(s) per module, for the
+#     drawer "Generate document" feature (/document/generate). One documentTypeCode can carry many houseTypeCodes;
+#     use_master_bill keys the call on masterBillNo (master-level docs); invoice_required prompts for invoiceNumber. ---
+ExecSql $opsDb @"
+IF OBJECT_ID('dbo.doc_generate_map') IS NULL
+CREATE TABLE dbo.doc_generate_map (
+  id int IDENTITY(1,1) PRIMARY KEY,
+  module             nvarchar(8)  NOT NULL,                 -- 'AIR' | 'SEA'
+  document_type_code nvarchar(60) NOT NULL,                 -- ERP code, sent verbatim (e.g. 'AWB')
+  house_type_code    nvarchar(80) NOT NULL DEFAULT '',      -- '' = none; many per documentTypeCode
+  use_master_bill    bit NOT NULL DEFAULT 0,                -- master-level doc -> key the call on masterBillNo
+  invoice_required   bit NOT NULL DEFAULT 0,                -- doc needs an invoiceNumber input
+  active             bit NOT NULL DEFAULT 1,
+  CONSTRAINT UQ_doc_generate_map UNIQUE (module, document_type_code, house_type_code)
+);
+"@
+
 # --- 2.6 detention_watch — post-delivery DET/DEM tracking per [job x container x kind], days-over vs free-time ---
 ExecSql $opsDb @"
 IF OBJECT_ID('dbo.detention_watch') IS NULL
@@ -836,8 +853,8 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_health_check' AND object
   CREATE INDEX IX_health_check ON dbo.health_check_log(check_name, occurred_at);
 "@
 
-Write-Host "Operational database [$opsDb] ready (26 tables + indexes):" -ForegroundColor Green
-Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, detention_watch," -ForegroundColor Green
+Write-Host "Operational database [$opsDb] ready (27 tables + indexes):" -ForegroundColor Green
+Write-Host "  milestone_baselines, shipment_alerts, milestone_def, milestone_evidence_map, doc_generate_map, detention_watch," -ForegroundColor Green
 Write-Host "  milestone_event_log, company_dim, port_dim, liner_dim, station_dim, station_route_map, inbound_booking_feed (+feed_watermark)" -ForegroundColor Green
 Write-Host "  doc_draft, doc_version, doc_review_token, doc_event_log, doc_attachment (draft document review)" -ForegroundColor Green
 Write-Host "  erp_edit_log (ERP master-code corrections audit), health_check_log (watchdog status trail)" -ForegroundColor Green

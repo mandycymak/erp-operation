@@ -308,6 +308,7 @@ button:hover{filter:brightness(1.08)}
 .erpupload-lbl{font-size:11px;color:var(--mut);margin-bottom:5px}
 .erpupload-line{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .erpupload-line select,.erpupload-line input[type=file]{font-size:11px}
+.erpgen .erpupload-line select,.erpgen .erpupload-line input[type=text]{font-size:11px}
 .docstatus{font-size:10.5px;padding:1px 8px;border-radius:8px;border:1px solid var(--line);color:var(--mut)}
 .docstatus.s-SENT{color:#1565c0;border-color:#1565c0}
 .docstatus.s-CUSTOMER_SUBMITTED{color:#b26a00;border-color:#b26a00}

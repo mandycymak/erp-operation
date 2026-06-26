@@ -453,7 +453,7 @@ MapData("/api-ops/erp-master-detail", Handlers.ErpMasterDetail);   // full party
 MapData("/api-ops/book-now-seed", Handlers.BookNowSeed);     // Book Now: station + default POL/service per mode
 MapData("/api-ops/book-now-master", Handlers.BookNowMaster); // Book Now: station-scoped master type-ahead (no job)
 // ---- Stage 4b: Swivel ERP HTTP write client ----
-MapData("/api-ops/erp-files", Handlers.ErpFiles);                 // list ERP-held files (+ clearable doctypes)
+MapData("/api-ops/erp-files", Handlers.ErpFiles);                 // list ERP-held files (+ clearable + generate options)
 MapDataPost("/api-ops/erp-file-upload", Handlers.ErpFileUpload);  // upload a doc -> clear the milestone(s) it proves
 
 // erp-file-download streams bytes (not JSON), and erp-edit-save needs the client IP for erp_edit_log, so both are
@@ -477,6 +477,33 @@ app.MapGet("/api-ops/erp-file-download", async (HttpContext ctx) =>
         await ctx.Response.Body.WriteAsync(res.Bytes);
     }
     catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); ctx.Response.StatusCode = 404; try { await ctx.Response.CompleteAsync(); } catch { } }
+    finally { dbGate.Release(); }
+});
+
+// erp-doc-generate returns the generated PDF inline (the ERP doesn't store it), so it streams bytes on success
+// and JSON on error/mock - a custom route like erp-file-download.
+app.MapPost("/api-ops/erp-doc-generate", async (HttpContext ctx) =>
+{
+    var sess = GetSession(ctx);
+    if (sess == null) { await Json(ctx, new { error = "Authentication required" }, 401); return; }
+    var rs = await Resolve(ctx, sess); if (rs == null) return;
+    var body = await ReadBody(ctx);
+    await dbGate.WaitAsync();
+    try
+    {
+        using var cn = new SqlConnection(Config.ConnStr);
+        cn.Open();
+        var res = Handlers.ErpDocGenerate(cn, body, rs);
+        if (res.Bytes != null)
+        {
+            ctx.Response.StatusCode = 200;
+            ctx.Response.ContentType = "application/pdf";
+            ctx.Response.Headers["Content-Disposition"] = $"attachment; filename=\"{res.FileName.Replace("\"", "")}\"";
+            await ctx.Response.Body.WriteAsync(res.Bytes);
+        }
+        else await Json(ctx, res.Json ?? new { error = "generate failed" }, res.Status);
+    }
+    catch (Exception ex) { Log.Error(ctx.Request.Method + " " + ctx.Request.Path, ex); await Json(ctx, new { error = ex.Message }, 500); }
     finally { dbGate.Release(); }
 });
 

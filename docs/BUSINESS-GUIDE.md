@@ -101,6 +101,12 @@ Click a card to open the drawer:
   **`*`** ("`* clears alert`") will also turn a milestone **green** when uploaded — that's the fast way to clear
   an overdue document alert. (The document types come from the admin **Documents** tab; keep them matched to the
   ERP.)
+- **Generate a document from the ERP** — below the upload box, a **Generate document** row lets you produce a
+  document (e.g. an **AWB**) straight from the ERP and **download the PDF**. Pick a **Document type**; the related
+  **House type** list appears (one document type can have several house types); some types also ask for an
+  **invoice no.** Click **Generate** and the PDF downloads. You can only pick the document/house types an admin has
+  set up (the **Generate documents** tab) — they must match the ERP exactly. *Note:* the ERP returns the document
+  to you directly, so it **downloads** rather than appearing in the ERP-files list above.
 
 ---
 

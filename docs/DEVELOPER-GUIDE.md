@@ -61,14 +61,14 @@ actually built and proven; update it when you ship something.
 | **`backup-ops.ps1`** | nightly ops-DB `.bak` (COPY_ONLY) + gitignored-secrets copy + prune; non-zero exit on failure |
 | **`ops-healthcheck.ps1`** | the watchdog — checks app/db/tasks/feed/backup/storage/disk/VPN → `health_check_log` + alert (config `alerts`: webhook/SMTP) on failure |
 | **`purge-ops.ps1`** | data retention/aging (config `retention`) + log rotation — keeps the ops DB small over years (`-WhatIf` previews) |
-| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`, the unauthenticated **`GET /api-ops/health`** probe), **`Auth.cs`** (backs onto SQL `app_user`+`app_user_scope`; `SeedOrImport` seeds default admin / imports legacy `users.json` once), **`Settings.cs`** (runtime ERP connection from `app_setting`, overrides `ops.config.json`), `Config.cs`, `Sql.cs`, `Filter.cs`, **`Log.cs`** (`Log.Error` → `ops-error.log`), **`ErpLog.cs`** (every ERP call → `erp_api_log`, `corr_id` scopes), and `Handlers.*.cs` (one area per file: Worklist/Shipment/**Find**/Notes/Tasks/Inbound/**Bookings**/Erp*/Doc/Admin/Misc). `Handlers.Admin.cs` also serves the read-only IT-Admin views (`/api-ops/admin/health` · `/storage` · `/audit` · `/errors` · `/erp-api`) and the ERP-connection editor; `Handlers.Bookings.cs` is the scoped **New bookings** endpoint. `Notes.cs` backs the SQL `job_note` store; **`Llm.cs`** is the optional, flag-gated Find fallback adapter. `dotnet publish -c Release` to deploy |
+| **`server/`** | **the .NET web tier (current)** — `Program.cs` (routing, no-store/CORS, static-secret guard, `dbGate`, the unauthenticated **`GET /api-ops/health`** probe), **`Auth.cs`** (backs onto SQL `app_user`+`app_user_scope`; `SeedOrImport` seeds default admin / imports legacy `users.json` once), **`Settings.cs`** (runtime ERP connection from `app_setting`, overrides `ops.config.json`), `Config.cs`, `Sql.cs`, `Filter.cs`, **`Log.cs`** (`Log.Error` → `ops-error.log`), **`ErpLog.cs`** (every ERP call → `erp_api_log`, `corr_id` scopes), and `Handlers.*.cs` (one area per file: Worklist/Shipment/**Find**/Notes/Tasks/Inbound/**Bookings**/Erp*/Doc/Admin/Misc). `Handlers.Admin.cs` also serves the read-only IT-Admin views (`/api-ops/admin/health` · `/storage` · `/audit` · `/errors` · `/erp-api`) and the ERP-connection editor; `Handlers.Bookings.cs` is the scoped **New bookings** endpoint. **`DoctypeMap.cs`** (upload-to-clear doctype→milestone map) and **`DocGenMap.cs`** (Generate-document documentTypeCode↔houseTypeCode map) are admin-editable caches reset on save. `Notes.cs` backs the SQL `job_note` store; **`Llm.cs`** is the optional, flag-gated Find fallback adapter. `dotnet publish -c Release` to deploy |
 | `serve-ops.ps1` | the **legacy** web service (rollback) — same routes/contract as `server/`; keep in parity when a shared contract changes |
 | **`i18n.js`** | the client localization layer — `tr(en, ctx?)`, `applyDom()`, `boot()`, `setLang()`, the `SUPPORTED` language list |
 | **`lang/<code>.json`** | UI translation dictionaries (English source string = key). `lang/zh-Hans.json`, `lang/ja.json` |
 | `erp-doc-api.ps1` | the Swivel 3rd-party ERP API client (agree / issue: booking/update, file/upload, event/update; `Build-ErpPatchPayload` / `Invoke-ErpEditPush` for the Edit-ERP-data push) |
 | `erp-edit.html` / `erp-edit.js` / `erp-edit-fields.json` | **Edit ERP data** editor (HBL/AWB-grid layout) + its field dictionary (`writeKey` per field) |
 | `index.html` / `ops.js` / `styles.css` | the operator UI |
-| `admin-ops.html` / `login.html` | admin (users + milestones + **Audit & Health** + **Change log** tabs) and login |
+| `admin-ops.html` / `login.html` | admin (Users · Milestones · **Documents** · **Generate documents** · ERP API · **Audit & Health** · **Change log** tabs) and login |
 | `doc-editor.html` / `doc-editor.js` | staff draft editor (diff, send, agree, issue, amend) |
 | `bl-review.html` / `bl-review.js` / `bl-review.css` | the public customer review page |
 | `bl-form.js` | the **shared** bill renderer (used by both the staff editor and the customer page) |
@@ -245,6 +245,22 @@ functions; `Build-ErpPatchPayload` **always** injects `forwarderPartyCode`. `Inv
 > key `/file/upload` + `/event/update` by `houseNo`+`bookingNo` (the doc guid 422s); `ErpErr` rewinds the consumed
 > response stream to surface the ERP's real validation text.
 
+> **AIR HAWB+MAWB are a PAIR on update (.NET `Erp.BuildPatchPayload`).** The ERP keys an AWB on `houseNo`+`masterNo`
+> together; pushing only one (a MAWB-only edit) is read as a different job → "job duplicate". So for **AIR**, when
+> either `bl_no`/`master_no` is changed, **both** `houseNo`+`masterNo` are sent — the unchanged one read-merged from
+> the seeded form set (same idea as the AIR cargo-block read-merge: `quantity/…/shipMarks/goodsDescription`).
+
+**Generate document (.NET-only — `Erp.DocGenerate` + `Handlers.ErpDocGenerate`).** A user-triggered
+`/document/generate` (the drawer **Generate document** box), distinct from `DocIssue`'s optional generate
+side-effect (untouched). The `(module, documentTypeCode, houseTypeCode)` combo is validated against **`DocGenMap`**
+(cached over `doc_generate_map`, admin-editable via the **Generate documents** tab; `Reset()` on save). The
+booking/bill key follows priority **houseBillNo → bookingNo → masterBillNo → 3rdBookingID** (a `use_master_bill`
+row leads with the master bill) and **iterates the candidates, falling through on a "No corresponding" 422** to the
+next — mirroring `Erp.FileEnquiry`/`FileDownload`. `includeFile=true` returns the PDF **inline** under the
+top-level `file[].base64` (verified live: the ERP does **not** file it, `/file/enquiry` 422s), so the endpoint is a
+**custom streaming route** in `Program.cs` (like `erp-file-download`) — `DocGenHttp` carries bytes on success, JSON
+on error/mock; the client `fetch`es and triggers the download.
+
 ### Headless PDF (`Doc-RenderPdf`)
 
 On Issue, the agreed bill is rendered to PDF by injecting `doc-fields.json` + the saved fields into an offline
@@ -293,6 +309,11 @@ Note **`job_note`** (operator notes/arrangements/reminders) is now a **SQL table
 `ops-lists/job-notes.json` file — accessed only via `Notes.cs` (`[user]` is bracketed; `mentions` is
 comma-delimited; `created` is an ISO string). It carries no scope columns, so any cross-shipment read of it
 **must** gate on the parent shipment's scope (see the Find note search). See [SQL-README.md §2](SQL-README.md).
+
+Two **admin-config** tables drive the ERP-document features: **`milestone_evidence_map`** (`pic_doctype` rows →
+the upload-to-clear doctypes, cached in `DoctypeMap`) and **`doc_generate_map`** (`module`, `document_type_code`,
+`house_type_code`, `use_master_bill`, `invoice_required`, `active` — the Generate-document combos, cached in
+`DocGenMap`). Both caches `Reset()` on any admin save/delete so edits apply with no restart.
 
 ---
 
