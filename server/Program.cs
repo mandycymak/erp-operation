@@ -181,7 +181,7 @@ app.MapGet("/api-ops/config", (HttpContext ctx) => Json(ctx, new
 // RICH admin view (history, storage, audit) is /api-ops/admin/health — this one stays tiny and dependency-light.
 app.MapGet("/api-ops/health", async (HttpContext ctx) =>
 {
-    var version = typeof(Config).Assembly.GetName().Version?.ToString() ?? "";
+    var version = Config.AppVersion;
     var utc = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
     try
     {

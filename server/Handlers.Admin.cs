@@ -359,7 +359,7 @@ public static partial class Handlers
             "ORDER BY h.check_name", new Dictionary<string, object?>());
         return new Resp(new
         {
-            app = new { version = typeof(Config).Assembly.GetName().Version?.ToString() ?? "", instance = Config.InstanceName, utc = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ") },
+            app = new { version = Config.AppVersion, instance = Config.InstanceName, utc = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ") },
             db = new { up = true },   // we are holding an open connection, so the ops DB is reachable
             checks = checks.Select(RawRow).ToArray(),
             errorCount24h = CountErrorsSince(DateTime.Now.AddHours(-24)),

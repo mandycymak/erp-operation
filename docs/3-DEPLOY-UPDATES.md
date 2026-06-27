@@ -88,8 +88,37 @@ PowerShell→.NET cutover runbook is in [`_archive/CUTOVER.md`](_archive/CUTOVER
 
 ---
 
+## Version number (so you can see what's deployed)
+
+Set the release version in **one place — `server/Ops.csproj` → `<Version>`** (e.g. `<Version>1.1.0</Version>`).
+Bump it per release before you publish. The build stamps the version **+ build date** into the assembly, and it
+surfaces automatically at:
+
+- `GET /api-ops/health` → `"version"` (for an uptime monitor), and
+- **Admin → Audit & Health**, top line: `App v1.1.0 (built 2026-06-27) · ops DB …`.
+
+So on any customer server you (or support) can open Admin → Audit & Health and see exactly which build is running.
+It is **baked into `Ops.dll` at build time**, so it travels with the published files when you copy them — **the
+customer server needs no git**, and it only changes after a fresh `dotnet publish` + pool recycle (a running
+instance keeps showing its own build until then).
+
+**Deciding the number — [Semantic Versioning](https://semver.org):** `MAJOR.MINOR.PATCH`.
+**PATCH** = bug fix (`1.4.2→1.4.3`); **MINOR** = new backward-compatible feature, incl. additive schema
+(`1.4.x→1.5.0`); **MAJOR** = a breaking change a customer/integration must adapt to (`1.x→2.0.0`). Rule of thumb:
+*"would an existing deploy or integration break if they just took this update?"* → MAJOR. While pre-release, use `0.x`.
+
+**Release procedure (manual deploy, no git on the customer):**
+1. On your **build box**, bump `server/Ops.csproj → <Version>` per SemVer.
+2. `dotnet publish -c Release -o publish`.
+3. Copy `server/publish/` to the customer (or run `update-customer.bat` if the server has the SDK).
+4. **Confirm the version:** `verify-customer.ps1` prints **`DEPLOYED BUILD: v<version>`** (read from the actual
+   `Ops.dll`) — check it's the one you intended. It also shows in **Admin → Audit & Health** once the app restarts.
+
+---
+
 ## After the update
 
 Confirm: `https://<host>/` loads; `https://<host>/ops.config.json` → **404** (secret blocked); the language picker
-works; **your real users still appear in Admin → Users**; reconcile a milestone light against a direct ERP SQL
-query. Then take a fresh backup (`backup-ops.ps1`). Ongoing support: [4-OPERATE-SUPPORT.md](4-OPERATE-SUPPORT.md).
+works; **your real users still appear in Admin → Users**; **the version in Admin → Audit & Health is the build you
+expect**; reconcile a milestone light against a direct ERP SQL query. Then take a fresh backup (`backup-ops.ps1`).
+Ongoing support: [4-OPERATE-SUPPORT.md](4-OPERATE-SUPPORT.md).

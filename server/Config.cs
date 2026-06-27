@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json.Nodes;
 
 namespace Ops;
@@ -9,6 +10,13 @@ namespace Ops;
 public static class Config
 {
     public static string RepoRoot { get; private set; } = "";
+
+    // App build version, shown in /api-ops/health + Admin -> Audit & Health (so support can see which build is on a
+    // customer's server). SET IT in server/Ops.csproj <Version>; the build stamps <InformationalVersion> with the
+    // version + build date, which is read here (falling back to the numeric assembly version).
+    public static readonly string AppVersion =
+        typeof(Config).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? typeof(Config).Assembly.GetName().Version?.ToString() ?? "";
 
     // ---- ops (erpops) connection: the web tier reads/writes ONLY erpops (two-server: may differ from the ERP) ----
     public static string OpsServer { get; private set; } = "";

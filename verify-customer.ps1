@@ -28,6 +28,16 @@ function Scalar($sql) {
 Write-Host ""
 Write-Host "=== Post-deploy verification ===" -ForegroundColor Cyan
 Write-Host ("  config     : {0}" -f $ConfigPath)
+# Deployed build version, read straight out of the published Ops.dll (no git / no running app needed) so the
+# developer can confirm the RIGHT version was deployed. The version is baked in at build time on the build box.
+$dll = Join-Path $PSScriptRoot "server\publish\Ops.dll"
+if (Test-Path $dll) {
+  $ver = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($dll).ProductVersion
+  Write-Host ("  DEPLOYED BUILD : v{0}" -f $ver) -ForegroundColor Cyan
+  Write-Host  "  >>> confirm this is the version you intended to deploy <<<" -ForegroundColor Cyan
+} else {
+  Write-Host ("  DEPLOYED BUILD : Ops.dll not found at {0} (publish first)" -f $dll) -ForegroundColor Yellow
+}
 Write-Host ("  ops DB     : Server={0}; Database={1}" -f $opsServer, $opsDb) -ForegroundColor Yellow
 try {
   $users      = [int](Scalar "SELECT COUNT(*) FROM dbo.app_user")
