@@ -368,6 +368,7 @@ written *into* `web.config` are lost on the next publish):
 | `OPS_HTTPS=1` | Secure cookies + HSTS |
 | `OPS_IFRAME=1` | **only** for the L!NK iframe: `SameSite=None; Secure; Partitioned` cookies |
 | `OPS_DB_GATE=16` | max concurrent SQL ops (tune to SQL/VPN) |
+| `OPS_BOOKING_WORKERS=1` | how many Book Now bookings to push to the ERP **concurrently** (default 1 = serial). Raise (e.g. 5) only after load-testing that the ERP tolerates concurrent `/booking/update` — see `tools\loadtest-booknow.ps1`. |
 | `DB_*` | override the config DB settings (`DB_SERVER`, `DB_OPS_SERVER`, `DB_OPS_DB`, …) |
 | `SWIVEL_OAUTH_*` / `OPS_JWT_*` | L!NK OAuth / JWT bearer config, if used |
 

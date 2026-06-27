@@ -19,28 +19,50 @@ public sealed class BookingPusher : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
         try { await Task.Delay(2000, stop); } catch { }
+        var workers = Workers();
+        Console.Error.WriteLine($"[BookingPusher] {workers} worker(s) (OPS_BOOKING_WORKERS; 1 = serial ERP pushes)");
+        var tasks = new List<Task>();
+        for (var w = 0; w < workers; w++) tasks.Add(Task.Run(() => WorkerLoop(stop)));
+        try { await Task.WhenAll(tasks); } catch { }
+    }
+
+    // How many bookings to push to the ERP CONCURRENTLY. Default 1 = serial (one /booking/update at a time - the safe
+    // baseline; the ERP only ever sees one call). Raise via OPS_BOOKING_WORKERS ONLY after load-testing that the ERP
+    // tolerates concurrent /booking/update calls without duplicating/garbling bookings (tools\loadtest-booknow.ps1).
+    // Clamped to 16. Throughput is roughly workers / per-call-latency, so 5 workers ~= 5x faster drain.
+    static int Workers()
+    {
+        var v = Environment.GetEnvironmentVariable("OPS_BOOKING_WORKERS");
+        return int.TryParse(v, out var n) && n >= 1 ? Math.Min(n, 16) : 1;
+    }
+
+    static async Task WorkerLoop(CancellationToken stop)
+    {
         while (!stop.IsCancellationRequested)
         {
-            try { DrainOnce(); } catch (Exception ex) { Log.Error("booking-pusher loop", ex); }
-            try { await Task.Delay(3000, stop); } catch { }
+            var did = false;
+            try { did = ClaimAndProcessOne(); } catch (Exception ex) { Log.Error("booking-pusher loop", ex); }
+            // just did one -> loop immediately for the next; queue empty -> idle briefly
+            if (!did) { try { await Task.Delay(3000, stop); } catch { } }
         }
     }
 
-    static void DrainOnce()
+    // Claim the oldest due row and process it; returns false when nothing is claimable. Each call uses its OWN
+    // connection so workers are independent. UPDLOCK+READPAST+ROWLOCK on the pick make concurrent workers each take a
+    // DIFFERENT row (a worker skips a row another worker already locked) - so a booking is NEVER pushed to the ERP
+    // twice, even with OPS_BOOKING_WORKERS > 1 or a web-garden.
+    static bool ClaimAndProcessOne()
     {
         using var cn = new SqlConnection(Config.ConnStr); cn.Open();
-        for (int i = 0; i < 5; i++)   // up to 5 per tick
-        {
-            // claim the oldest due row atomically (so concurrent workers can't grab the same one)
-            var claimed = Db.RunQ(cn,
-                "UPDATE dbo.book_pending SET status='processing', attempts=attempts+1, updated_at=SYSDATETIME() " +
-                "OUTPUT inserted.ref_no, inserted.station, inserted.mode, inserted.actor, inserted.payload, inserted.attempts " +
-                "WHERE ref_no = (SELECT TOP 1 ref_no FROM dbo.book_pending " +
-                "  WHERE status='pending' OR (status='retry' AND (next_at IS NULL OR next_at<=SYSDATETIME())) ORDER BY created_at)",
-                new Dictionary<string, object?>());
-            if (claimed.Count == 0) break;
-            try { ProcessOne(cn, claimed[0]); } catch (Exception ex) { Log.Error("booking-pusher process", ex); }
-        }
+        var claimed = Db.RunQ(cn,
+            "UPDATE dbo.book_pending SET status='processing', attempts=attempts+1, updated_at=SYSDATETIME() " +
+            "OUTPUT inserted.ref_no, inserted.station, inserted.mode, inserted.actor, inserted.payload, inserted.attempts " +
+            "WHERE ref_no = (SELECT TOP 1 ref_no FROM dbo.book_pending WITH (UPDLOCK, READPAST, ROWLOCK) " +
+            "  WHERE status='pending' OR (status='retry' AND (next_at IS NULL OR next_at<=SYSDATETIME())) ORDER BY created_at)",
+            new Dictionary<string, object?>());
+        if (claimed.Count == 0) return false;
+        try { ProcessOne(cn, claimed[0]); } catch (Exception ex) { Log.Error("booking-pusher process", ex); }
+        return true;
     }
 
     static void ProcessOne(SqlConnection cn, Row row)
