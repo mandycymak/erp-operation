@@ -74,7 +74,20 @@ public static class Auth
             try
             {
                 EnsureTables();
-                if (TableEmpty()) SeedOrImport();
+                if (TableEmpty())
+                {
+                    // GUARD: an empty app_user almost always means the app is pointed at the WRONG or a FRESH database
+                    // (lost OPS_CONFIG/OPS_ROOT after a redeploy), not a genuine first install. Auto-seeding admin/admin123
+                    // or importing a stray users.json here is exactly how a customer's real users silently "disappear".
+                    // Refuse unless an explicit OPS_ALLOW_SEED opt-in is set (set it ONLY for a deliberate first install).
+                    if (!SeedAllowed())
+                        throw new InvalidOperationException(
+                            $"dbo.app_user is EMPTY on Server={Config.OpsServer}; Database={Config.OpsDb}, and OPS_ALLOW_SEED is not set " +
+                            "- refusing to auto-seed a default admin or import users.json. This usually means the app is pointed at the " +
+                            "wrong/fresh database: check OPS_CONFIG / OPS_ROOT (the app-pool environment variables) and the per-tenant config. " +
+                            "If this really is a first install, set OPS_ALLOW_SEED=1 for the first start (then unset it).");
+                    SeedOrImport();
+                }
                 var users = ReadUsersFromDb();
                 // Fail CLOSED: a successful load that yields zero users must never become "auth off / open app".
                 // SeedOrImport guarantees >=1 user when the table was empty, so zero here means something is wrong.
@@ -226,6 +239,14 @@ public static class Auth
     // First run: import the legacy users.json if present (no account loss on migration; the file is kept as a
     // backup), else seed a single default admin/admin123 so the app is secure-and-usable out of the box. Writes
     // straight to the tables (no LoadAll re-entry). Ported from erp-dashboard\server\Auth.cs SeedOrImport.
+    // Explicit opt-in for the first-run seed/import (env OPS_ALLOW_SEED=1|true|yes). Off by default so a misconfigured
+    // deploy that lands on an empty/wrong DB fails LOUDLY instead of silently creating admin/admin123 or importing a file.
+    static bool SeedAllowed()
+    {
+        var v = (Environment.GetEnvironmentVariable("OPS_ALLOW_SEED") ?? "").Trim().ToLowerInvariant();
+        return v is "1" or "true" or "yes" or "on";
+    }
+
     static void SeedOrImport()
     {
         var users = ParseUsersFile();

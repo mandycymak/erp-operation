@@ -122,8 +122,15 @@ setup-database.bat -ConfigPath ".\ops.config.<tenant>.json"
 > app's **Audit & Health -> Storage** tab at step 10.)
 >
 > The logins/roles/scope now live in SQL (`dbo.app_user` + `dbo.app_user_scope`), not a JSON file. The first time the
-> app starts it seeds a **default admin (admin / admin123)** into `app_user` (or, if a legacy `users.json` is present,
-> imports it once and keeps the file only as a backup) - see step 10.
+> app starts **with `OPS_ALLOW_SEED=1` set** it seeds a **default admin (admin / admin123)** into `app_user` (or, if a
+> legacy `users.json` is present, imports it once and keeps the file only as a backup) - see step 10.
+>
+> **`OPS_ALLOW_SEED` (first-install only).** The seed/import runs ONLY when `app_user` is empty AND `OPS_ALLOW_SEED=1`.
+> This is a deliberate guard: without it, a later redeploy that accidentally points the app at the wrong/empty database
+> would silently re-create `admin/admin123` and "lose" the customer's real users. Set `OPS_ALLOW_SEED=1` for the very
+> first start, then **clear it** once your real admin exists. On any normal start (table already populated) it is
+> ignored. If a deploy ever shows the error *"dbo.app_user is EMPTY ... and OPS_ALLOW_SEED is not set"*, the app is
+> pointed at the wrong DB - fix `OPS_CONFIG`/`OPS_ROOT`, do not just set the flag.
 
 ---
 
@@ -231,11 +238,12 @@ exits otherwise). **Run the full data fill (step 7) first** - the delta tasks on
 
 ## 10. Sign in as the default admin, change its password, then add users
 
-The app is **secure-by-default**: on first start it seeded a **default admin** into SQL, so there is no open/no-login
-mode to close. (If you migrated from an older deploy that had a `users.json`, those accounts were imported instead -
-sign in with an existing admin and skip the password step.)
+The app is **secure-by-default**: on first start (with `OPS_ALLOW_SEED=1` set) it seeded a **default admin** into SQL,
+so there is no open/no-login mode to close. (If you migrated from an older deploy that had a `users.json`, those
+accounts were imported instead - sign in with an existing admin and skip the password step.)
 
 - [ ] Browse `https://<host>/` and sign in with **`admin` / `admin123`**.
+- [ ] **Clear `OPS_ALLOW_SEED`** now that the admin exists (remove the app-pool / shell env var), so it can't re-seed later.
 - [ ] **Immediately change the password:** **Admin** (top-right) -> **Users** tab -> open `admin` -> set a new
       password -> Save. (You can also rename it / set a real email here.)
 - [ ] Add the real users: **+ Add user** - set username, **email (required - it is the sign-in key)**, a password,

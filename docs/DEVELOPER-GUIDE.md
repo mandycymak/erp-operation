@@ -142,6 +142,13 @@ public payload) — every sign-in path calls `New-OpsSession`. `Handle-OpsLogin`
 > backup). `HashPwd` is the same salted-SHA256 as erp-dashboard, so imported hashes verify with no lockout. Because a
 > user always exists after bootstrap, the open/auto-admin branch (`!AuthOn`) never triggers in production.
 
+> 🔒 **`SeedOrImport` is gated by `OPS_ALLOW_SEED` (`Auth.SeedAllowed()`).** An empty `app_user` almost always means
+> a **mis-pointed deploy** (lost `OPS_CONFIG`/`OPS_ROOT`), not a real first install. `LoadAll` now **throws a clear
+> wrong-DB error** instead of seeding/importing unless `OPS_ALLOW_SEED` is `1|true|yes|on`. `Config.Load` logs the
+> resolved `Server`/`Database` at startup. **Invariant for any script/code that touches persisted customer data:**
+> never overwrite on re-run by default — additive/insert-missing is the default, destructive resets require an
+> explicit `-Force`/opt-in flag. (`seed-milestone-config.ps1` follows this: insert-missing-only unless `-Force`.)
+
 ### Observability & the IT-Admin views (.NET)
 
 - **Log handler exceptions, never swallow them.** Every `catch (Exception ex)` that returns a 500 calls

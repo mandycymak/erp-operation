@@ -155,6 +155,34 @@ reclaimable soft-deleted bytes), log-file sizes, and free disk. The watchdog rai
 The app is compiled - a code change means re-publish + recycle (the client `.html/.js/.css` are static, browser
 reload only). Patch **one tenant first**, watch it, then the rest.
 
+### 7a. The one-command routine update
+
+For a normal update (new program code, and/or new tables/columns), run **`update-customer.bat`** on the server. Set
+`ROOT` / `CONFIG` / `POOL` at the top of the bat (or as env vars). It runs only the **safe, additive** steps and
+self-verifies:
+
+1. app offline → 2. `setup-ops.ps1` (additive schema - never overwrites users/roles/`app_setting`/data) →
+3. `seed-milestone-config.ps1` (**insert-missing-only** - preserves admin-edited milestones; `-Force` resets to
+defaults) → 4. `dotnet publish` in place + recycle the pool → 5. `verify-customer.ps1` (prints the resolved
+`Server`/`Database` + **user / table / milestone counts**).
+
+**Read the verify line.** If it shows `app_user: 0 users` it stops with a red *"pointed at the WRONG/FRESH
+database"* warning - the app's `OPS_CONFIG`/`OPS_ROOT` are off, **not** data loss. Fix the env vars and recycle;
+do not re-seed. After every update, confirm your real users still appear in **Admin → Users**.
+
+**Do NOT** run `setup-database.bat` or `deploy-local-iis-demoerp.ps1` on a live site - those are the **first-install**
+path (they recreate the pool/env and, with `OPS_ALLOW_SEED=1`, re-seed the default admin). Updates never need them.
+If the update added a new worklist **scan column**, run `seed-data.bat` afterward to backfill old rows (kept separate
+because it re-pulls operational data).
+
+> **Why users can "disappear" after a deploy** (and why they can't now): the connection string is assembled at
+> startup from `OPS_CONFIG`/`OPS_ROOT`. A redeploy that loses those env vars or lands in a fresh folder points the app
+> at a different/empty DB; the old behaviour then silently re-seeded `admin/admin123`. The **`OPS_ALLOW_SEED` guard**
+> (off by default) now makes that case **fail loudly** instead, and the startup log line
+> `[Config] ops DB target: Server=…; Database=…` shows exactly which DB opened.
+
+### 7b. Manual redeploy / rollback
+
 1. On the build box: `dotnet publish -c Release -o publish_new` (a NEW folder - keep the running `publish` for rollback).
 2. On the server: `"offline" > publish\app_offline.htm` (the app releases its files), swap `publish_new` -> `publish`
    (or repoint the site physical path), delete `app_offline.htm`, `Restart-WebAppPool <pool>`.

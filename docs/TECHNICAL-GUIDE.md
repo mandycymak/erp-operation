@@ -89,6 +89,8 @@ feature — just re-run `setup-ops.ps1`.)
 
 ```powershell
 .\seed-milestone-config.ps1 -ConfigPath .\ops.config.demoerp.json     # the milestone matrix (config-as-data)
+# Safe to re-run: INSERT-MISSING-ONLY by default (adds new defs, preserves any milestone an admin edited in the UI).
+# Add -Force ONLY to reset the standard defs back to seed values:  .\seed-milestone-config.ps1 -ConfigPath ... -Force
 # Seed one station, both modes (db fm3k<code> -> StationCode <CODE>):
 .\seed-alerts.ps1 -ConfigPath .\ops.config.demoerp.json -Station fm3khkg -StationCode HKG -Mode Sea -AsOf 2026-06-12 -Limit 150
 .\seed-alerts.ps1 -ConfigPath .\ops.config.demoerp.json -Station fm3khkg -StationCode HKG -Mode Air -AsOf 2026-06-12 -Limit 150
@@ -109,12 +111,22 @@ stations.
 ```powershell
 cd server
 $env:OPS_CONFIG='ops.config.demoerp.json'; $env:OPS_HTTP_PORT='8079'
+$env:OPS_ALLOW_SEED='1'        # FIRST START ONLY — lets the app seed the default admin into an empty app_user
 dotnet run -c Release                                 # http://localhost:8079/   (or: start-dotnet.bat)
 ```
 
 `OPS_CONFIG` picks the tenant config; `OPS_HTTP_PORT` overrides the config `port`. For a compiled run use
 `dotnet publish -c Release -o publish` then `dotnet publish\Ops.dll`. **For a real server (IIS + HTTPS) see
 [§12](#12-deploying-to-a-real-server-iis).**
+
+> 🔒 **`OPS_ALLOW_SEED` — the empty-table guard (first install only).** The default admin (`admin`/`admin123`) — or a
+> one-time `users.json` import — is created **only when `app_user` is empty AND `OPS_ALLOW_SEED=1`**. Set it for the
+> very first start, sign in, create your real users, then **clear it**. On every later start the table is populated and
+> the flag is ignored. The reason: without the guard, a redeploy that accidentally points the app at the wrong/empty
+> database would silently re-seed `admin123` and the customer's real users would "disappear". If a start fails with
+> *"dbo.app_user is EMPTY on Server=…; Database=… and OPS_ALLOW_SEED is not set"*, the app is on the **wrong DB** — fix
+> `OPS_CONFIG`/`OPS_ROOT` (do not just set the flag). The first startup line logs the resolved
+> `[Config] ops DB target: Server=…; Database=…` so you can confirm which database it opened.
 
 > 🔁 **Legacy fallback.** The old PowerShell server still works for rollback:
 > `.\serve-ops.ps1 -ConfigPath .\ops.config.demoerp.json -Port 8079` (or the `restart-ops-*.bat`). It reads the
@@ -261,9 +273,12 @@ Sign in as an **admin** and open the **Admin** link (admins only). `admin-ops.ht
     public hostname, not the internal port — see the public-review-surface note in §8.)
 
 **Auth model — users live in SQL, with a secure default admin.** Logins/roles/scope are stored in **`dbo.app_user`
-+ `dbo.app_user_scope`** (created by `setup-ops.ps1`). On first start against an empty user table the app
-**imports a legacy `users.json` once** (kept only as a backup) **or seeds a default `admin`/`admin123`** (the
-console logs "change this password immediately"). Because a user always exists after bootstrap, the app is in
++ `dbo.app_user_scope`** (created by `setup-ops.ps1`). On first start against an empty user table **and only when
+`OPS_ALLOW_SEED=1` is set**, the app **imports a legacy `users.json` once** (kept only as a backup) **or seeds a
+default `admin`/`admin123`** (the console logs "change this password immediately"); set the flag for the first start,
+create your real users, then clear it. Without the flag an empty table makes the app **refuse to start** with a
+wrong-DB warning (it will not silently re-seed) — see the `OPS_ALLOW_SEED` callout in §3. Because a user always
+exists after bootstrap, the app is in
 **real-auth mode** (login page, sessions, row-level scope) in production — the old "open/demo" mode (every visitor
 auto-admin) **never triggers** unless someone manually empties the table. Users **sign in by email + password** (a
 username also works as a fallback so no one is locked out during the switch). The **`username` stays the internal
@@ -471,10 +486,17 @@ The web tier is **compiled** (.NET), so deploying an update = **publish + copy +
    L!NK iframe. `DB_*` env vars can override the config.
 4. **The app-pool identity needs** read/write on `OPS_ROOT`, network to the `erpops` DB + the source ERP over
    the VPN, and (for integrated `opsAuth`) a SQL login + `db_owner` on the ops DB.
-5. **Redeploy later** = re-`dotnet publish` to the same folder (drop `app_offline.htm` first so the running app
-   releases `Ops.dll`) and recycle the pool.
+5. **Routine update later (after pulling new code) = run [`update-customer.bat`](../update-customer.bat).** It does
+   the safe sequence in one step: `setup-ops.ps1` (additive schema migration — never overwrites users/roles/settings/
+   data) → `seed-milestone-config.ps1` (insert-missing-only) → `dotnet publish` in place + recycle the pool →
+   `verify-customer.ps1` (prints the resolved `Server`/`Database` + user/table/milestone counts so you can confirm it
+   is still on the right DB with users intact). Set `ROOT`/`CONFIG`/`POOL` at the top of the bat (or as env vars).
+   **Do NOT re-run `setup-database.bat` / `deploy-local-iis-demoerp.ps1` on an existing site** — those are the
+   first-install path (they recreate the pool/env and re-seed). If the update added a new worklist *scan column*,
+   run `seed-data.bat` afterward to backfill old rows.
 6. **Verify:** `https://<host>/` loads; `https://<host>/ops.config.json` → **404** (secret blocked); the
-   language picker works; reconcile a milestone light against a direct ERP SQL query.
+   language picker works; **your real users still appear in Admin → Users**; reconcile a milestone light against a
+   direct ERP SQL query.
 
 > 🧪 **Rehearse locally first.** `deploy-local-iis-demoerp.ps1` (run **elevated**, once) stands the *published*
 > app up under IIS on this PC pointed at `ops.config.demoerp.json` — IIS features, Hosting-Bundle check, app

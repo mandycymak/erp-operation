@@ -119,6 +119,9 @@ public static class Config
         // Packet Size=512: the VPN tunnel's small MTU black-holes default 8 KB TDS packets ("semaphore timeout").
         // Max Pool Size bounds concurrent DB work so 500 app users can't stampede the single SQL box.
         ConnStr = $"Server={OpsServer};Database={OpsDb};{opsAuthClause};TrustServerCertificate=True;Connect Timeout=30;Packet Size=512;Max Pool Size=50";
+        // Log the resolved ops DB target so a misconfigured deploy (wrong OPS_CONFIG/OPS_ROOT pointing at a fresh/empty
+        // DB) is visible in the very first startup line instead of silently switching which database the users live in.
+        Console.Error.WriteLine($"[Config] ops DB target: Server={OpsServer}; Database={OpsDb}; config={cfgFile}; root={RepoRoot}");
 
         AppName = NonEmpty((string?)cfg["appName"], "Control Tower");
         AppSubtitle = (string?)cfg["appSubtitle"] ?? "";

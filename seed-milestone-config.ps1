@@ -10,7 +10,12 @@
   Idempotent: MERGE by (milestone_code,bound) for defs; NOT-EXISTS guard for evidence rows.
   Re-runnable; does not touch the source ERP. Run setup-ops.ps1 first.
 #>
-param([string]$ConfigPath = (Join-Path $PSScriptRoot "ops.config.json"))
+param(
+  [string]$ConfigPath = (Join-Path $PSScriptRoot "ops.config.json"),
+  # By default this is INSERT-MISSING-ONLY: it adds any milestone defs that don't exist yet and NEVER overwrites a row
+  # an admin may have edited in the Milestones tab. Pass -Force to reset the standard 37 defs back to these seed values.
+  [switch]$Force
+)
 $ErrorActionPreference = "Stop"
 $cfg = [IO.File]::ReadAllText($ConfigPath) | ConvertFrom-Json
 function EnvOrConfig($name, $cfgVal) { $v = [Environment]::GetEnvironmentVariable($name); if ($v -and $v.Trim() -ne "") { $v } else { $cfgVal } }
@@ -100,11 +105,18 @@ $defs = @(
  (Def 'A7' 'Import' 'Invoice to Buyer'          7 'delivery' (Always)  (Rule 'OR' @((CEV)))                                          'fixed' 3 'day' 'after' 'ata_date' 'Air')
 )
 
+# -Force overwrites existing rows (resets admin edits to seed values); the default omits the WHEN MATCHED clause so
+# existing rows are preserved and only missing defs are inserted - safe to re-run on a live customer site.
+$matchedClause = if ($Force) {
+@"
+WHEN MATCHED THEN UPDATE SET name=@name,seq=@seq,phase_anchor=@anchor,qualify_rule=@qual,complete_rule=@comp,
+  sla_type=@slatype,sla_offset_val=@offval,sla_offset_unit=@offunit,sla_direction=@dir,sla_anchor=@slaanchor,mode=@mode,active=1
+"@
+} else { "" }
 $mergeSql = @"
 MERGE dbo.milestone_def AS t
 USING (SELECT @code code,@bound bound) s ON t.milestone_code=s.code AND t.bound=s.bound
-WHEN MATCHED THEN UPDATE SET name=@name,seq=@seq,phase_anchor=@anchor,qualify_rule=@qual,complete_rule=@comp,
-  sla_type=@slatype,sla_offset_val=@offval,sla_offset_unit=@offunit,sla_direction=@dir,sla_anchor=@slaanchor,mode=@mode,active=1
+$matchedClause
 WHEN NOT MATCHED THEN INSERT(milestone_code,bound,name,seq,phase_anchor,qualify_rule,complete_rule,sla_type,sla_offset_val,sla_offset_unit,sla_direction,sla_anchor,mode,active)
   VALUES(@code,@bound,@name,@seq,@anchor,@qual,@comp,@slatype,@offval,@offunit,@dir,@slaanchor,@mode,1);
 "@
@@ -112,7 +124,8 @@ foreach($d in $defs){
   Exec $mergeSql @{ code=$d.code; bound=$d.bound; name=$d.name; seq=$d.seq; anchor=$d.anchor; qual=$d.qual; comp=$d.comp;
     slatype=$d.slatype; offval=$d.offval; offunit=$d.offunit; dir=$d.dir; slaanchor=$d.slaanchor; mode=$d.mode }
 }
-Write-Host "Seeded milestone_def: $($defs.Count) rows (Sea + Air, Export + Import)." -ForegroundColor Green
+$modeNote = if ($Force) { "FORCE: existing rows reset to seed values" } else { "insert-missing-only: existing/edited rows preserved (pass -Force to reset)" }
+Write-Host "Seeded milestone_def: $($defs.Count) rows (Sea + Air, Export + Import) - $modeNote." -ForegroundColor Green
 
 # ---- starter evidence map: documentTypeCode / EDI -> milestone (SECONDARY close path) ----
 function Ev($code,$bound,$kind,$table,$field,$val,$mod){ [pscustomobject]@{code=$code;bound=$bound;kind=$kind;table=$table;field=$field;val=$val;mod=$mod} }
