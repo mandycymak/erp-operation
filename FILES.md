@@ -115,4 +115,4 @@ Gitignored except the `*.example` templates. Never commit the real ones.
 ## Other
 
 - `reusable/` — the extracted master-lookup module (drop-in for sibling projects).
-- `tools/` — testers (`find-chat.html`, `find-api-test.ps1`, `parity-check.ps1`).
+- `tools/` — testers (`find-chat.html`, `find-api-test.ps1`, `parity-check.ps1`) and `tools/loadtest/` (the Book Now concurrency/throughput test + its `results/`).
