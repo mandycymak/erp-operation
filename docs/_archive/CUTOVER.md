@@ -1,3 +1,7 @@
+> ⓘ **ARCHIVED / HISTORICAL.** The PowerShell→.NET web-tier migration described here is **complete**. This runbook
+> is kept for reference only and is not part of the live deployment stages — see [`../1-OVERVIEW.md`](../1-OVERVIEW.md).
+> Rollback to the legacy server (if ever needed) is covered in [`../3-DEPLOY-UPDATES.md`](../3-DEPLOY-UPDATES.md).
+
 # Cutover: retiring `serve-ops.ps1` for the .NET server
 
 The strangler migration is complete: the .NET app (`server/`) serves **every** `/api-ops/*` + `/api-doc/*`
@@ -59,7 +63,7 @@ real deployment):
   `SameSite=None; Secure; Partitioned`.
 
 ## 3. Stand the .NET app up on IIS/HTTPS
-Follow `docs/IIS-DEPLOY.md`: publish, copy `server\publish\` to the IIS site, set `OPS_ROOT` + `OPS_HTTPS=1`
+Follow [`../2-SETUP-NEW-CUSTOMER.md`](../2-SETUP-NEW-CUSTOMER.md) (IIS deploy reference): publish, copy `server\publish\` to the IIS site, set `OPS_ROOT` + `OPS_HTTPS=1`
 (+ `OPS_IFRAME=1` for the frame), bind 443 with the TLS cert, `iisreset`. Verify `https://<host>/` loads and
 `https://<host>/ops.config.json` → **404** (secret blocked).
 

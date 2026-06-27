@@ -1,928 +1,182 @@
 # erp-operation — Project Summary
 
-Status snapshot of the Control Tower build. The authoritative design is **`BLUEPRINT.md`**; this file records
-**what is actually built and proven** against real ERP data, plus the findings that shaped it. Read this first
-when resuming. Operator-memory notes also live under `.claude/projects/.../memory/` (local + network DB setup).
+Current status snapshot of the Control Tower build. The authoritative design is **`BLUEPRINT.md`**; this file
+records **what is actually built and proven** against real ERP data, plus the current focus. Read this first when
+resuming.
 
-**End-user / developer documentation lives in [`docs/`](docs/):**
-[BUSINESS-GUIDE.md](docs/BUSINESS-GUIDE.md) (operators/managers) ·
-[TECHNICAL-GUIDE.md](docs/TECHNICAL-GUIDE.md) (install/run/admin) ·
-[DEVELOPER-GUIDE.md](docs/DEVELOPER-GUIDE.md) (coding standards) ·
-[SQL-README.md](docs/SQL-README.md) (`erpops` schema + the verified ERP field map). This file remains the
-session log / status snapshot.
+> **Full session-by-session history** (every build round to date) is archived at
+> [`docs/_archive/PROJECT-SUMMARY-2026-06-27.md`](docs/_archive/PROJECT-SUMMARY-2026-06-27.md). This file was
+> cleaned to the current status on 2026-06-27; consult the archive for the historical detail of any feature.
 
-## Status: working app — arrival-driven worklist, filters, multi-station, cross-station feed; Sea **and** Air. **Web tier now ported to ASP.NET Core (.NET 10) — `server/`.**
+**Documentation lives in [`docs/`](docs/), numbered by lifecycle stage** (map: [1-OVERVIEW.md](docs/1-OVERVIEW.md)):
+[2-SETUP-NEW-CUSTOMER.md](docs/2-SETUP-NEW-CUSTOMER.md) (first install) ·
+[3-DEPLOY-UPDATES.md](docs/3-DEPLOY-UPDATES.md) (updates) ·
+[4-OPERATE-SUPPORT.md](docs/4-OPERATE-SUPPORT.md) (run/admin) ·
+[5-BUSINESS-GUIDE.md](docs/5-BUSINESS-GUIDE.md) (operators/managers) ·
+[6-DEVELOPER-GUIDE.md](docs/6-DEVELOPER-GUIDE.md) (coding standards) ·
+[7-SQL-REFERENCE.md](docs/7-SQL-REFERENCE.md) (`erpops` schema + the verified ERP field map) ·
+[8-API.md](docs/8-API.md) (third-party Find API).
 
-A clickable, end-to-end worklist app runs against real data on two test environments. The scheduled
-`listener-engine.ps1` is still **deferred** — `seed-alerts.ps1` stands in for it (one-shot batch evaluator/upsert)
-so the UI and Tick-&-Confirm loop can be exercised now.
+---
 
-**Latest session (2026-06-27 — deployment-safety hardening: stop a re-run of setup / a mis-pointed redeploy from silently overwriting or "losing" customer users + admin-edited config. New one-command `update-customer.bat`. RESUME HERE).**
-Owner concern from a real incident: after a developer deploy, the customer's users vanished and only `admin/admin123` worked, and re-running setup could reset things. **Diagnosis (no bug in the store):** logins/roles/scope DO live in SQL (`dbo.app_user` + `dbo.app_user_scope`), not JSON; `setup-ops.ps1` is idempotent (`IF OBJECT_ID ... IS NULL CREATE`) and never drops/overwrites. The real causes were (a) a redeploy losing the app-pool `OPS_CONFIG`/`OPS_ROOT` env vars (or publishing to a fresh folder missing the gitignored tenant config) → the app pointed at a **different/empty DB** → `Auth.SeedOrImport` silently re-seeded `admin/admin123`; and (b) `seed-milestone-config.ps1` used `MERGE ... WHEN MATCHED UPDATE`, so re-running it **reset admin-edited milestones** to seed defaults. **Builds 0/0. Committing this session.**
-- **No-silent-seed guard (`server/Auth.cs`).** `SeedOrImport` is now gated by **`OPS_ALLOW_SEED`** (`SeedAllowed()`, accepts `1|true|yes|on`). On an empty `app_user` without the flag, `LoadAll` **throws a clear wrong-DB error** naming the resolved `Server`/`Database` and telling the operator to check `OPS_CONFIG`/`OPS_ROOT` — instead of quietly creating `admin/admin123` or importing a stray `users.json`. A populated table (every existing site / normal start) is unaffected; the guard only fires on empty.
-- **Startup DB log (`server/Config.cs`).** `Config.Load` now logs `[Config] ops DB target: Server=…; Database=…; config=…; root=…` as the first line, so a mis-pointed deploy is visible immediately.
-- **Milestone re-seed is non-destructive by default (`seed-milestone-config.ps1`).** New `-Force` switch: default is **INSERT-MISSING-ONLY** (omits the `WHEN MATCHED` clause → adds any new defs, preserves admin edits); `-Force` restores the old reset-to-defaults behavior. Completion line states which mode ran.
-- **New one-command routine update (`update-customer.bat` + `verify-customer.ps1`).** The single script a developer runs on a customer server after pulling new code: app-offline → `setup-ops.ps1` (additive) → `seed-milestone-config.ps1` (insert-only) → `dotnet publish` in place + recycle pool → **`verify-customer.ps1`** (read-only: prints the resolved `Server`/`Database` + user/admin/table/milestone/shipment counts; **exits non-zero with a red "wrong/fresh database" warning if `app_user` is empty**). `ROOT`/`CONFIG`/`POOL` configurable at the top or via env. It deliberately does NOT reseed users, reset milestones, recreate the IIS site/pool, or backfill data (a new scan column still needs a separate `seed-data.bat`). `setup-database.bat` header updated to mark it first-install-only and point updates at `update-customer.bat`.
-- **Also diagnosed (no code change):** the Admin "Customer review link base URL" failing to save at a customer site is the **combined ERP-API form requiring a non-blank Party group code** (client-side gate) and/or a **missing `app_setting` table on a stale ops DB** (re-run `setup-ops.ps1`) and/or a URL typed without `http(s)://` (server 400). The save path itself (`Settings.Set` → `dbo.app_setting`, `Handlers.Admin.AdminErpSettings`) is correct.
-- **Verified:** `dotnet build -c Release` 0/0 (to a temp out-dir; a running `Ops.exe` locked the normal bin); `seed-milestone-config.ps1` + `verify-customer.ps1` `[PSParser]::Tokenize` PARSE OK. **Owner-side (needs a server):** run `update-customer.bat` on a tenant and confirm the verify line shows users intact; set `OPS_ALLOW_SEED=1` only for a deliberate first install. **Takes effect on next redeploy/restart** (a running instance holds the old build).
-- **Files:** new `update-customer.bat`, `verify-customer.ps1`; edited `server/{Auth,Config}.cs`, `seed-milestone-config.ps1`, `setup-database.bat`, `docs/{ONBOARD-CHECKLIST,TECHNICAL-GUIDE,DEVELOPER-GUIDE,OPERATIONS-RUNBOOK}.md`, this summary.
+## Status: working app, in deployment
 
-**Previous session (2026-06-26d — Generate Document from the ERP (drawer-triggered) + an Admin documentTypeCode/houseTypeCode config. Verified the live /document/generate behavior on demoerp).**
-New operator feature: generate a document (e.g. AWB) from the Swivel ERP on a shipment and download the PDF, with the two ERP keys admin-configured so operators only *select* valid, related values. Plan: `.claude/plans/i-am-preparing-to-breezy-hinton.md`. **Builds 0/0. Not yet committed.**
-- **Admin "Generate documents" tab (config).** New SQL table **`dbo.doc_generate_map`** (`setup-ops.ps1` -> **27 tables**): `(module AIR/SEA, document_type_code, house_type_code, use_master_bill, invoice_required, active)`, unique on (module, doc, house) - one documentTypeCode can carry many houseTypeCodes. Cached in new **`server/DocGenMap.cs`** (`Get`/`ForModule`/`Lookup`, `Reset()` on save - mirrors `DoctypeMap`). Admin CRUD `AdminDocGen`/`AdminDocGenDelete` (`Handlers.Admin.cs`, `/api-ops/admin/docgen` + `/docgen-delete`, cloned from `AdminEvidence`) + a new admin-ops.html tab (table + form; codes are **free-text matching the ERP exactly**, same convention as the Documents tab).
-- **Generate call + endpoint.** New **`Erp.DocGenerate(...)`** (`server/Erp.cs`) builds the full `/document/generate` payload (partyGroupCode/forwarderCode/moduleTypeCode/documentTypeCode/houseTypeCode/invoiceNumber/includeFile=true). The booking/bill key is chosen by **priority houseBillNo -> bookingNo -> masterBillNo**, EXCEPT a `use_master_bill` (master-level) doc keys on masterBillNo; 3rdBookingID(=`spot_id`) is the last-resort fallback - exactly one key populated (matching the ERP sample). Handler **`Handlers.ErpDocGenerate`** validates the (module, doc, house) combo against `DocGenMap` (operators can only generate configured docs), scope-checks, logs via `ErpLog`. The existing `ErpDoc.DocIssue` generate side-effect + the `erp-api-map.json generateDocument` flag are **untouched**.
-- **Verified live, then wired (the key finding).** Replicated the owner's known-good sample on demoerp (booking 27371, AIR/AWB/`NEUTRAL L 23`, mock OFF): `/document/generate` -> **HTTP 200 with the PDF returned INLINE** under a top-level `file[].base64` (`AWB_27371_*.pdf`, `%PDF`), and a follow-up `/file/enquiry` -> **422 (the ERP does NOT store it)**. So `Erp.DocGenerate` extracts `file[].base64` and the endpoint **streams the PDF straight to the browser as a download** (custom POST route in `Program.cs`, like `erp-file-download`; not a JSON `MapDataPost`). The drawer **Generate box** (`ops.js erpGenerateRow`, in `erpFilesPanel`) - documentTypeCode select -> cascading houseTypeCode select -> optional invoice-no -> Generate - `fetch`es and triggers the download. New `generateOptions` added to the `/api-ops/erp-files` response feeds the dropdowns.
-- **Note (UX):** because the ERP returns the doc inline and does **not** file it, Generate **downloads it directly** (it does not appear in the ERP files list). If "also save it into the ERP file folder" is wanted, that'd be an extra `/file/upload` of the generated bytes (not built).
-- **Two fixes from owner testing (same session):** (1) **Generate identifier fallback** - a shipment with a typed-but-not-issued HAWB (`ABC-062601`) 422'd "No corresponding shipment". `Erp.DocGenerate` now tries the priority identifiers **in order and falls through on "No corresponding"** (like FileEnquiry/FileDownload), so a dummy/blank house bill falls back to the bookingNo. **Verified live:** `houseBillNo=ABC-062601` -> 422, `bookingNo=HK012606086` -> 200 + PDF. (2) **AIR HAWB+MAWB must submit as a PAIR on Edit-ERP save** - changing only the MAWB sent only `masterNo`, which the ERP treated as a different job ("job duplicate"). `BuildPatchPayload` now, for AIR, when EITHER `bl_no`/`master_no` changed, **sends BOTH** `houseNo`+`masterNo` (the unchanged one read-merged from the seeded form set) - same read-merge idea as the AIR cargo block.
-- **Verified:** builds 0/0; `node --check` ops.js + admin inline JS; demoerp migrated (`doc_generate_map`, 7 cols); all 3 new routes registered + auth-gated (401); a sample config row seeded (`AIR/AWB/NEUTRAL L 23`); the live generate + the identifier fallback proven end-to-end at the ERP. **Still owner-side (needs an admin login):** click-test the new admin tab + the drawer Generate box on a real Air shipment, and a MAWB-only Edit-ERP save (no duplicate).
-- **Files:** new `server/DocGenMap.cs`; edited `setup-ops.ps1`, `server/{Erp,Handlers.ErpFiles,Handlers.Admin,Program}.cs`, `admin-ops.html`, `ops.js`, `styles.css`, `lang/{zh-Hans,ja}.json`, this summary. **Per-machine (not committed):** the seeded `doc_generate_map` sample row.
+A clickable, end-to-end worklist app runs against real data on two test environments. **Air + Sea, Export +
+Import.** The **web tier is an ASP.NET Core (.NET 10) app in [`server/`](server/)** — multi-threaded, per-request
+scope isolation; the legacy PowerShell `serve-ops.ps1` is kept for rollback only. The client is **vanilla JS, no
+build step**. Off-request-path jobs (`seed-alerts.ps1`, `publish-bookings.ps1`, seeders, governance) run under
+**Windows Task Scheduler (PowerShell 5.1)**. The data store is the **`erpops`** ops DB on SQL Server, with the
+read-only source ERP (`fm3k*`) reached over the Swivel VPN for remote/dev (on the LAN at a customer).
 
-**Previous session (2026-06-26c — searchable Ship ID / Ref No (the Book-Now reference), Book-Now station-default fix, paste-a-number Find, instant worklist reflect after an ERP edit. Verified live on demoerp).**
-Owner test round on Book Now + Find/search + Edit-ERP, live against the real ERP over the VPN (mock OFF). **Builds 0/0. Committing this session.**
-- **Ship ID / Ref No is now searchable (the headline).** The Book-Now ref we generate is stored in the ERP under **`awbhead.spot` (Air) / `blhead.spotid` (Sea)**; the worklist only read `po_no` for Air, so an Air booking's ref was invisible. New **`shipment_alerts.spot_id`** column (`setup-ops.ps1`), seeded Air=`awbhead.spot` / Sea=`blhead.spotid` (`seed-alerts.ps1`); the worklist + Find ref-search now OR **`cust_ref` + `spot_id`** for the `po`/`shipid` fields and the "Any" fallback (`server/Handlers.{Worklist,Find}.cs`). The worklist search dropdown option **"PO" -> "PO / Ref / Ship ID"** (`index.html`, `lang/*`). Verified live: booking `TH012606001` ref `BKKA2606260002` resolves by ship-id (`SGNXIP000001` too). **Caveat:** a MOCK-mode Book-Now (e.g. `BKKA2606260001`) is never written to the ERP, so it stays out of the worklist by design (lives only in `booking_alert`/New-bookings).
-- **Book Now defaulted to the wrong office.** A multi-station admin (mandy: 7 stations, primary HKG) got the **first scoped station alphabetically = BKK**. `ResolveBookStation` (`server/Handlers.BookNow.cs`) now prefers the user's **`primary_station`** when it is in scope, else cur[0].
-- **Paste-a-number Find.** A bare single token that looks like a reference (has digits) now routes to a **generic identifier search** across all id columns (job/booking/HBL/MBL/container/PO/ship-id/liner/**vessel-flight**), **bypassing the "mine" lens**, so pasting a number finds the file even when you're not the ERP PIC (`ops.js` + `server/FindParse.cs`; `vessel_voyage` added to the generic fallback). Plain words still do a company-name search.
-- **Instant worklist reflect after an ERP edit.** After a successful `/booking/update`, `ErpEditSave` (`server/Handlers.ErpEdit.cs`) now updates the directly-mapped worklist scan columns (HBL/MBL, cust ref, commodity, carrier, incoterm, container, shipper/consignee/agent/ctrl, POL/POD) in `shipment_alerts` immediately - so a saved HAWB/MAWB no longer looks "unsaved" until the next reseed. Milestone re-eval still runs on the next scheduled seed; real ERP writes only (not mock). **Verified live:** HAWB `CX-0001` / MAWB `160-2345678` saved to the source ERP (record promoted B->H).
-- **Ops:** ran `setup-ops.ps1` on demoerp (adds `spot_id`; **26 tables**) + a full `seed-data.ps1` (51 steps ok / 0 failed, 12 stations; `spot_id` populated 586 Sea + 719 Air). **Note (deferred):** the cross-station inbound feed (`publish-bookings.ps1`) has the same Air `spot` gap (sets `spot_id=$null`, never reads `awbhead.spot`) - one-line fix if pre-arrival should be ship-id searchable too. **Files:** `setup-ops.ps1`, `seed-alerts.ps1`, `server/{Handlers.Worklist,Handlers.Find,Handlers.BookNow,Handlers.ErpEdit,FindParse}.cs`, `index.html`, `ops.js`, `lang/{zh-Hans,ja}.json`, this summary.
+The scheduled `listener-engine.ps1` is **deferred** — `seed-alerts.ps1` (one-shot evaluator/upsert, with a
+`-Delta` incremental mode) stands in for it.
 
-**Previous session (2026-06-26b — Edit-ERP go-live fixes: AIR detail-line saves (Marks/Description/Commodity/CBM), HAWB/MAWB editable, fill-from-master, New-bookings clickability + join fix, admin-editable customer-review link host).**
-Operator/owner test round on the staff **Edit ERP data** + **New bookings** + **doc-editor** screens, verified **live against the real ERP over the VPN** (mock OFF, token in `app_setting`). **Builds 0/0. Committing this session.**
-- **AIR Marks/Description/Commodity/CBM now SAVE (the headline fix).** Root cause found from the owner's own working JSON: the ERP writes the air detail line (`awbdetl`) **only when the FULL cargo block** is in the `/booking/update` payload. The app's minimal patch omitted `quantity`/`quantityUnit`/`grossWeight`/`weightUnit`, so the ERP silently dropped `shipMarks`/`goodsDescription`/`commodity`/`cbm` (its response echoed them back blank/unchanged). **Verified live**: a partial push lost them; adding the cargo block persisted `mark2`/`desc2`/`good_desc2`/`rece_cbm`, and a marks-only edit + read-merge updated `mark2` without clobbering the rest of the line. Fix: for AIR, **`EditPush`** (`server/Erp.cs`) **and `DocAgree`** (`server/ErpDoc.cs`) read-merge the cargo block (`quantity,quantityUnit,grossWeight,weightUnit,cbm,shipMarks,goodsDescription,isConsole`) from the live booking, preserving JSON number types (`DeepClone`). Gated on `module=="AIR"` (Sea writes its detail via `bookingContainers`).
-- **AIR cbm READ fixed** to `awbdetl.rece_cbm` (was the header `t_rece_cbm`, which is always 0 for air) - `server/Handlers.ErpEdit.cs`. Marks/desc/commodity already read air-specifically from `awbdetl.mark2/desc2/good_desc2` (confirmed correct against the ERP).
-- **Contact name/email DISPLAY fixed (Edit-ERP).** `shipper_contact/_email` + `consignee_contact/_email` had `readFrom:""` (blank-seeded), so a SAVED value never displayed on reopen (the save worked; the read-back didn't). Pointed them at the real columns `scontact/semail` (shipper) + `ccontact/cemail` (consignee), both modes - `erp-edit-fields.json`.
-- **HAWB/MAWB now EDITABLE (AIR).** Verified live that `houseNo`/`masterNo` ARE writable via `/booking/update`. `erp-edit-fields.json` AIR `bl_no`/`master_no` changed from read-only `ref` to editable `text` (writeKeys `houseNo`/`masterNo`). **Caveat:** a **consol-shared MAWB** is rejected by the ERP "Duplicated MAWB#" guard (the 3rd-party API exposes no consol-link field). SEA House/Master B/L left read-only (sea writeback untested - air/sea differ).
-- **Fill-from-master ↻ icon (shipper/consignee/notify/agent).** New `GET /api-ops/erp-master-detail` (`server/Handlers.Erp.cs`, route in `Program.cs`) returns the FULL party master (name/address/contact/email/phone from `custsub` English-doc columns `doc_e_name`/`doc_e_add1..5`/`contact`/`email1`/`phone`), job-scoped. A small ↻ next to each party code chip OVERWRITES the party box + contact fields from the master **on click**; picking a code alone still only sets the code (the operator keeps control). `erp-edit.js`/`erp-edit.html`.
-- **New-bookings list clickability + join fix (`/api-ops/new-bookings`).** The enrichment OUTER APPLY linked `s.erp_ref=ba.erp_ref`, but a Book Now `erp_ref` is OUR system Ref (never equals the ERP job ref), so the row never resolved to its worklist shipment and wasn't clickable - even though My Tasks (which matches on the booking number) could open it. Fixed the join to link on the **booking number** (`s.sono=ba.booking_no`, `erp_ref` fallback) - `server/Handlers.Bookings.cs`. UI: **`view ›`** now REPLACES the status chip once a row is openable (the separate "details after refresh" hint was removed); the New-bookings header puts the date window on its **own 2nd row** so `+ Book` stays on the title line; the `+ Book Now` button is now `+ Book`. Book Now modal: Commodity/Unit cells aligned.
-- **Customer-review link host is now ADMIN-EDITABLE.** `doc-send` builds `<publicBaseUrl>/bl-review/<token>`; `publicBaseUrl` was config-file-only (blank -> `http://localhost:<port>`, which a customer can't open). Moved it into `dbo.app_setting` like the ERP URL/token: new `Settings.PublicBaseUrl` (SQL override else config), `Handlers.Doc` reads `Settings`, **Admin -> ERP API** gained a **"Customer review link base URL"** field (GET/POST in `Handlers.Admin`, validated http/https), showing source (SQL/config/blank). Applies immediately, no restart. The doc-editor's link box was widened to full width so the whole URL shows.
-- **Ops/onboarding:** new **`seed-hkg.bat`** (one-click HKG Sea+Air delta refresh, repeatable in office + at home). This machine has **NO scheduled `Ops *` tasks** registered, so the worklist is seeded manually (or run `register-ops-tasks.ps1` from an elevated shell to get Air-5min/Sea-15min auto-refresh).
-- **Verified ERP write behavior (AIR `/booking/update`):** writable = `remark`, `houseNo`, `masterNo`, and (with the full cargo block) `shipMarks`/`goodsDescription`/`commodity`/`cbm`. Read mapping confirmed `shipMarks↔mark2`, `goodsDescription↔desc2`, `commodity↔good_desc2`, `cbm↔rece_cbm`.
-- **Files:** `server/{Erp,ErpDoc,Handlers.Erp,Handlers.ErpEdit,Handlers.Bookings,Handlers.Doc,Handlers.Admin,Settings,Program}.cs`, `erp-edit-fields.json`, `erp-edit.js`, `erp-edit.html`, `index.html`, `ops.js`, `styles.css`, `lang/{zh-Hans,ja}.json`, `admin-ops.html`, `doc-editor.js`, new `seed-hkg.bat`, + docs (this summary, SQL-README, TECHNICAL-GUIDE, DEVELOPER-GUIDE). **Residual to fix in the ERP UI:** dev test booking `HK012606080` MAWB was left as `ZZMAWB9` by the write test - needs resetting to `172-85764836` (the consol value the API duplicate-guard wouldn't restore; HAWB already restored).
+---
 
-**Latest-session add-on (2026-06-26b cont. — admin Change-log UX: section dropdown + time-of-day filter + last-30-min default + failures-only default).**
-Operator feedback that the admin **Change log** was one long list (a single heavy testing day). Reworked the tab (`admin-ops.html` + `server/Handlers.Admin.cs`): (1) a **section dropdown** (Change & access audit / Server errors / ERP API calls) shows only the chosen panel - one fetch at a time, no more three stacked lists; (2) **time fields beside each date** (`hh:mm`) so you can scope to e.g. `10:00`-`11:30` - applied **server-side** in `DateRange` (new `fromTime`/`toTime` query params -> a clock-time window, so the row CAP covers the slice, not the whole day); (3) the default window is the **last 30 minutes** (from-date+time = 30 min ago, midnight-safe; to-time left open); (4) the **ERP API panel defaults to "failures only"** (untick to see all). (An earlier "this session only" toggle was tried, then removed in favour of the explicit time fields + 30-min default.) Builds 0/0; `admin-ops.html` is static (reload). **Files:** `admin-ops.html`, `server/Handlers.Admin.cs`.
+## RESUME HERE — latest session (2026-06-27, deployment-safety hardening)
 
-**Previous session (2026-06-26a — "Book Now": quick-create a NEW booking in the ERP from minimal operator input, auto-generated bookingNo).**
-Owner exploration: let an operator register a booking in the ERP fast (minimal fields) so the factory record exists immediately, reusing the SAME ERP API the Edit-ERP feature uses. The same `/booking/update` endpoint is "New Booking / Update Booking" (`server/Erp.cs` header) - a key mismatch CREATES a record - so Book Now builds a minimal payload with **NO `bookingNo`** (ERP auto-generates it) and **skips the `/booking/get` existence guard** that Edit-ERP uses (we WANT a create, not a merge). Decisions (confirmed with the owner): create **directly in the ERP now** (a "Save as Lead" hand-off to erp-quotation is a deferred Phase 2); minimal cargo/route/date form **plus optional Shipper + Consignee** (custsub lookup); a **Service field defaulted per mode + editable**. **Verified end-to-end in mock mode on an isolated throwaway DB** (login -> seed -> live master lookups over the VPN -> create Sea+Air -> payload/sequence/validation all correct). Builds 0/0. Plan: `.claude/plans/i-am-exploring-to-golden-bee.md`. **Not yet committed.**
-- **Server (`server/Handlers.BookNow.cs`, new).** Three endpoints: `GET /api-ops/book-now-seed` (station + default POL/service per mode), `GET /api-ops/book-now-master` (a **job-less, station-scoped** twin of `ErpMaster` - resolves the source DB from the caller's station, scope-checked, not from a job), and `POST /api-ops/book-now` (build + push the create). `server/Erp.cs` gained **`BuildNewBookingPayload`** (omits bookingNo; emits partyGroupCode/moduleTypeCode/boundTypeCode, the cargo/route/date keys, Sea container counts, `remark`, `bookingReference[{refName:"Shipment Reference ID"}]`, and `bookingParty.forwarderPartyCode`) + **`CreateBookingPush`** (no get-guard; mock writes `erp-mock/book-now-*.json`; parses the ERP-echoed bookingNo via `ExtractBookingNo`). `Handlers.Erp.cs` master-lookup switch refactored into shared `MasterResults`/`IncotermResults` (reused by both lookups, zero behaviour change). Routes in `Program.cs` (the POST is a custom route like `erp-edit-save` - needs the client IP for the audit). Every create is logged to `erp_api_log` (via `Erp.Call`) + `erp_edit_log` (`erp_status='created'|'mock'`, `job_no=refNo`).
-- **Ref No (our outbound reference so the ERP knows the booking is ours).** A `bookingReference` "Shipment Reference ID": editable, else **auto-generated** `<station>+A/S+yymmdd+NNNN` (e.g. `HKGS2606260001`) via a new **`dbo.book_ref_seq`** per-(station,mode,day) counter, incremented atomically (`UPDATE...OUTPUT`, INSERT on miss) so concurrent submits never collide. **`setup-ops.ps1` -> 25 tables.** `erp-api-map.json` gained `serviceCodeAirDefault` ("AIR") beside `serviceCodeDefault` (Sea "FCL/FCL").
-- **Client.** A **[Book Now]** button in the "New bookings" panel header (`index.html`) opens a JS-built modal (`ops.js`, `.modal-bg`/`.modal` pattern + new `.booknow`/`.bnf` styles in `styles.css`). Port/service/shipper/consignee fields use a type-ahead dropdown ported from `erp-edit.js` `openLookup`, repointed at `/api-ops/book-now-master`. The Sea **Container mix** input reuses erp-quotation's `normContainer`/`containerCounts` (same caption) with a live deduced preview, mapping `20GP/40GP/40HQ/45GP -> container20/40/HQ/Others`. Submit disables on click (no double-create); success shows a toast with the booking + ref. Captions added to `lang/{zh-Hans,ja}.json`.
-- **Verified (mock, isolated `bnverify` DB; demoerp untouched apart from the additive `book_ref_seq` table):** seed Sea -> `HKHKG/HONG KONG` (Country+Code derivation), Air -> `HKG`, unit `CTN`; port lookup `singapore -> SGSIN`; create Sea (refNo auto `HKGS2606260001`, container20=1/containerHQ=2 with zeros omitted, `forwarderPartyCode=S0001` resolved live, **no bookingNo**), 2nd Sea -> `...0002` (sequence advances), Air typed ref used verbatim + no container fields, missing-required -> "please fill: commodity, port of discharge". Throwaway DB/config/mock files cleaned up.
-- **Files:** new `server/Handlers.BookNow.cs`; edited `server/{Erp,Handlers.Erp,Program}.cs`, `setup-ops.ps1` (`book_ref_seq` + count), `erp-api-map.json`, `index.html`, `ops.js`, `styles.css`, `lang/{zh-Hans,ja}.json`, this summary. **Deferred/noted:** Phase 2 "Save as Lead" -> erp-quotation `/api-quote/leads`; confirm the ERP's bookingNo echo key on a LIVE (non-mock) create + reconcile against `blhead`/`awbhead`; **`serviceCodeAirDefault="AIR"` must match the ERP Service Type master** (the seed name didn't resolve, so set it to a real Air service code before going live).
-- **Operator-feedback follow-up (same session, after the first live test).** (1) **Parties pass code AND name** - `bnLook` captures both from the "..." lookup and the payload now carries `shipperPartyName`/`consigneePartyName` (the earlier `"HONG KON"` was a name typed into the 8-char code box); the server backfills a clean `doc_e_name` (new `PartyName`) when only a code is given. (2) **qty/weight/cbm confirmed flowing** (`quantity`/`grossWeight`/`cbm` all present in the verified payload - the earlier "missing" was empty inputs); now a one-line **Cargo** row. (3) **Compact, reorganized UI** - a small top strip (Mode·Bound·Station·Ref) + a 2-col grid; the **"..." lookup trigger is inline next to the caption** (Edit-ERP style, no button) and is **mode-aware** (toggling Air/Sea re-defaults POL+Service so the port dropdown follows). (4) **[Book Now]** is now a plain `+ Book Now` text link (`.bnlink`). (5) **Immediate visibility** - on a successful create the handler inserts ONE `booking_alert` row (channel `book-now`, status `created`) from data already in hand (no ERP re-read/scan), so it shows in the New-bookings panel instantly with a **created** chip; `watch-bookings.ps1` now dedups by `booking_no` too so it never double-inserts that row. Verified in mock: before=0 -> create -> after=1 (shipper name + lane shown). Additional edits: `watch-bookings.ps1`, `ops.js`/`styles.css`/`index.html` (compact form + `bnLook`/`bnText`/`bnMini`), `server/Handlers.BookNow.cs` (party names + booking_alert insert), `server/Erp.cs` (`shipperPartyName`/`consigneePartyName`).
-- **ERP token note (operational, not code).** A customer-supplied bearer was rejected `401 invalid_token` for ALL ERP calls (Book Now AND the existing Edit-ERP file reads). Diagnosed via `erp_api_log` + a JWT decode as a **corrupted token payload** - a dropped character in the `jti` (`...-542k...`, an impossible GUID, len 331) vs the valid `...-542d...` (len 332). The corrected token decodes cleanly and authenticates (live `/booking/get` -> **422**, i.e. past auth, body-only rejection) and was written **directly to `app_setting`** (the admin-form paste kept mangling the long single-line string). Not a save bug (column is `nvarchar(max)`) and not a Book Now bug.
-- **Perf + ASYNC create (operator: "the API seems long").** Measured: the wait is **entirely the ERP `/booking/update` call (8.7-13 s)**; our side is single-digit ms (VPN connect ~0-11 ms pooled, port/party lookups ~6 ms). So Book Now was reworked to **fire-and-forget**: the create now **registers the booking instantly (124 ms) with our Ref No and returns** (`{ok,refNo,pending,status:'registered'}`); a new **`BookingPusher` BackgroundService** (`server/BookingPusher.cs`, registered in `Program.cs`) drains a persistent **`dbo.book_pending`** queue OFF the request path - performs the ERP push, stamps the ERP booking number onto `booking_alert` (status `erp-pending`->`created`) + `erp_edit_log`, and drops a **My Tasks note** to the creator (authored as them, keyed by the refNo). Survives restarts (re-picks pending/retry rows); rows are CLAIMED atomically (`UPDATE...OUTPUT`); transient failures retry with backoff, terminal failures set `erp-failed` + notify. The panel shows `registering...` -> `created` (or `ERP failed`) chips. **`setup-ops.ps1` -> 26 tables.** Verified in mock: create 124 ms -> `erp-pending` -> (worker ~3-6 s) -> `created`/`book_pending:done` + My Tasks note.
-- **Configurable Ref No format (Admin).** New `app_setting` key **`bookRefFormat`** (Admin -> ERP API field), a template with tokens `{station} {m}(A/S) {mode}(AIR/SEA) {yymmdd} {yy} {seq}/{seqN}`; the running number is atomic per (station, mode, period) where period = the date token's value or "" (a **continuous** running number when the format has no date). Default `{station}{m}{yymmdd}{seq4}` (HKGA2606260001); a no-date example `{station}{m}{seq5}` -> **HKGA00001** (verified). `Settings.BookRefFormat` + validation (must contain a `{seq}` token) in `Handlers.Admin`.
-- **Additional files this round:** new `server/BookingPusher.cs`; edited `server/{Settings,Handlers.BookNow,Handlers.Admin,Program}.cs`, `setup-ops.ps1` (`book_pending`), `admin-ops.html` (ref-format field), `ops.js`/`styles.css`/`lang/*` (registered toast + chips), this summary. **Note:** the synchronous `Erp.CreateBookingPush` is now called by the background worker, not the request.
-- **Live-test polish round (operator feedback on a real demoerp create).** (1) **My Tasks confirmation note** is now keyed by the **ERP booking number** (not our Ref No) so the header shows it; clicking it resolves the booking number to its editable worklist shipment via new **`GET /api-ops/booking-job`** (`shipment_alerts.sono`, scoped) and opens the drawer (Edit ERP) - or says "not in the worklist yet" instead of a dead Edit; the note is a distinct `kind='booking'` (info-only if unresolved). (2) **New-bookings card** shows BOTH the ERP booking number AND our system Ref No (`erp_ref`). (3) Status chip relabeled **`created` -> `confirmed`** once the ERP number is in. (4) **Inbound `FEED:<station>:<booking>` Edit ERP** now returns a status-framed message - *"The shipment has not arrived yet, so you cannot change the ERP data."* - not "not found" (so it doesn't read as a rights problem); `Handlers.ErpEdit.cs`. (5) **Incoterm field** added before Commodity (`incoTermsCode`; the `incoterm` master lookup) - **code-only display** (`EXW`; the dropdown still shows `EX WORKS (EXW)`), narrow (~Qty width) so Commodity keeps the room. (6) Form tidy: the top strip is now the **same 2-col grid** as the body so **Station aligns with the Cargo ready date** field and Ref aligns with ETD; caption "Cargo ready" -> **"Cargo ready date"**. Verified in mock: `incoTermsCode=EXW` in the payload, `booking-job` resolves a seeded `sono` to its job, new-bookings returns `erpRef`+`bookingNo`. Files: `server/{Erp,Handlers.BookNow,Handlers.Bookings,Handlers.ErpEdit,Program}.cs`, `ops.js`, `styles.css`, `lang/*`, this summary.
+Goal: stop a re-run of setup / a mis-pointed redeploy from silently overwriting or "losing" customer users +
+admin-edited config. Owner concern from a real incident: after a developer deploy, the customer's users vanished
+and only `admin/admin123` worked. **Diagnosis (no bug in the store):** logins/roles/scope DO live in SQL
+(`dbo.app_user` + `dbo.app_user_scope`); `setup-ops.ps1` is idempotent and never drops/overwrites. The real causes
+were (a) a redeploy losing the app-pool `OPS_CONFIG`/`OPS_ROOT` env vars (or publishing to a fresh folder missing
+the gitignored tenant config) → the app pointed at a **different/empty DB** → silent re-seed of `admin/admin123`;
+and (b) `seed-milestone-config.ps1`'s `MERGE` resetting admin-edited milestones. **Committed `bec71c9`.** Fixes:
 
-**Previous session (2026-06-25b — data freshness: delta/watermark worklist pull so the refresh runs every few minutes cheaply (Air ~5 min / Sea ~15 min), plus a new-booking -> factory(shipper) alert watcher).**
-Operator-complaint round: worklist data lagged (air freight needs <=15 min) and the user wanted factories alerted when a booking lands - all without hurting a 500-user / 30-station / 24x7 box. The fix is incremental pulls (the delta core of the deferred listener-engine), reusing the proven `publish-bookings` watermark pattern. **Verified live on HKG (fm3khkg) over the VPN.** Plan: `.claude/plans/indexed-doodling-lake.md`. **Committing this session.**
-- **seed-alerts.ps1 -Delta (incremental worklist pull).** Old behaviour pulled the newest-N by *create* date, so an ETA/vessel edit on an older shipment was never refreshed - and running it more often just re-pulled the same slice. New `-Delta` mode reads a per-(station,mode) high-water from new **`dbo.alert_watermark`** and pulls only rows `(crtdate>@since OR upddate>@since)` - **new AND edited** - oldest-change first so a TOP cap never skips a row; advances the watermark to MAX(crtdate/upddate) consumed (typed datetime param, not a string, after a precision bug where a 7-digit-fractional string failed to convert to the ERP's plain `datetime`). Full snapshot mode (no `-Delta`) stays for the initial backfill. **Measured on live HKG: delta query ~10-50 ms** (full active set 2,925 rows / 6 ms), so 30x2 jobs every few minutes is light. Verified: first delta seeded 6 Air rows + wrote the watermark; steady-state run correctly reports "no changed shipments".
-- **register-ops-tasks.ps1 cadence.** `Ops Worklist *` now runs `seed-alerts.ps1 -Delta` on a minute interval - **Air every `WorklistAirMins` (default 5)**, **Sea every `WorklistSeaMins` (default 15)** - staggered per station (replacing the old Air-2h / Sea-3x-day worklist trigger). Publishers (the cross-station feed) unchanged.
-- **watch-bookings.ps1 + `dbo.booking_alert` (new-booking -> factory alert).** Scans the ERP for EXPORT bookings created in the last `windowHours` (default 24), dedupes by (station,mode,erp_ref), resolves the factory(shipper) contact from `custsub`, records a `booking_alert` row, and - when `bookingAlert.enabled` - notifies via the existing `alerts` webhook/SMTP (and emails the factory directly when `emailFactory=true`). Disabled => records only (visible/auditable, no send). Scheduled as `Ops Booking Watch *` every `BookingWatchMins` (default 5). Verified live: 90 HKG export bookings detected + recorded with real factory names/lanes/booking nos; re-run recorded 0 (dedup holds). `purge-ops.ps1` trims it (auditRetainMonths).
-- **Bookings now visible in the app (follow-up: "I created booking 27146 but can't see it").** Root cause: the worklist only showed house bills (`awb_type/bill_type` H/S); a booking-stage record ('B') was excluded. Per the owner's choice (**both**): (1) `seed-alerts.ps1` now includes 'B' and stamps a new `shipment_alerts.bill_stage` ('booking'|'house'); the worklist handler emits `billStage` and `ops.js` shows a **BOOKING** badge - so a new booking appears in the worklist the moment it's created. (2) New operator-facing **"New bookings" panel** (header button in `index.html` -> overlay) backed by **`/api-ops/new-bookings`** (`server/Handlers.Bookings.cs`) - **row-level scoped by `Scope.StationClause`**, so each user sees only their own station(s)' bookings (an unrestricted admin sees all); operators included, not admin-only. (The earlier admin-only `/api-ops/admin/bookings` tab was removed in favour of this scoped operator endpoint.) **Verified live:** booking **27146** (TOPCAST SUPPLIES, HKG->SGN, `awb_type=B`) was pulled by the Air delta into `shipment_alerts` as `HKG-A-R63031` `bill_stage=booking`, and the scoped query for a HKG user returns it at the top of 91 HKG bookings. Builds 0/0; ERP-connection settings in `app_setting` survive the restart.
-- **Files:** new `watch-bookings.ps1`, `server/Handlers.Bookings.cs`; edited `seed-alerts.ps1` (delta + booking stage), `register-ops-tasks.ps1` (delta cadence + booking-watch tasks), `setup-ops.ps1` (`alert_watermark`, `booking_alert`, `app_setting`, `shipment_alerts.bill_stage` -> **24 tables**), `server/{Program,Handlers.Worklist,Handlers.Admin}.cs`, `index.html`, `ops.js`, `styles.css`, `admin-ops.html`, `purge-ops.ps1`, `ops.config.example.json` (`bookingAlert` block), `docs/{SQL-README,OPERATIONS-RUNBOOK,ONBOARD-CHECKLIST}.md`, this summary. **Deferred/noted:** an admin UI tab for `booking_alert` (queryable in SQL today); also bumping the publisher feed cadence if importing stations need fresher inbound. **Onboarding rule:** run the FULL backfill once before the delta tasks take over.
+- **No-silent-seed guard (`server/Auth.cs`).** `SeedOrImport` is gated by **`OPS_ALLOW_SEED`**. On an empty
+  `app_user` without the flag, the app **throws a clear wrong-DB error** naming the resolved `Server`/`Database`
+  instead of quietly seeding `admin/admin123` or importing a stray `users.json`. A populated table is unaffected.
+- **Startup DB log (`server/Config.cs`).** `Config.Load` logs `[Config] ops DB target: Server=…; Database=…;
+  config=…; root=…` as the first line, so a mis-pointed deploy is visible immediately.
+- **Non-destructive milestone re-seed (`seed-milestone-config.ps1`).** Default is **INSERT-MISSING-ONLY** (adds new
+  defs, preserves admin edits); new `-Force` restores the old reset-to-defaults behaviour.
+- **One-command routine update (`update-customer.bat` + `verify-customer.ps1`).** The single script run on a customer
+  server after pulling new code: app-offline → `setup-ops.ps1` (additive) → `seed-milestone-config.ps1`
+  (insert-only) → `dotnet publish` in place + recycle pool → `verify-customer.ps1` (read-only check that **exits
+  non-zero with a red warning if `app_user` is empty**). It deliberately does NOT reseed users, reset milestones,
+  recreate the IIS site/pool, or backfill data.
 
-**Latest session add-on (2026-06-25c — cross-station inbound routing widened to notify + consignee, an "offshore" tag for off-bill involvement, and a pre-existing route-priority bug fixed).**
-Operator question: "if SIN names HK (owncode S0001) as notify / routing / destination / controlling agent, will HK see it in Import pre-arrival?" Investigated + extended the cross-station feed (`publish-bookings.ps1` + `seed-station-map.ps1` + `inbound_booking_feed`).
-- **Routing now also matches `notify` (`not1_code`) and `consignee` (`cgne_code`)** in addition to destination agent (`agn2_code`), controlling customer (`rcustomer`), routing agent (`roagent`, Sea only) and POD. seed-station-map discovers notify/consignee rules (only when the value equals an office owncode; not added to the unmapped report to avoid flooding it with real customers).
-- **New `offshore` flag (+ `dest_role`) on `inbound_booking_feed`.** offshore=1 when THIS station is named ONLY in an OFF-bill role (controlling/routing agent) and in NO bill-visible role (destination agent / notify / consignee) - because those off-bill roles don't print on the HBL/HAWB, so the alert is a cross-trade move we coordinate, not a real import to us. If we're the destination agent / notify / consignee (on the bill) it's a normal import (no tag), even if we're also the controlling/routing agent. Surfaced as an **OFFSHORE** chip in the Import pre-arrival panel (`/api-ops/inbound` emits `offshore`/`destRole`; `ops.js inboundCard`).
-- **Fixed a pre-existing routing bug:** `Resolve-Dest` used `($cands | Sort-Object pri | Select-Object -First 1)` over **hashtables** - `Sort-Object` can't read a hashtable KEY as a sort property, so priority ordering silently never worked and a booking could route to the wrong station (e.g. lost `agent S0007->HAM (pri 10)` to `pod->HKG (pri 200)`). Replaced with a manual min. **NOTE for go-live:** re-publish every station once with `-Since 2000-01-01` (or via the scheduled publishers) so existing feed rows get the corrected routing + the offshore flag.
-- **Verified live:** confirmed `S0001->HKG` rules exist for SIN (agent/ctrl/roagent/consignee/notify), `fm3kco.site` maps owncode `S0001=hkg`; after the fix a clean SIN re-publish routes/labels correctly - SIN->HKG rows where we're the agent or consignee are **not** offshore, and offshore=1 rows are only `ctrl`/`roagent`.
-- **Answer to the question:** YES if SIN names HK (S0001) as **destination agent, notify, or consignee** (Sea+Air) -> normal import in pre-arrival; YES as **controlling agent (Sea+Air) or routing agent (Sea only)** -> shown but tagged **OFFSHORE**; **NO** if HK is only POD-adjacent with no party role, and **notify routing/Air-routing-agent** now work where they didn't.
-- **Multi-station fan-out (follow-up: "SINHKG000002 names HK only as routing agent but HK can't find it").** Root cause: the feed routed each booking to ONE station (the highest-priority role), so a booking whose **destination agent is another office** (S0007=HAM) but which names **HK only as routing/controlling agent** went solely to HAM - HK never saw it. Fixed: `publish-bookings.ps1` now **fans out one feed row per involved station** (any of destination agent / notify / consignee / routing agent / controlling agent that maps to an office), each with its own `offshore` flag; `inbound_booking_feed` PK widened to `(source_station, mode, booking_no, dest_station)` (idempotent migration in `setup-ops.ps1`). POD is a fallback only when no party role maps. **Verified:** SINHKG000002 now produces TWO rows - `dest=HAM role=agent offshore=False` (Hamburg's normal import) AND `dest=HKG role=roagent offshore=True` (HK sees it, tagged OFFSHORE). The single-winner `Resolve-Dest`/`RouteHit` helpers were removed (logic is inline per-station now). **Go-live:** re-publish every station once (`-Since 2000-01-01` / `seed-data.bat`) so existing feed rows fan out + pick up routing fixes.
-- **All-station re-publish DONE (the go-live note above, executed).** Cleared `inbound_booking_feed` and re-published all 12 stations (Sea+Air) so the whole feed reflects the multi-station fan-out + offshore + route-priority fix. **Final totals: 1,745 feed rows, 69 offshore; HKG-bound = 411, of which 29 offshore — split exactly per the rule: controlling-agent 11, routing-agent 18, and zero bill-visible (agent/notify/consignee/pod) rows tagged offshore.** `SINHKG000002` now resolves to two rows (`dest=HAM agent` normal + `dest=HKG roagent` OFFSHORE) and appears in HK Import pre-arrival.
-- **Files:** edited `publish-bookings.ps1` (notify/consignee + offshore + priority fix + multi-station fan-out), `seed-station-map.ps1` (notify/consignee discovery), `setup-ops.ps1` (`inbound_booking_feed.offshore`/`dest_role` + 4-part PK migration), `server/Handlers.Inbound.cs`, `ops.js`, `styles.css`, this summary.
+**Owner-side to confirm (needs a server):** run `update-customer.bat` on a tenant and confirm the verify line shows
+users intact; set `OPS_ALLOW_SEED=1` only for a deliberate first install.
 
-**Previous session (2026-06-25 — deployment hardening: logins/roles/scope moved from `users.json` into SQL with a secure-by-default seeded admin; a unified ERP API call+error log with an admin view; and one-command onboarding `.bat` wrappers).**
-Go-live round driven by two owner asks: "put all persistent data in MS SQL, not JSON" (the JSON-vs-SQL mistake from the sibling erp-dashboard) and "if there's an API error, I can't see which API failed". Reused erp-dashboard's proven patterns throughout. **Builds 0/0. Verified live on demoerp** (import path, default-admin seed, login, admin ERP-API endpoint). **Committing this session.** Plan: `.claude/plans/indexed-doodling-lake.md`.
-- **Logins/roles/scope -> SQL (the `users.json` retirement).** New `dbo.app_user` + `dbo.app_user_scope` (`setup-ops.ps1`, now **21 tables**), ported from erp-dashboard. **`server/Auth.cs` rewritten to back onto SQL** (every public signature + `UserRec` shape unchanged, so Filter/Program/Handlers.Admin are untouched): reads `app_user` + scope, whole-store rewrite in a transaction on save, `Config.ConnStr` like `Notes.cs`. New **`SeedOrImport`** (called from `LoadAll`): on an empty table it **imports a legacy `users.json` once** (kept only as a backup) **or seeds a default `admin`/`admin123`** ("change immediately"). `HashPwd` is unchanged salted-SHA256 = erp-dashboard, so imported hashes verify with no lockout (PBKDF2 is a noted later hardening). **Security side-effect:** a user always exists after bootstrap, so the old open/auto-admin mode (`Program.cs` `GetSession` when `!AuthOn`) **never triggers in production** — the silent "every visitor is admin" hole is closed. (Notes/memos/tasks/@-mentions were already SQL in `dbo.job_note`; config/secrets, `erp-api-map.json`, `doc-fields.json`/`erp-edit-fields.json`, `lang/*.json` are legitimately JSON and stay.)
-- **Unified ERP API log (the "which API errored" fix).** New `dbo.erp_api_log` + **`server/ErpLog.cs`**: every Swivel call is logged at the single `Erp.Call` choke point (`server/Erp.cs`) — success AND failure, incl. the previously-**silent reads** (`/booking/get`/`/file/enquiry`/`/file/download`) — with endpoint, ok/HTTP-status, duration, the ERP's own error message, bounded req/resp summaries, and **`corr_id`** linking a multi-call operation (a doc agree = get+update share one id, via `ErpLog.Begin` scopes in `EditPush`/`DocAgree`/`DocIssue` + the ErpFiles/ErpEdit handlers). Logging never throws (Log.Error fallback). New admin **`/api-ops/admin/erp-api`** (`Handlers.Admin.cs`, date-range + cap + `failures only`, same pattern as `/admin/errors`) + an **"ERP API calls"** panel in `admin-ops.html` Change log tab. Trimmed by `purge-ops.ps1`. (Mock-mode calls aren't logged — they never hit the ERP. No auto-retry queue this round, by choice.)
-- **One-command onboarding (`.bat` wrappers, erp-dashboard style).** New **`setup-database.bat`** (creates DB + all tables via `setup-ops.ps1` + seeds the milestone config; self-documenting) and **`seed-data.bat`** -> new **`seed-data.ps1`** (the live-ERP fill: station map / ports / liners / inbound feed / worklist, looping every config station x Sea/Air). After `setup-database.bat` + first app start, all tables exist and `admin/admin123` works.
-- **Admin-editable ERP connection (follow-up ask).** The ERP **Base URL / bearer token / mock toggle** are now editable in **Admin -> ERP API**, stored in a new **`dbo.app_setting`** key/value table (now **22 tables**) that overrides `ops.config.json` at runtime (new `server/Settings.cs`; `Erp.MockMode`/`Call` read via `Settings`, loaded in `Program.cs`, reloaded on save) - so a customer-site admin can correct the connection with no file edit and no restart, and the **token no longer needs to sit in a file on the box**. The token is stored plaintext in the ops DB (the access boundary; same protection as the config file it replaces), is **never returned** by the API (GET reports only `erpTokenSet`), and the tab shows a **LIVE / MOCK** status. (`Handlers.Admin.AdminErpSettings` extended; `admin-ops.html` ERP API tab gained URL/token/mock fields + masked "leave blank to keep".) Deployment note added to the docs: the **VPN is only for remote/dev** - at the customer the server just needs network reach to the ops DB + ERP SQL (seeders) + ERP API host (push).
-- **Verified live (demoerp, local ops DB):** setup-ops -> 22 tables; the admin **ERP API** GET/POST round-trip (set URL+token+mock=off -> `live=true`; mock=on -> `live=false`; token never echoed); with `users.json` present the server logged "imported users.json into SQL" and `app_user`/`app_user_scope` matched (hashes len 64, roles, `station=HKG` scope); with it hidden + table emptied the server logged "seeded default admin (admin/admin123)", `admin`/`admin123` logged in (200, admin), wrong password 401, `/api-ops/me` `authOn=true` (open mode closed); the `/api-ops/admin/erp-api` endpoint returned the bounded shape and surfaced a seeded failure row with `corr_id`/status/error. demoerp restored to its migrated state afterward.
-- **Files:** new `server/ErpLog.cs`, `server/Settings.cs`, `setup-database.bat`, `seed-data.bat`, `seed-data.ps1`; edited `setup-ops.ps1` (app_user/app_user_scope/erp_api_log/app_setting), `server/{Auth,Erp,ErpDoc,Program,Handlers.Admin,Handlers.ErpFiles,Handlers.ErpEdit}.cs`, `admin-ops.html`, `purge-ops.ps1`, `docs/{ONBOARD-CHECKLIST,OPERATIONS-RUNBOOK,SQL-README}.md`, this summary. **Deferred (noted):** PBKDF2 password upgrade; an ERP push auto-retry queue. **Not committed / per-machine:** `ops.config.demoerp.json`, `users.json` (now a backup).
+---
 
-**Previous session (2026-06-23d — production-readiness for go-live: an in-app IT-Admin "Audit & Health" console (no DB access needed), observability/audit gap-fixes, data-retention/growth control, and two self-contained ops docs).**
-CIO/IT-auditor pass to make the official customer deployment stable and supportable. Verified live on demoerp (.NET on :8079 + a throwaway open-mode instance on :8085/8086 for the admin endpoints). **Builds 0/0. Committing this session.** Plan: `.claude/plans/i-am-planning-for-parsed-flurry.md`.
-- **In-app IT-Admin console (the centerpiece) — customer-site support can see everything WITHOUT a database login.** Two new admin-gated tabs in `admin-ops.html` (reuse `switchTab`/`.usr`): **"Audit & Health"** (the at-a-glance Health board + Storage) and **"Change log"** (the high-volume record lists, split off so they can't swamp the glance). Backed by four read-only endpoints added to the `Handlers.Admin` switch (`server/Handlers.Admin.cs`): **`/api-ops/admin/health`** (current state + **last-OK** per watchdog check, so a red row going green = the "died -> fixed" support trail), **`/api-ops/admin/storage`** (ops DB size, biggest tables, attachment bytes, log sizes, free disk — answers "is storage a problem"), **`/api-ops/admin/audit`** (parsed `admin-audit.log` tail + the `erp_edit_log`/`doc_event_log`/`milestone_event_log` SQL tables; source selector incl. logins), **`/api-ops/admin/errors`** (parsed `ops-error.log`). The audit + errors views are bounded by a **date range (default today) + server-side row cap** with a `truncated` "narrow the range" signal, so a busy day or an error storm keeps the UI correct. `Admin(...)` signature gained a `Qs qs` arg (call site in `Program.cs` updated). All verified live: date-range filtering (ERP edits today=0, 06-13..14=3), recovery story, storage exposing the accumulation (`shipment_alerts` 2080 rows). Client JS `node --check`-clean.
-- **Observability gap-fixes (`server/`).** New **`Log.cs`** (`Log.Error` -> `ops-error.log`, never throws) wired into the six `catch(Exception){...500}` discard sites + the blob 404 catches in `Program.cs` (was: exceptions discarded, raw message to client, no server record). New unauthenticated **`GET /api-ops/health`** (ops-DB `SELECT 1`, 200 ok / 503 db:down) for the watchdog + monitors. **Login audit**: `/api-ops/login` now records `login ok (local)` / `login FAILED` + IP and logout to `admin-audit.log` (only L!NK logins were recorded before). Verified: a forced 500 wrote a full `ops-error.log` record (id/route/stack); 503 on a bad DB.
-- **Data-retention & growth control (the schema was designed to age out but never did).** `seed-alerts.ps1` only ever UPSERTs `job_status='active'` and never removes shipments that drop out of the active ERP set, so `shipment_alerts` (+ `inbound_booking_feed`, event logs, `doc_attachment` blobs) **accumulated**. New **`purge-ops.ps1`** (weekly `Ops Purge`) implements the intended aging — `shipment_alerts` stale->`closed`->deleted, feed/event-log/health-log trimming, soft-deleted-attachment reclaim (LIVE attachments never auto-deleted), and log-file rotation — all horizons from a new config `retention` block. Verified `-WhatIf` against demoerp.
-- **Backup + active watchdog (PowerShell).** New **`backup-ops.ps1`** (nightly `Ops Backup`: COPY_ONLY `.bak` of the ops DB + gitignored-secrets copy + prune; non-zero exit on failure) — verified a 27 MB `.bak` after granting the SQL service account write (`icacls`, the one real gotcha, documented). New **`ops-healthcheck.ps1`** (every 25 min `Ops Healthcheck`): checks app/db/tasks/feed/backup/storage/disk/VPN, writes each to **`health_check_log`** (new table in `setup-ops.ps1`, 18 tables now), and on failure logs `ops-health.log` + alerts via a config `alerts` block (Teams/Slack webhook or SMTP). Verified the recovery story end-to-end (`backup` fail -> ok with a fresh last-OK). `register-ops-tasks.ps1` registers all three new jobs.
-- **Docs (self-contained, per the brief).** New **`docs/ONBOARD-CHECKLIST.md`** — the ONLY doc the installer needs (no links out): pre-reqs, folder write-perms (incl. the SQL-service `icacls`), "you create NO tables by hand" (setup-ops does), config, publish+IIS, seed order, user-list generation, scheduling, backups — each step ends with a visible **"You should now see ..."** proof (e.g. the new user shows in the Users + Audit tabs). New **`docs/OPERATIONS-RUNBOOK.md`** — ongoing support: the Audit & Health daily glance, alerting/escalation, log map, troubleshooting playbook, the data-retention/growth model, backup/restore, safe-patch/rollback, the **IIS (recommended for go-live) vs container** decision, and SQL-version-change guidance.
-- **Files:** new `server/Log.cs`, `backup-ops.ps1`, `purge-ops.ps1`, `ops-healthcheck.ps1`, `docs/ONBOARD-CHECKLIST.md`, `docs/OPERATIONS-RUNBOOK.md`; edited `server/{Program,Handlers.Admin}.cs`, `admin-ops.html`, `setup-ops.ps1`, `register-ops-tasks.ps1`, `ops.config.example.json`, `.gitignore` (backups/), `README.md`, this summary. **Deferred (noted in the runbook):** sanitizing client-facing 500 messages; finer IT-vs-ops role split. **Not committed / per-machine:** `ops.config.demoerp.json`, `users.json`, `backups/`, `ops-*.log`.
+## What's built and proven
 
-**Previous session (2026-06-23c — in-app Find turned into a chat: the worklist's 🔎 Find overlay is now a scrolling conversation (each message = one independent search), reusing the standalone tester's UX).**
-Operator-feedback round on the existing in-app **Find** (the dedicated 🔎 overlay in `index.html`/`ops.js`, session-cookie auth, scoped `GET /api-ops/find`). Reshaped it from a single search-as-you-type box into a **chat transcript** mirroring `tools/find-chat.html`, per the user's choice of *chat transcript* + *independent searches each turn*. **Client-only change — no server/`.cs` touched** (the existing `/api-ops/find` + scope are reused as-is); static files, browser reload only. **Committing this session.**
-- **Find is now a chat (`index.html`/`styles.css`/`ops.js`).** The overlay became *header / scrolling transcript (`#findFeed`) / sticky input row (`.find-ask`) with a **Send** button*; the old top input + standalone `#findSummary` line were removed (the parsed **"Looking for:"** summary now rides inside each answer bubble). Firing changed from a 350 ms **debounced input** to **Enter or Send** — each Send is an **independent, fresh search** (the chosen model; no cross-turn context), so the operator can compare searches in one scroll and just reword a missed one.
-- **JS refactor (`ops.js`).** New `findBubble(cls,html)` (append `me`/Find/`sys` bubble + autoscroll); `runOpsFind` rewritten to post a `me` bubble then a pending Find bubble it fills; old monolithic `renderOpsFindFeed` factored into **`renderFindItem`** (one shipment/note card) + **`fillFindAnswer`** (fills a bubble with the summary + cards + row deep-links). `opsFindLlmFallback` now fills the pending bubble in place. **Card rendering (`findShipRow`), the rule parser (`parseOpsQuery`), `opsFindParams`/`opsFindSummary`, scope, and the LLM-fallback seam are all unchanged** — only the shell around them moved to a transcript.
-- **i18n + caveat.** New English strings (`you` / `Find` / `result(s)` / `Send` / "Each message is a fresh search.") fall back to English until `lang/{zh-Hans,ja}.json` are filled (machine-draft refine later); the original greeting sentence was kept as its own `data-i18n` span so its existing translation isn't orphaned. **`node --check` not run** (node not on this machine's PATH) — edits reviewed manually, no dangling refs to the removed `renderOpsFindFeed`/`#findSummary`. UI-click-test still advisable (open 🔎, send a couple queries, confirm the transcript stacks and rows open the drawer).
-- **Files:** `index.html`, `styles.css`, `ops.js` (+ docs: `README.md`, `docs/BUSINESS-GUIDE.md` §8, `docs/DEVELOPER-GUIDE.md`, this summary). `tools/find-chat.html` (the JWT-authed external tester for `/api-ops/find-text`) is untouched and remains the third-party reference.
+All proven against live `fm3k*` data over the VPN (mock OFF where noted) unless marked.
 
-**Previous session (2026-06-23b — third-party Find API: JWT bearer auth + server-side natural-language `/api-ops/find-text` + name->code resolution (places/carriers/companies) + a browser chat tester).**
-Built a way for an external app (Swivel L!NK / **Cargoclip**) to call the operator **Find** over HTTP, authenticated *as a user* by a JWT carrying their email, with the same row-level scope. Verified live end-to-end on demoerp (.NET test build on :8085, two-server: live `fm3k*` over the Swivel VPN + ops DB `demoerp`) with a **real Cargoclip prod token**. Plan: `.claude/plans/read-project-summary-md-as-anchor-rippling-kite.md`. **Committing this session.**
-- **JWT bearer auth (new `server/Jwt.cs` + `Config.cs` `jwtAuth` block + `Program.cs` `GetSession` fallback).** A caller sends `Authorization: Bearer <jwt>`; the token's email claim federates to a user (`Auth.FindUserByEmail`, auto-provision via `ProvisionLinkUser`), and every query runs under that user's `Scope.*` boundary - so the third party sees only what the user can. Validates signature/issuer/audience/lifetime; **fails CLOSED** (bad/expired/wrong-issuer/no-token -> 401). Config-driven verification: HS256 `signingKey`, OR RS*/ES* `jwksUrl` / inline `publicKey` PEM; `emailClaim` (default `email`, falls back `upn`/`preferred_username`); env `OPS_JWT_*`. New NuGet **`Microsoft.IdentityModel.JsonWebTokens` 8.19.1** (deliberate 2nd dependency; hand-rolling JWT is unsafe). Wired into `GetSession` so EVERY authed endpoint accepts a JWT (transient session, never persisted). **Verified live with the real Cargoclip PROD token** (RS256, `iss=cargoClip`, no `aud`, email in claim **`u`**=`support@swivelsoftware.com`): valid -> 200 scoped to HKG; tampered/expired/wrong-aud/no-token -> 401. (First attempt used the **staging** public key and correctly 401'd the prod token - the prod `publicKey` from `api.cargo-clip.com` verifies it.)
-- **Server-side natural-language Find (`POST /api-ops/find-text`; new `server/FindParse.cs`; `Handlers.Find.cs` refactor).** `OpsQuery.Parse` is a faithful C# port of `ops.js` `parseOpsQuery`/`parseDateWindow` (verified against the JS with a throwaway harness; uses `Config.TodayDate()`). `Handlers.Find` split into **`FindClue` + `FindCore`** (shared by the structured `GET /api-ops/find` and the new text endpoint -> identical SQL/scope/payload) + `ClueFromJson`. Body `{text, useLlm}` -> parse -> FindCore -> optional LLM fallback (reuse `Llm.ParseFind`) on zero results; returns `{query, source, resolved, items}`. **API default = everyone-in-scope** (not the "mine" involvement lens; say "my" to narrow) - the right default for a programmatic find.
-- **Name -> code resolution in `FindCore`** (the operational store keeps CODES; users type NAMES). Resolves typed **place names** via `port_dim` ("hong kong" -> `HKG`/`HKHKG`), **carrier/liner names** via the new **`liner_dim`** ("ocean network express" -> `ONE`, "CNC line" -> `11DX`), and **party/company names** via the already-populated `company_dim` ("ABC FOOTWEAR" -> code). Also matches **container / air-flight prefixes** (`OOLU...`, `CX###`). Codes still work; degrades gracefully if a dim is empty. New `liner_dim` table (`setup-ops.ps1` 2.7b) + **`seed-liners.ps1`** (from ERP `linermstr`) + weekly schedule in `register-ops-tasks.ps1`. Seeded demoerp: `port_dim`=5363, `liner_dim`=161 (`company_dim`=232 already). **ERP data caveat:** some liner codes carry junk master names (`ONEY`/`COSU`="ZZZ") so those *names* won't resolve - codes still do.
-- **CORS preflight fix (`Program.cs`).** A cross-origin browser/third-party POST (Authorization + JSON) triggers an `OPTIONS` preflight; now answered with `Access-Control-Allow-Methods/Headers` + 204 (was only `Allow-Origin:*`), so external callers aren't blocked at the network layer.
-- **Vessel parser filler-word fix (`FindParse.cs` + `ops.js`).** "vessel under/named/called Abraham" now finds "A ABRAHAM" (the filler word was being captured into the vessel term). Both parsers kept in sync. Vessel match is literal text over `vessel_voyage` (no vessel master).
-- **Browser chat tester + tooling + docs.** New **`tools/find-chat.html`** (self-contained chat page; load it same-origin at `/tools/find-chat.html` to avoid CORS while testing), **`tools/find-api-test.ps1`** (mints a test HS256 token and calls the endpoint), **`docs/API.md`** (the third-party contract), and the documented `jwtAuth` block in `ops.config.example.json`.
-- **Migration fix:** created `dbo.job_note` in the demoerp ops DB (it was never seeded here, so Find's note paths 500'd) via the canonical `setup-ops.ps1` DDL.
-- **Files:** new `server/Jwt.cs`, `server/FindParse.cs`, `seed-liners.ps1`, `tools/find-chat.html`, `tools/find-api-test.ps1`, `docs/API.md`; edited `server/{Config,Program,Handlers.Find}.cs`, `server/Ops.csproj`, `setup-ops.ps1`, `register-ops-tasks.ps1`, `ops.config.example.json`, `ops.js`, this summary. **Gitignored / not committed:** the Cargoclip prod `publicKey` belongs in `ops.config.<env>.json` (per-machine).
+- **Worklist** — arrival-driven, traffic-light milestones, grouped by vessel/voyage (Sea) or airline+flight (Air);
+  multi-station; Import (Arrived/Arriving/Planning) + Export (No-space/Customs/Cargo-pending/On-track) buckets;
+  booking-stage rows shown (BOOKING badge). Filters: station / mode / bound / ISO date window / company-name
+  type-ahead / POL / POD / identifier search (job, booking/SO, HBL, MBL, container, PO, **ship-id**, **vessel-flight**).
+  Delta refresh (`seed-alerts.ps1 -Delta`, Air ~5 min / Sea ~15 min) keeps it fresh.
+- **Cross-station inbound feed** — publish/subscribe fan-in (`publish-bookings.ps1` → `inbound_booking_feed`,
+  served by `/api-ops/inbound`); multi-station fan-out per involved office; **OFFSHORE** tag for off-bill roles;
+  row-level scoped per station.
+- **Draft HBL/HAWB customer review loop** — staff create a draft seeded from the shipment + a bounded ERP read,
+  send a tokenized public review link, iterate a field-by-field diff, then **approve → agree → issue** to the live
+  Swivel ERP (`/file/upload` BL_REVIEW PDF + `/event/update`), with a headless-Edge auto-PDF.
+- **Edit ERP data** — staff data-correction editor → live `/booking/update` (read-merge existence guard,
+  per-station `forwarderCode`, AIR full-cargo-block read-merge, HAWB+MAWB sent as a pair). Saved scan columns
+  reflect in the worklist immediately.
+- **Book Now** — create a booking in the ERP from minimal operator input (auto-generated Ref No, configurable
+  format), async via a `BookingPusher` background service draining `book_pending`; shows in New-bookings instantly.
+- **Generate document** — drawer box → `/document/generate` for an admin-configured documentTypeCode + houseTypeCode
+  (`doc_generate_map`); the PDF returns inline and streams to the browser as a download.
+- **ERP document upload (always-on)** — upload any configured doctype; ones that also clear a milestone are flagged.
+- **Natural-language Find** — header 🔎 chat (rule parser, optional LLM fallback off by default); resolves
+  names→codes (`port_dim`/`liner_dim`/`company_dim`); active + recently-closed, scoped; full worklist-style cards.
+  Also exposed as a **third-party JWT-bearer API** (`/api-ops/find-text`, see [8-API.md](docs/8-API.md)).
+- **Notes / collaboration** — operator notes in SQL (`dbo.job_note`), @-mentions (team/station-aware roster), My
+  Tasks inbox, follow-ups, remind-me with due date.
+- **Auth & identity** — SQL-backed `app_user` + `app_user_scope`; sign-in by email (username fallback); the
+  `OPS_ALLOW_SEED` first-install guard; SWIVEL L!NK OAuth code-flow seam; JWT bearer for the third-party API.
+- **i18n** — English / 中文 / 日本語, client-side, per-user default + per-device picker.
+- **Admin console (`admin-ops.html`)** — Users · Milestones & alerts · Documents · Generate documents · ERP API
+  (connection editable in-app, LIVE/MOCK) · **Audit & Health** (Health board + Storage) · **Change log** (change &
+  access audit / server errors / ERP API calls, date-ranged + capped).
+- **Governance / ops** — unified ERP API log (`erp_api_log`), `ops-error.log`, login audit; `backup-ops.ps1`
+  (nightly), `ops-healthcheck.ps1` (watchdog, every 25 min, alerts), `purge-ops.ps1` (weekly retention + log
+  rotation); `register-ops-tasks.ps1` schedules everything.
 
-**Previous session (2026-06-23a — cross-station inbound feed populated on demoerp; pre-arrival ETD date-range filter; scheduled worklist refresh; Find cards enriched + search by ship-id/vessel; Sea-commodity seed bug fixed).**
-Operator-feedback + ops round on this PC's demoerp (.NET server on :8079, two-server: live `fm3k*` over the Swivel VPN + ops DB `demoerp` on `localhost\SQLEXPRESS`). **Client is static (reload only); server rebuilt+restarted after the `.cs` change. Not yet committed → committing this session.**
-- **Cross-station inbound feed populated (was empty → pre-arrival panel had no rows).** Ran `seed-station-map.ps1` (built `station_route_map` = **753** convention rows from `fm3kco.site.owncode`→station) then `publish-bookings.ps1` for all 12 stations × Sea+Air → **~1,857** `inbound_booking_feed` rows (**HKG-bound 397**). Root cause of "no pre-arrival": the feed is a separate publish/subscribe fan-in (not part of `seed-alerts`), never run on this env. The jobs write the **ops DB** directly — **no .NET/IIS involvement** (IIS just reads the same DB); in production they run **on the server**, scheduled there.
-- **`register-ops-tasks.ps1` hardened + now schedules the worklist too.** Added per-station **`Ops Worklist Sea/Air`** tasks running `seed-alerts.ps1` (same Sea 3×/day · Air 2h cadence, +3 min after the publisher) via a **`-Command` action that computes `-AsOf (Get-Date)` at run time** (so it always seeds "today", not seed-alerts' fixed 2023 default; `-WorklistLimit` param, default 120). Fixed the **false "registered" reporting**: an **upfront elevation gate** (exits early if not admin), **`-ErrorAction Stop`** so failures hit the catch, and an honest `N registered / M failed` tally + non-zero exit. (Registration itself still needs an elevated shell — user to run it in the office.)
-- **Pre-arrival ETD date-range filter (`ops.js`/`styles.css`).** New compact **`from → to`** date boxes in the Inbound panel **header, next to "show all"** (worklist `.datebox` style, `yyyy-mm-dd` only, arrow between), **defaulting to last 100 days → today**. A typed range **bypasses the recent/upcoming clip** (sends `showAll=1`) so historical ranges aren't clipped to 0; the server already accepted `from`/`to` on `/api-ops/inbound`. Also **removed the station-code list** from the Inbound header to keep it compact (the count is just `rows.length` of the filtered result).
-- **Find results enriched to worklist-card depth (`server/Handlers.Find.cs` + `ops.js`).** The Find shipment card now shows **incoterm · cargo (`3×40HC` / `N pcs · kg`) · commodity · ship-id/PO · booking · MBL/MAWB · ETD/ETA/ATA · lane · job · shpr/cgne/agnt parties** + arrival-status chip — mirroring the worklist mini-card (reuses `cargoProfile`/`compName`/`arrivalChip`). Server `ShipItem`/`cols` gained `incoterm, erpJobNo, shipper/consignee/agent/cust codes, linerSo, container_summary/count, total_weight/cbm`. **Search by ship-id** (`ship-id 12008` → `cust_ref`) and **vessel** (`vessel YM WISH` → `vessel_voyage`) added to the client parser + server refField map; **container** (`COSU8778988`) already worked.
-- **Sea-commodity seed bug FIXED (`seed-alerts.ps1`) — Air left untouched.** The seeder read Sea commodity from `good_desc1` (a *description* column, empty for many bookings) so **Sea Export commodity was 509/509 blank**. The real code (e.g. **`FOOTWEAR`** on job `HKG-S-R23565` / booking `HKGLAX000413`) lives in **`blitem.commodity`**. Sea now reads `blitem.commodity` (desc as fallback); **Air still uses `good_desc2`** (the new column is `NULL AS commodity` for `awbdetl`, so the Air path is provably unchanged). Verified by reseeding HKG Sea: ref 23565 → `FOOTWEAR`; HKG Sea filled 0 → **362/884 Export, 92/116 Import** (remaining blanks are real ERP gaps). **Other 11 stations still need a Sea reseed** (user will run it in the office).
-- **Files:** `server/Handlers.Find.cs`, `ops.js`, `styles.css`, `register-ops-tasks.ps1`, `seed-alerts.ps1` (+ this summary). New scheduled-task names: `Ops Worklist Sea/Air <code>`.
+## Not yet built
 
-**Previous session (2026-06-22 — natural-language "Find" tab (search shipments by typing what you remember) + notes migrated from the JSON file into SQL).**
-Ported the proven natural-language **Find** feature from the sibling **erp-quotation** app, adapted to operations data, and moved the operator notes store into SQL so Find can search it under role scope. All built on the .NET web tier; verified live end-to-end against demoerp (seeded scenarios + scope-isolation, then cleaned up). **Builds 0/0.** Not yet committed (review pending); plan: `.claude/plans/i-am-preparing-another-cheeky-wolf.md`.
-- **Notes → SQL (prerequisite migration).** Operator notes/arrangements/reminders moved from the shared JSON file `ops-lists/job-notes.json` into a new **`dbo.job_note`** table (idempotent DDL in `setup-ops.ps1` §2.9 + a one-time JSON import that runs only when the table is empty; the file is kept as a backup). **`server/Notes.cs` rewritten to back onto SQL** (opens its own pooled `Config.ConnStr` connection; `[user]` bracketed — reserved word; `mentions` stored comma-delimited for clean `@`-mention `LIKE`; whole-store rewrite under the existing process lock = parity with the old file overwrite). **Every `NoteRec` field + method signature kept identical** (`Read`/`Write`/`Proj`/`ListByJob`/`MyNoteJobs`/`MyOpenNoteJobs`), so **note-add / note-done / my-tasks / the worklist chat-dot were untouched** and verified still working through the new backing.
-- **`GET /api-ops/find` (new — `server/Handlers.Find.cs`, registered in `Program.cs`).** A scoped `shipment_alerts` query (party / lane / commodity / **carrier** / **note arrangement-contact via `EXISTS dbo.job_note`** / the existing identifier field→column map) merged with a `job_note` search (author / body / `@`-mention), deduped by `job_no`, recency-sorted, capped 60. **Active + recently-closed** records (closed gated to a ~6-month horizon when no date window). **Involvement ("mine") is the default** — reuses the worklist lens (pic/created/updated/noted + system-broadcast); a note-only query skips that lens so it isn't drowned by system rows; an explicit identifier bypasses it (find any file by its number). **Scope is the security boundary**: the same `Scope.StationClause` + `Scope.PairClause` the worklist uses, and notes inherit it via the scoped `EXISTS` on their parent shipment. `Scope.PairClause` got an optional column-alias arg (backward-compatible) so it can be aliased inside that subquery.
-- **Dedicated, mode-agnostic Find page (`index.html`/`ops.js`/`styles.css`).** A header **🔎 Find** button opens a full-page overlay separate from the worklist (an operator may not even recall Air vs Sea). Rule-based client parser **`parseOpsQuery`** (no LLM — ports quotation's `parseDateWindow`/`stripPlaceNoise`/stop-word approach: subtract date / mode / bound / identifiers / lane / note author+body+mention clues, the leftover is the company/contact) + an **editable "Looking for:" summary** so a misparse is corrected, not silently wrong; rows deep-link into the existing shipment drawer.
-- **Optional LLM fallback — wired but OFF by default (Part 4; `server/Llm.cs`, `Config.cs`, `ops.config.example.json`).** A flag-gated **`POST /api-ops/parse-find`** (returns **501** while disabled) re-interprets a query into the **same clue object** when the rule parse finds nothing — it never touches the DB or scope (all security stays in the find SQL). Provider-pluggable, user's choice: **claude | openai | deepseek** (one raw-HTTP adapter; Claude = Messages API `output_config.format`, default model `claude-haiku-4-5`; OpenAI/DeepSeek = chat-completions). `enabled` also requires an `apiKey` (env `OPS_LLM_API_KEY`); fails open (any error → client falls back to the rule parse). Client wiring fires only on a zero-result rule parse and flags the result **✨ AI-assisted**.
-- **Verified LIVE on demoerp (open mode + an auth-mode instance with restricted users, all in throwaway roots).** Migration: add-note / list / my-tasks / note-done round-trip through SQL. Find: the 6 worked example queries (lane+commodity+date · party+commodity+"to me" with the note folded in as `hasNote` · arrangement-contact "Rainbow Transportation" via the note EXISTS · note-only "Leo messaged me…" → exactly 1 hit, not the 60 the broadcast lens first returned · identifier bypasses the lens · closed-shipment recall). **Scope isolation proven three ways** — station (a HKG user can't see a SIN job she's *involved* in via a note mention), mode-pair (a Sea-Import user can't see Air/Export jobs she owns), and the note `EXISTS` path (same SIN note: visible to an admin, empty for the HKG user) — with an admin "anyone" baseline confirming it's the scope clause, not absence. All seeded test rows/notes removed afterward (demoerp back to its 1200-row baseline; `job_note` left empty as on a fresh migrate).
-- **Files:** new `server/Handlers.Find.cs`, `server/Llm.cs`; edited `setup-ops.ps1`, `server/{Notes,Filter,Program,Config}.cs`, `ops.js`, `index.html`, `styles.css`, `ops.config.example.json`, this summary + `README.md`. **erp-quotation is untouched** (the LLM seam only *references* quotation's existing `/api-quote/parse-shipment` as the shared-prompt precedent).
+- **`listener-engine.ps1`** (the scheduled listener) — `seed-alerts.ps1 -Delta` stands in.
+- **`baseline-refresh.ps1`** (3-yr lane averages backing the `baseline` alert timing) — `baseline` milestones fall
+  back to fixed/none until it exists.
+- **`pic_user` ↔ app-user mapping**; **PBKDF2 password upgrade**; an **ERP push auto-retry queue** (deferred by choice).
 
-**Previous session (2026-06-19 — demoerp brought up on this machine; admin login created; login accepts email OR username).**
-An environment + auth session (no feature build): stood the .NET web tier up against demoerp on this PC and fixed an email-only login lockout.
-- **demoerp running on :8079.** Recreated the gitignored **`ops.config.demoerp.json`** (two-server: source ERP `fm3k*` on `192.168.5.2`, read-only over the Swivel VPN + ops DB **`demoerp`** on local `localhost\SQLEXPRESS`, integrated). Both connections verified live (VPN up, `dashboard` creds valid). The local `demoerp` ops DB already held the 18-table schema + **1200 seeded `shipment_alerts` rows**; all 12 `fm3k*` stations reachable. Started from `server/` via `OPS_CONFIG=ops.config.demoerp.json dotnet run -c Release` -> Kestrel on :8079; worklist serves live (HKG Sea = 120 vessel groups / 120 shipments). `erpApi.mock=true` on this machine (no token -> ERP write/edit/file-upload mocked; all worklist/reads fully live).
-- **Auth turned on + admin user created.** The working tree had no `users.json`, so the app was in **open/no-auth mode** (every visitor auto-admin — `Program.cs` GetSession returns `Admin=true` when `AuthOn` is false). Created admin **`mandy`** (email `mandy.mak@swivelsoftware.com`, password in the gitignored `users.json`); **creating the first user flips `AuthOn` true**, so login is now required. Gotcha confirmed: the admin Users form **requires an email** (it is the sign-in / L!NK key) — a user saved without one is rejected and never persists (this is what made it look like "no user in the DB").
-- **Login now accepts email OR username (bug fix).** The server's `/api-ops/login` already falls back `FindUserByEmail(id) ?? FindUser(id)`, but `login.html` used `<input type="email">`, so the **browser** refused any value without `@` — the documented username fallback was unreachable from the UI. Changed to `type="text"` with label/placeholder **"Email or username"**; added the `Email or username` caption to `lang/zh-Hans.json` + `lang/ja.json` (no CJK regression). Verified both `mandy.mak@swivelsoftware.com` and `mandy` authenticate as admin. Static files — browser reload only, no rebuild.
-- **Files (committed):** `login.html`, `lang/zh-Hans.json`, `lang/ja.json`, this summary. **Gitignored, not committed (per-machine):** `ops.config.demoerp.json`, `users.json`.
+---
 
-**Previous session (2026-06-18 — extracted the ERP master-lookup (port/customer/liner/service/incoterm) into a standalone, drop-in module for reuse in other projects).**
-Pulled the master code-lookup out of the **Edit ERP data** editor into a self-contained kit under **`reusable/master-lookup/`**
-(no framework, no build step) so it lifts cleanly into a sibling project. Two layers, sharing one `kind` contract
-(`custsub`=customer · `port` · `liner` · `service` · `incoterm`) and the on-wire shape
-`{ kind, results:[{code,name,loc?}] }`.
-- **Source seams.** Client = `erp-edit.js` (`codeChip` / `openLookup` / `fmtMaster`) + the `erp-edit.html` chip/dropdown
-  styles; server = `server/Handlers.Erp.cs` (`ErpMaster` + the fixed Incoterms-2020 list). Both lifted **verbatim** in
-  behaviour; only the host coupling was stripped.
-- **`master-lookup.js`** (`window.MasterLookup`): `chip()` (the editable `( CODE ) ...` chip → `{el,hintEl,value,changed}`),
-  `open()` (the viewport-pinned + clamped type-ahead dropdown, preserved exactly — `position:fixed`, flips up near the
-  bottom, focuses with `preventScroll`), `httpSearch()` (GET helper), `fmtMaster()`. **Transport-agnostic** — caller
-  supplies `search(kind,q)`, so it works against the real API, a mock, or an in-memory list.
-- **`MasterLookup.cs`** (`MasterLookup.Search(conn, kind, term, isAir)`): the same bounded `TOP 20` LIKE seek (8s),
-  but **scope coupling removed** — no `shipment_alerts`/`ReqState`/`TestJobScope`/`Source`; takes an already-open
-  source-ERP connection and inlines its own raw-ADO reader, so the **only** dependency is `Microsoft.Data.SqlClient`.
-  Auth/scope is the caller's job in the endpoint wrapper (flagged in the README). Verbatim JSON casing via `JsonOpts`.
-- **`master-lookup.css`** (chip + `.lookbox` styles, themed via CSS vars with standalone fallbacks), **`demo.html`**
-  (every chip kind wired to an in-memory mock `search()` — opens in a browser, no backend), **`README.md`** (wiring for
-  both ends + the `position:fixed` rationale). The widget's table/column names match the Swivel `fm3k*` masters — adjust
-  the SQL strings if a target schema differs.
-- **Note:** node/dotnet weren't on this session's PATH, so the automated `node --check` / build weren't run; the code is
-  a faithful lift of already-live code. New files only (`reusable/master-lookup/*`); nothing in the running app changed.
-
-**Previous session (2026-06-16c — UI internationalization (i18n): English + Simplified Chinese + Japanese; plus always-on ERP document upload).**
-Added a lightweight, **no-build-step** localization layer so station staff can use the UI in their own language while
-English stays the source-of-truth and one-click fallback. **Client-side captions only** (data, documents and user
-notes stay as-is); scope = the operator-facing pages (`index.html`/`ops.js`/`login.html`). Verified live on :8079 via
-headless-Edge DevTools (boot + translate + context-key + fallback) and a build.
-- **New `i18n.js`** (shared, loaded before `ops.js`): `tr(en, ctx?)` with **English source string = key** (missing key
-  falls back to English, never blank), `applyDom()` sweeps `data-i18n` / `data-i18n-title` / `-placeholder` /
-  `-aria-label`, `boot(profileLang)` resolves language (**localStorage `lang` -> profile `ME.language` ->
-  `navigator.language` -> en**), `setLang()` persists per-device + reloads. Mirrors the theme-toggle pattern. Context
-  separator is the gettext `0004` written as the **escaped JSON text** (a raw control byte is invalid JSON — that bug
-  was caught and fixed in verification).
-- **Dictionaries** `lang/zh-Hans.json` + `lang/ja.json` (284 keys each, machine-draft for local staff to refine).
-  Served statically — the `Program.cs` static-secret guard was opened for `lang/*.json` (it blocks all other `.json`).
-  Adding a language later = drop `lang/<code>.json` + one line in `SUPPORTED` (+ the per-language font + server
-  allow-list); `norm()` auto-detects any added language from `navigator.language` by primary subtag.
-- **Retrofit:** `data-i18n*` attributes on static markup in `index.html`/`login.html`; `tr(...)` wraps the ~200 dynamic
-  strings in `ops.js`; a header **language picker** (English / 中文 / 日本語). ISO dates and ERP/company data are never
-  translated. `styles.css` gets per-language CJK font stacks (`html[lang="ja"]` JP fonts, `html[lang="zh-Hans"]` SC).
-- **Profile plumbing:** a `language` field flows through `server/Auth.cs` (`UserRec`), `/api-ops/me` (`Program.cs`),
-  admin user CRUD (`server/Handlers.Admin.cs` + the admin Users form `<select>`), `users.example.json`, and
-  `serve-ops.ps1` (parity). Allow-list = `'' | en | zh-Hans | ja`.
-- **UX note on caption length (measured):** Japanese/Chinese captions are *compact* (equal or shorter than English on
-  the long labels; only short labels grow, at tiny absolute widths) -> **no overflow**. Spanish/European would be the
-  expansion case; a one-time layout-robustness pass is the only thing those would need later.
-- **Always-on ERP document upload (operator feedback).** The drawer's **ERP files** upload box was gated on a
-  *clearable milestone* existing, so it hid on shipments (esp. **Air**) with files but no mapped milestone. Now it
-  **always shows when the ERP is live**: server returns **`uploadDoctypes`** (all configured Document-tab types) beside
-  `clearableDoctypes`; the picker lists every type and flags the milestone-clearing ones with a **`*`** (legend
-  `* clears alert` in the caption, so the code reads e.g. `Booking*`, not `Booking (clears alert)`); free-text fallback
-  if none configured. The upload handler already accepted any doctype — clearing stays a bonus. `Handlers.ErpFiles.cs` /
-  `serve-ops.ps1` / `ops.js`.
-- **Files:** new `i18n.js`, `lang/zh-Hans.json`, `lang/ja.json`; edited `index.html` `login.html` `ops.js` `styles.css`
-  `admin-ops.html` `users.example.json` `server/{Auth,Program,Handlers.Admin,Handlers.ErpFiles}.cs` `serve-ops.ps1`.
-  Admin/erp-edit/doc-editor/public bl-review pages are **not yet localized** (English) — the framework is ready for them.
-- **Local IIS deploy rehearsal for `demoerp`.** To make the real deploy "copy the published version", set up the
-  PC as IIS: created `ops.config.demoerp.json` (source ERP = same live `fm3k*`/`dashboard` as network; **opsDb
-  `demoerp` on `localhost\SQLEXPRESS`**, integrated), ran `setup-ops.ps1` + `seed-milestone-config.ps1` (DB + 37
-  defs), `dotnet publish -c Release -o server\publish`. Two new tracked helper scripts: **`deploy-local-iis-demoerp.ps1`**
-  (one-time, **elevated**: enable IIS, ensure ASP.NET Core 10 Hosting Bundle, grant the app-pool identity
-  `db_owner` on `demoerp`, NTFS on `OPS_ROOT`, app pool "No Managed Code" with **pool-level** `OPS_ROOT`/`OPS_CONFIG`
-  env vars so re-publish doesn't clobber them, site on `http://localhost:8080`) and **`redeploy-demoerp.bat`**
-  (`app_offline` -> publish in place -> recycle pool). **Connectivity confirmed** from this PC: VPN route
-  `192.168.0.0/21`, `192.168.5.2` ping + TCP 1433 open. Remaining for the user: run the elevated script (needs
-  admin; this session's shell wasn't), then seed stations (live-ERP reads). Committed `3611878`.
-- **Docs refreshed for all of the above** (this turn): `README.md`, `docs/{TECHNICAL,DEVELOPER,BUSINESS}-GUIDE.md`,
-  `docs/SQL-README.md`, `docs/IIS-DEPLOY.md` — .NET web tier as current, i18n (incl. "how to add a language"),
-  always-on upload, and a real-server **Deploy** section (TECHNICAL-GUIDE §12 + IIS-DEPLOY) with the helper scripts.
-
-**Previous session (2026-06-16b — operator-feedback round on the .NET port: erp-edit dropdown/UX, Sea/Air ERP-edit field-map fixes, team-aware @mentions. Committed `85a6fd5`).**
-All work was on the **live .NET server** (`server/`, port 8079, network config = live `fm3k*` on 192.168.5.2 + local `erpops_net`), driven by hands-on testing of the staff **ERP-edit** editor. Server was rebuilt+restarted on 8079 after each `.cs` change; client files are static (reload only).
-- **erp-edit master-lookup dropdown no longer shoves the form sideways.** `.lookbox` was anchor-relative `position:absolute; left:0`, so a right-side field (controlling cust / liner agent) spilled past the right edge, widened the page and pushed the shipper column off-screen; a naive leftward flip then spilled off the left. Rewritten to **viewport-fixed + clamped** (opens down, flips up near the bottom, clamps left/right, caps height with internal scroll) and focuses the search box with `preventScroll`; `.wrap{overflow-x:clip}` guard. `erp-edit.js` / `erp-edit.html`.
-- **doc-editor: copy-link icon** beside the generated customer review link (`navigator.clipboard` + execCommand fallback, "Copied" flash). `doc-editor.js`.
-- **ERP save "Liner cannot be blank" (500) fixed.** A Sea `/booking/update` carrying `bookingContainers` is rejected unless the booking's Liner = **carrierCode** is set; the patch omitted it so the ERP blanked the carrier. Now **read-merge the EXISTING carrierCode/carrierName** from `/booking/get` when containers are present, **SEA ONLY** (`module=="SEA"`; Air has no container table). Confirmed via `erp_edit_log`: identical edit failed WITH containers, saved WITHOUT. `server/Erp.cs EditPush`.
-- **Liner agent recall (Sea only).** The editor read it only from `blcont.lagent`, blank when a booking has no container line. Now reads **`blcont.lagent` -> `blitem.lagent2` -> `blhead.ilagent`**, then a **"last saved here" overlay** from `erp_edit_log` when the BL read diverges/blank — because the ERP keeps the edited `linerAgentPartyCode` in its booking store and **never echoes it back** (not in `/booking/get`, not in the BL columns), which made operators re-enter it. Labelled "ERP read-back pending". `server/Handlers.ErpEdit.cs`.
-- **Air commodity** now seeds from **`awbdetl.good_desc2`** (detail-line short cargo desc), distinct from Sea's `blitem.commodity`; header `awbhead.commodity` kept as fallback. Air-only branch. `server/Handlers.ErpEdit.cs`.
-- **Team-aware @-mentions.** `/api-ops/roster` now returns **team + primary station** per user; the mention picker labels each colleague `@user - Name - Team / Station` and **matches on name/team/station** (so `@HKG` / `@HK-Import` narrows the ~500-user list). The **Arrangements +reminder** field — previously a plain text box with NO lookup, which is why mentions there "didn't find" anyone — now uses the **same picker** as the note composer. Typing a team is only a search filter (you still pick an individual; no team broadcast was requested). `server/Handlers.Misc.cs` / `ops.js` / `styles.css`.
-- **NEXT CHAT = language / i18n.** The UI strings are **hard-coded English** throughout (`index.html`, `ops.js`, `erp-edit.html`/`erp-edit.js`, `admin-ops.html`, `login.html`, `bl-*`, server-side default strings); there is **no i18n layer** yet. Note the house encoding rule (keep `.ps1` ASCII-only; HTML pages need `<meta charset="utf-8">`; read files with `[IO.File]::ReadAllText`) — relevant once non-ASCII (e.g. Chinese) strings enter.
-
-**Previous session (2026-06-16 — web tier migrated from `serve-ops.ps1` to an ASP.NET Core .NET 10 app in `server/`; all 7 stages built + verified live against demoerp).**
-The single-threaded PowerShell `HttpListener` (`serve-ops.ps1`, ~2,288 lines, 44 routes) is **reimplemented as a
-multi-threaded ASP.NET Core minimal-API** (`server/`, `net10.0`, one NuGet: `Microsoft.Data.SqlClient`, **raw ADO,
-no Dapper**), mirroring the completed sibling migration at `..\erp-dashboard\server`. **Strangler, web tier only** —
-the vanilla-JS client (`index.html`/`ops.js`/`admin-ops.html`/`bl-*`), every `/api-ops/*` + `/api-doc/*` JSON
-contract, the `erpops` schema, and the off-request-path PowerShell jobs (`seed-alerts`/`publish-bookings`/etc.,
-Task Scheduler) are **unchanged**. Plan: `.claude/plans/…single-effervescent-forest.md`.
-- **Why .NET.** The PS server was single-threaded **for correctness, not just speed**: the current user's row-level
-  scope lived in shared `$script:` state (`Cur-Stations`/`Cur-Pairs`/`Test-JobScope`/…), so serving requests
-  concurrently would leak one user's data scope into another's query — an **authorization bypass**. The .NET port
-  resolves scope into a **per-request `ReqState`** (never shared), the structural fix. Multi-customer = **config-driven
-  deploy-per-customer** (one IIS site + `ops.config.<tenant>.json` + own `erpops` DB per customer; nothing hardcoded).
-- **What's in `server/` (~40 `.cs` files, one area per file).** `Config.cs`/`Auth.cs`/`Sql.cs` (raw-ADO `Db.RunQ`/
-  `RunMulti` reader loop, `Packet Size=512`, two-server source-ERP conn, transient retry)/`Filter.cs` (scope/where
-  port)/`Program.cs` (no-store+CORS, ForwardedHeaders, HSTS, **static-secret guard**, `MapData`/`MapAuthed`,
-  **`dbGate` SemaphoreSlim** default 16). Handlers: `Worklist`/`Shipment`/`Notes`/`Tasks`/`Inbound`/`Erp*`/`Doc`/
-  `Public`/`Admin`/`Misc`. Net-new: **`Erp.cs`/`ErpDoc.cs`** (Swivel `HttpClient`: booking get/update, file
-  enquiry/download/upload, event/update, read-merge-write guard, mock mode, per-station `forwarderCode`/owncode
-  routing, all the live-call gotchas ported with comments), **`Pdf.cs`** (headless Edge/Chrome `--print-to-pdf`),
-  **`Doc*.cs`** (draft-doc review + public token endpoints + `varbinary` attachments + SHA-256 tokens).
-- **Faithful-to-PS decisions baked in:** **verbatim JSON casing** (`PropertyNamingPolicy = null` — the client reads
-  exact keys); **no generic cross-user cache** (ops reads are per-scope/write-volatile — only the big `ports` ref read
-  self-caches 15 min); **NLS collation** (`InvariantGlobalization=false` + `System.Globalization.UseNls=true` in the
-  csproj) so culture-aware sorts match PS 5.1 `Sort-Object` exactly (the @-mention roster's punctuation order);
-  **CRLF asymmetry** (seed returns raw ERP `\r\n`, save normalizes to `\n`) preserved; **CHIPS cookie**
-  (`SameSite=None; Secure; Partitioned`) for the cross-site L!NK iframe; source-ERP reads bounded `CommandTimeout=8`.
-- **Verified LIVE end-to-end against demoerp + live `fm3k*` (192.168.5.2) + `erpops_net`** (NOT the frozen fibsbkk —
-  fibsbkk lacks columns fm3k has): **Stage 4b** `erp-edit-save` did a real `/booking/get`→`/booking/update` on
-  `HKG-S-R23474`, read-merge preserved POL/POD/service, **no duplicate created**, then restored. **Stage 5** full
-  draft-doc lifecycle (create→send→public view/submit→approve→agree→issue **with headless-Edge PDF**→amend; attachments
-  up/download). **Stage 6** concurrency isolation — **60 concurrent disjoint-scope requests, 0 cross-scope bleed**.
-  **Stage 7** parity harness **16/16 MATCH** (after the NLS fix caught a real roster sort DIFF) + **route coverage
-  44/44**. All builds 0 errors/0 warnings.
-- **New tracked files:** `server/` (the whole project), **`docs/IIS-DEPLOY.md`** (IIS/ANCM/HTTPS deploy + tenancy),
-  **`docs/CUTOVER.md`** (the strangler flip runbook), **`tools/parity-check.ps1`** (coercion-tolerant JSON differ),
-  **`start-dotnet.bat`**; `.gitignore` adds `server/bin|obj|publish/` + `*.user`. **Run:** from `server/`,
-  `start-dotnet.bat` (or `OPS_CONFIG=ops.config.network.json OPS_HTTP_PORT=8079 dotnet run -c Release`) → Kestrel on
-  the config port; **production = `dotnet publish -c Release` behind IIS** (the app is compiled, unlike the `.ps1`).
-- **Remaining (operational, done in the deployment env — see `docs/CUTOVER.md`):** click-test each screen on the .NET
-  port, stand it up on IIS/HTTPS, point the SWIVEL L!NK iframe URL + `publicBaseUrl` at the new host, retire
-  `serve-ops.ps1` (left in-repo for rollback; off-path PowerShell jobs keep running). The .NET server was left
-  **running live on http://localhost:8079** (auth mode, live demoerp) for hands-on testing at session end.
-
-**Previous session (2026-06-15c — ERP-API routing identity made per-station (not hard-coded) + Save-data-to-ERP works live + login by email + SWIVEL L!NK OAuth seam).**
-Two threads: getting the ERP `/booking/update` + file calls to route to the right office, and reworking sign-in.
-- **ERP routing identity, resolved per station (never hard-coded).** Every Swivel call now carries the right
-  `partyGroupCode` (the company/customer group = **`DEV`** on demoerp; now editable in the admin **ERP API** tab,
-  stored in `erp-api-map.json` via `Set-ErpApiMap`) **and** the right **`forwarderCode` / `bookingParty.forwarderPartyCode`**
-  = the office **owncode** ("where the data goes"). Owncodes are **distinct per office** (verified by SQL on
-  `fm3kco.site`: HKG=`S0001`, SHA=`S0002`, SIN=`S0005`, BKK=`S0009`) — the old static `S0001` silently misrouted
-  every non-HKG station, and the ERP **422s a wrong forwarder code**. New `Resolve-ForwarderCode($station)` →
-  `Get-StationOwnCode` (cached `fm3kco.site` dbname→owncode, map fallback) feeds `/booking/get`, `/booking/update`
-  (`forwarderPartyCode` is **always** injected — required by `NewBooking.bookingParty`), `/file/upload`,
-  `/file/enquiry`, `/file/download`, and `/document/generate`.
-- **Save-data-to-ERP proven LIVE (demoerp `HK012606010`).** The old payload-invariant blocker ("Departure date
-  not active yet, Invalid carrier code") is **GONE** → `bookingUpdateMode` flipped back to **`strict`**.
-  `/booking/update` now **read-merges** the schedule fields (`serviceCode`, `commodity`, POL/POD code+name) from
-  the live `/booking/get` so an edit to one field no longer trips the ERP's `(500) "No such POL in job schedule"`.
-  Document **upload** re-verified live (file lands + appears in `/file/enquiry`). `erp-doc-api.ps1` / `serve-ops.ps1`.
-- **Sign-in is now by EMAIL** (username stays the internal identity — notes/@-mentions/sessions/`erpUsers`
-  unchanged; username still works at login as a fallback so no one is locked out). `email` is required + unique.
-  New `Get-OpsUserByEmail` + a `New-OpsSession` seam shared by every sign-in path. Per-user **`authProvider`**
-  (`local` | `swivel` | `both`). admin-ops.html Users tab: email required, a **Sign-in** column + selector.
-- **SWIVEL L!NK OAuth code-flow seam (scaffolded; env-gated, inert until configured).** `/api-ops/link-oauth-login`
-  redeems the one-time `code` server-side at **`SWIVEL_OAUTH_PROFILE_URL`** (no client_id/secret — the code
-  self-authenticates; for uat add the `SWIVEL_OAUTH_XSYSTEM` → `x-system` header), verifies the echoed `state`,
-  **federates on `profile.email`**, auto-provisions a default-role user if none, then mints our own session.
-  Frontend `linkBoot()` (`ops.js`) reads `?mode&site#code&state` from the L!NK iframe URL, redeems, scrubs the
-  fragment. Profile endpoint = **`https://auth.swivelsoftware.asia/api/oauth/profile`** (the auth host, not the
-  ERP host). Verified locally end-to-end with a mock profile server (gating, state-mismatch 401, email match,
-  auto-provision). `swivelLink` config block; `/api-ops/config` exposes `linkEnabled`.
-- Two logins set up in `users.json`: `mandy` (admin) email → `mandy.mak@swivelsoftware.com`; new `support`
-  (manager, HKG) email `support@swivelsoftware.com`.
-- Files: `serve-ops.ps1` `erp-doc-api.ps1` `erp-api-map.json` `admin-ops.html` `login.html` `ops.js`
-  `users.example.json` `ops.config.example.json`. ERP-routing round committed `e4800b2`.
-
-**Previous session (2026-06-15b — clear a milestone by uploading the missing document to the ERP + admin "Documents" tab to maintain the doctype↔milestone map. Committed `6a87a0a`).**
-Operator-feedback round on milestone clearing: instead of only a manual Tick, an operator can now **upload the missing document straight to the ERP** and have the alert go green.
-- **Upload-to-clear (the feature).** From the worklist drawer's **ERP files** panel: pick a document type + file → base64 in the browser → `POST /api-ops/erp-file-upload` (`Handle-ErpFileUpload`) → live Swivel **`/file/upload`** via the new standalone **`Invoke-ErpFileUpload`** (extracted from `Invoke-ErpDocIssue`; issue flow refactored to reuse it). **Nothing stored locally; the successful upload IS the proof** — on success `Close-MilestonesFor` flips the matching milestone(s) done (same checklist/rollup write-path as the manual Tick, via the extracted `Update-ChecklistRollup`). We do **not** wait for a re-seed (the evaluator reads `dbo.PIC`, a different store/code-space than `/file/upload`). `erp-doc-api.ps1` / `serve-ops.ps1` / `ops.js` / `styles.css`.
-- **Derived, not hard-coded.** The doctype→milestone link is built by **`Get-MilestoneDoctypeMap`** (cached `$script:MsDoctypeMap`) from **`milestone_evidence_map`**, reset on any admin milestone/evidence edit — so admin changes flow through with no restart and no per-request parse. `Handle-ErpFiles` returns `clearableDoctypes` (the types that would clear an alert on that shipment) to populate the upload dropdown.
-- **Admin "Documents" tab (new, 3rd tab in `admin-ops.html`).** CRUD over the `milestone_evidence_map` `pic_doctype` rows: **Document type (= ERP Document Type code, must match the ERP exactly)**, **Clears milestone** (code+bound dropdown), Module (SEA/AIR/any), Active. Backed by admin-gated **`/api-ops/admin/evidence`** (GET list + milestone_def list / POST upsert by `id`) + **`/admin/evidence-delete`**; both reset the cached map. This is the single source of truth for the upload dropdown — keep it matched to the ERP.
-- **Doctype = the ERP code.** The document type string is sent **verbatim** as `/file/upload`'s `documentTypeCode`; the redundant `evidenceDocTypeCode` indirection was removed. **Renamed the M1 doctype "Booking Photo" → "BOOKING"** (the real ERP code, seen live in `/file/enquiry`) in the demoerp data AND `seed-milestone-config.ps1`.
-- **Live-verified on demoerp:** `/file/upload` accepts all four evidence doctypes (`BOOKING`/`HBL`/`INVOICE`/`Arrival Notice`) **verbatim** and they appear in `/file/enquiry`; derived map + admin CRUD SQL correct; routes auth-gated (401 unauth); syntax clean (PSParser + `node --check` on the admin inline JS). **Still UI-click-untested** (needs an admin login, which the agent can't drive): verify the Documents tab + the drawer Upload flow turning M6 green. **Note:** left 4 probe test files (`ct-test-*.pdf` / `control-tower-test.pdf`, remark "safe to delete") on demo booking `HK012606010` — no `/file/delete` is built to remove them.
-- New end-user reference **`milestone.md`** (tracked): the full alert matrix (what data/file each step needs) + the upload-to-clear flow.
-- Files: `erp-doc-api.ps1` `serve-ops.ps1` `ops.js` `styles.css` `admin-ops.html` `seed-milestone-config.ps1` `milestone.md`. **Committed `6a87a0a`.**
-
-**Previous session (2026-06-15 — house-level ERP-update key; filter declutter (Alerts/My-notes icons after POD); Vessel/Flight search; Air-Export flight number from the MASTER record).**
-Operator-feedback round, triggered by checking job `SEHKG260100001` (which showed "no ERP data") and traced to the non-uniqueness of the ERP job number.
-- **ERP-update key is now house-level, never the (one-to-many) `jobn`.** A single ERP `jobn` covers many houses (e.g. `SEHKG260100001` = the house `HK01SE6010001` **and** a master/console leg `…M01`), so keying `/booking/update` on it is ambiguous. `Save-ErpEdit` now derives the booking key from the freshly-read seed, mode-aware: **Sea `sono` → HBL (`blno`) → `jobn`** ; **Air `booking` → HAWB (`hawb`) → MAWB (`mawb`) → `jobn`** (the field name itself differs by mode — Sea calls it `sono`, Air calls it `booking`). Reads were already correct (keyed on the unique `erp_ref`); this fixes the **write** when `sono` is blank. `serve-ops.ps1`.
-- **Filter declutter.** **Alerts** and **My notes** moved to the **end of the filter row (after POD)** and reduced to icons — **⚠** (Alerts) / **💬** (My notes) — full text kept in the tooltip + `aria-label`; new `.iconbtn` style. `index.html` / `styles.css` (toggle wiring in `ops.js` unchanged — it keys off the element id).
-- **Search by Vessel / Flight.** New search-field option **"Vessel / Flight"** (`conv`) → matches `shipment_alerts.vessel_voyage`, the one column that holds the **sea vessel/voyage AND the air flight no**, so it serves both modes. Like the other identifier searches it ignores the date window + ownership lens. `index.html` / `ops.js` / `serve-ops.ps1`.
-- **Air-Export flight number — from the MASTER record (key finding).** Air Import showed the flight but Export often went blank. Root cause: for a **consolidated** export the house (`awb_type H/S`) has an empty `flight1` — the flight lives on the **master** (`awb_type M/B`) row that owns the MAWB (verified: house `DT-35005` blank → master `235-63057046` = `TK071`). And `carr` is **always empty** on this ERP (airline is in `rout_by_1`). Since the worklist already groups Air by MAWB, the conveyance is now **house `flight1` → master `flight1` (looked up by MAWB) → blank** — the real flight number the operator needs, never the bare airline code ("CX" can't say which of many daily CX flights). `$assigned` (space-confirmed) is now flight-based, matching milestone A2. `seed-alerts.ps1` (added a chunked `masterFltByMawb` precompute mirroring the `veslmstr` seek). Existing `erpops_net` data recomputed in place: Air **0** airline-code-only rows; Export 199/299 + Import 150/154 now carry a real flight no (remaining blanks have no flight on house **or** master yet).
-- Files: `serve-ops.ps1` `seed-alerts.ps1` `index.html` `ops.js` `styles.css`.
-
-**Previous session (2026-06-14b — Edit-ERP-data UX rename + pen shortcut + contact fields; Air IATA flight legs + corrected cargo cols; Sea blitem/blcont field map; VPN connect-timeout fix. Committed `4b43832`).**
-Operator-feedback round on the ERP data editor, every mapping reconciled against live `fm3khkg` SQL + the Swivel `3rd-erpapi.json`.
-- **Rename + UX.** "Correct ERP data" -> **"Edit ERP data"** everywhere ("correct" read as negative); dropped the description blurb;
-  added a **pen (edit) shortcut** at the end of the drawer's first row (ETD/ETA/ATD | auto/manual) that opens the editor; the
-  editor header now shows the **service in bold** (e.g. "Sea Import") instead of the static title. Removed the container
-  booking-stage note.
-- **Party contacts.** Added editable **Contact name + Contact email** for shipper & consignee
-  (`shipper/consigneePartyContactName/Email`), under phone/tax.
-- **Air (verified live on HAWB `HKGAE6060004` / job `HKG-A-R62885`).** Carrier from **`rout_by_1`** (`carr` is empty). New
-  compact **"Flights / IATA legs"** block tucked under **Job No.** (small font): `flight1/flight2/flight3` with discharges
-  `to1`(display-only, =pod)/`deli`/`to3` - legs 2-3 push via **`flexData`** (`2nd/3rdLegFlightNumber` +
-  `2nd/3rdLegPortOfDischargeCode`, verified in the spec); leg 1 = `voyageFlightNumber`. **Chargeable** weight
-  (`ttl_cwt` -> `chargeableWeight`) **replaces Wt unit**; **qty=`t_rece_qty`, gross=`ttl_gwt`, cbm=`t_rece_cbm`**; marks/desc
-  seeded from **`awbdetl.mark2`/`desc2`** (header `crmarking`/`wdesc` are empty). Standard **4-chip routing row restored**
-  (Place of Receipt | Port of Loading | Port of Discharge | Final Destination) - the simple route view most shipments use.
-- **Sea (verified live on sono `HK012606010` / ref 24625).** Carrier from **`iliner`**; **liner agent from `blcont.lagent`**
-  (party code on the container line) **resolved to a company name via `custsub`** (e.g. A0002 -> APL CO PTE LTD); Final
-  Destination **`dest` -> `deli` (Place of Delivery) fallback** when blank; **commodity=`blitem.commodity`** (no commodity
-  column in `blhead`), **container counts 20'/40'/HQ/Other = `blitem.c20`/`c40`/`cq`/`c45`**, marks=`blitem.mark2`(+`mark3`),
-  desc=`blitem.good_desc1` else `desc2`(+`desc3`); **Wt unit defaults to KGS** when blank. All line-level fields seeded
-  server-side from `blitem`/`blcont` (blh=ref, first line), mirroring the Air `awbdetl` pattern.
-- **Plumbing.** `Build-ErpPatchPayload` gains **`flexData` nesting** (writeKey `flexData.<sub>`); `Handle-ErpEditSeed` gains
-  the Air `awbdetl` + Sea `blitem`/`blcont` detail-line seeding. **VPN fix:** bumped the four source-ERP connections'
-  **`Connect Timeout` 5 -> 15s** - the VPN's SSL pre-login handshake runs ~4s and was intermittently timing out the
-  erp-edit seed / master-search / detail / doc-seed (`serve-ops.ps1`).
-- Files: `erp-edit-fields.json` `erp-edit.html` `erp-edit.js` `ops.js` `serve-ops.ps1` `erp-doc-api.ps1`. **Committed `4b43832`.**
-
-**Previous session (2026-06-14 — staff-internal ERP data-correction editor: fix bad source data, push only changed fields to `/booking/update`).**
-The app *read* ERP data and trusted it; operators routinely spot bad source data they cannot fix from the ERP UI
-(most importantly **`DUMMY` party codes** and **`ZZZ`/`ZZZZZ` incoterm/port codes** that silently corrupt reports,
-but also wrong addresses, dates, carrier, container counts). New **"Correct ERP data"** pop-out, opened from the
-worklist drawer (`erpEditPanel` → `erp-edit.html?job=<job_no>`). It seeds each field's current ERP value, lets the
-operator fix it (master lookup or free type), and pushes **only the changed fields** to Swivel `/booking/update`,
-with a full audit row in the new **`erp_edit_log`** table. New files: `erp-edit.html` / `erp-edit.js` /
-`erp-edit-fields.json` (field dictionary). Reuses the draft-HBL ERP machinery (mock mode, read-merge-write existence
-guard, best-effort/strict). Staff-internal — **no customer-approval loop** (unlike the draft-HBL agree flow).
-- **Laid out like the bill (Sea HBL / Air AWB), verified by headless-Edge screenshots both modes.** Two-column
-  upper region: parties stack on the **left** (shipper / consignee / notify / delivery agent, each a combined box —
-  **line 1 = name, the rest = address**); the **right** holds References + Stakeholders, the **SERVICE DETAIL**
-  4-column grid, and an **Internal Remark** box. Below: a routing row (Place of Receipt | Port of Loading | Port of
-  Discharge | Final Destination), a one-line **Cargo Information** row, **Marks | Description** side by side, and the
-  container table. Each master code is a chip **in the caption** — `SHIPPER ( DUMMY )` — click **`...`** to search the
-  master or type it; resolved name shows as **`NAME (CODE) - city, country`** (custsub `city`/`country`).
-- **Field map verified on live `fm3khkg`; ALL write keys verified against the Swivel OpenAPI spec**
-  (`3rd-erpapi.json`, fetched as raw JSON, parsed with node — PS `ConvertFrom-Json` chokes on its dup case-only keys).
-  Editable & pushable: the 6 party codes + name/address/phone/tax (`bookingParty.*`), `incoTermsCode`, `serviceCode`,
-  `placeOfReceiptCode`/`portOfLoadingCode`/`portOfDischargeCode`/`finalDestinationCode`, `carrierCode`/`carrierName`,
-  PO (→ `bookingReference[]` `{refName:'PO'}`), **ETD/ETA + flight time folded into one `departureDateEstimated`
-  datetime** (`<date>T<hh:mm>` — the API has no separate time field), `cargoReady/ReceiptDateEstimated`,
-  `telexRelease`/`isDirect`/`dangerousGood` (real JSON booleans), `divisionCode`/`team`/`picId`/`picEmail`,
-  `commodity` + `quantity`/`quantityUnit`/`grossWeight`/`weightUnit`/`cbm` (real numbers), `shipMarks`/
-  `goodsDescription`, `remark`, `bookingContainers[]` (a **type+qty row is valid with no container number** — for
-  booking-stage counts), and the four sea aggregates `container20`/`container40`/`containerHQ`/`containerOthers`.
-- **Read columns derived bound-aware** where the ERP splits by leg: ETD/ETA = `departure2/arrival2` (Export) /
-  `departure1/arrival1` (Import), Air ETD = `f_date1`; vessel/voyage = `vessel_2/voyage_2` (Export) /
-  `vessel_1/voyage_1` (Import) with the code resolved to a name via `veslmstr.short_name`. Numbers strip trailing
-  zeros, bits → `true`/`false`, datetimes → ISO.
-- **Hard API limits (surfaced, not faked):** **trucker / customs broker / warehouse have NO field in
-  `/booking/update`** (only 8 party types exist) → dropped from the UI; **No. of originals** and **PIC name** have no
-  write key → removed (PIC corrected via `picId`/`picEmail`). **Carrier + the estimated dates push best-effort** (the
-  carrier master rejects raw ERP codes; demoerp still rejects date-touching updates — open Swivel ticket) and any
-  rejection is captured verbatim in `erp_edit_log`.
-- Server: `Handle-ErpEditSeed` / `Handle-ErpMasterSearch` (live `TOP 20` LIKE over custsub/portmstr/servmstr/
-  linermstr + fixed Incoterms-2020 list) / `Save-ErpEdit` (re-reads the live ERP for the authoritative *before*,
-  diffs via `Doc-Changed`, blocks read-only edits) + routes `/api-ops/erp-edit`, `/api-ops/erp-master`,
-  `/api-ops/erp-edit-save` (`serve-ops.ps1`). `Build-ErpPatchPayload` + `Invoke-ErpEditPush` (`erp-doc-api.ps1`).
-  `erp_edit_log` table added idempotently to `setup-ops.ps1`. Verified end-to-end: seed SELECT validity (Sea+Air,
-  no invalid columns), payload shape (party nesting, bool/number/date/bookingReference/container array, ETD+time
-  fold), and the two-mode screenshots.
-- Committed: `f2a1bf2`/`74e3e17`/`9aadbe1` (the first three editor rounds); the HBL-grid 2-column redesign, the
-  routing/cargo/marks/container-count/vessel/flight rounds, and the trucker-removal / picEmail / note cleanup round
-  were committed in **`4b43832`** (alongside the 2026-06-14b work above).
-
-**Previous session (2026-06-13 — booking-stage identity fix + UI declutter/theme/mobile + draft speed/UX + ERP-files browse & download).**
-- **Early-booking identity fix (the `job_no` collapse).** The listener keyed `shipment_alerts` on the raw ERP
-  `jobn`, which is blank at booking stage AND **non-unique once issued** (one job number can cover many house
-  bills — `SEHKG220800007` = **200** HBLs), so distinct shipments collapsed onto one card (HKG Sea stored only
-  ~30 of 120). Fixed by keying identity on the **immutable ERP `ref`**: `job_no` = synthetic `<STN>-<S|A>-R<ref>`;
-  added column **`erp_job_no`** (raw human jobn, for display/search). Card headline now leads with the
-  per-shipment id (house bill → booking → job no), never the synthetic key; a same-`ref` cleanup DELETE absorbs
-  the booking→job transition; unbooked-export bucket relabelled "Awaiting booking / space". **Full reseed of all
-  12 stations → 1200 rows, 1200 distinct, 0 collapse, 344 booking-stage shipments now visible.** Retrieval
-  (`/api-ops/erp-detail`, draft seed) and the future delta listener already key on `erp_ref`, so this is the
-  correct production foundation. **Existing notes keyed by the old jobn-style keys detach** (user chose to
-  re-make rather than migrate). `seed-alerts.ps1`/`setup-ops.ps1`/`serve-ops.ps1`/`ops.js`.
-- **UI declutter + light/dark + mobile.** Stripped decorative emoji (kept the Sea/Air toggle, R/A/G colour, and
-  control glyphs ✕ ✓ ↻ ▾); **light is now the default palette with dark via `prefers-color-scheme` + an
-  Auto/Light/Dark header toggle** (remembered, flash-free boot script); responsive `@media` (≤860/≤560: side
-  panel stacks, filters go fluid, drawer full-screen, header subtitle hidden). `styles.css`/`index.html`/`login.html`/`admin-ops.html`/`ops.js`.
-- **Unified search + quick filters.** The filter box gained a **field selector** (Company type-ahead | Job No |
-  Booking/SO | PO | House B/L | Master B/L). Identifier search hits the server (`ref`/`refField`) and **ignores
-  the date window AND the ownership lens** (still station/mode-scoped) so any file is findable by its number —
-  "Job No" matches both the synthetic key and `erp_job_no`. Added **"My notes"** (shipments with an OPEN note of
-  mine, any date — clears when the note is marked done) and **"Alerts"** (R/A only) toggles; removed the
-  redundant "All dates" button; added a **"Hide filters"** toggle that collapses the whole view-control row
-  (saves mobile space). Restored the My-Tasks card icons; the red `R` severity badge is bolder.
-- **Draft create — speed + UX.** Cached the own-office "issuing/forwarding agent" per station
-  (`Get-OwnOfficeAgent`, `$script:OwnAgentByDb`): it was 1–3 ERP round-trips recomputed on **every** draft
-  (incl. a `blhead … ORDER BY ref DESC` scan, since the `S0001` own-code isn't in `custsub`) — now resolved once
-  per station/run. The **+ Create draft** button now opens the editor tab **immediately** on click (user
-  gesture, so the browser doesn't block it) showing a "preparing…" placeholder, then navigates it to the editor
-  when ready, with honest "Creating… / Draft ready" button feedback (the old code called `window.open` *after*
-  the await → silently popup-blocked → the operator saw a spinner forever). `serve-ops.ps1`/`ops.js`.
-- **ERP files browse panel (new).** A drawer panel lists the files the ERP already holds for a shipment
-  (document type · file name · remark), via new `Invoke-ErpFileEnquiry` (`erp-doc-api.ps1`) + session-gated
-  `/api-ops/erp-files` (`Handle-ErpFiles`, Test-JobScope) + `erpFilesPanel` (`ops.js`). **KEY FINDING (resolves
-  open item c):** `/file/enquiry` matches on **`3rdBookingID` = our booking number (`sono`)** — `bookingNo`/`houseNo`
-  return "No corresponding data". It tries `3rdBookingID` first, then `bookingNo`, across the identifier
-  candidates in priority order (Sea: `sono`→HBL ; Air: HAWB→booking→MAWB) and returns the first hit. Works the
-  **same for Air** (`moduleTypeCode=AIR`, HAWB→booking→MAWB) as Sea. **Live-verified** on demoerp (2 files for
-  booking `HK012606010`). The internal `3rdBookingID` detail is **no longer shown** in the panel heading (now
-  just `ERP files - <kind> <id>`), and the ERP's `(422) No corresponding data` reply is treated as the empty
-  state ("No files in the ERP for this booking") rather than surfaced as an error.
-- **ERP file download (new).** Each listed file now has a **Download** button. `Invoke-ErpFileDownload`
-  (`erp-doc-api.ps1`) POSTs `/file/download` (same candidate/field order + optional `fileName`), decodes the
-  returned `base64`; session-gated `/api-ops/erp-file-download` (`Handle-ErpFileDownload`, Test-JobScope) infers
-  the Content-Type from the extension and `Send-Blob`s the bytes; `downloadErpFile` (`ops.js`) fetches it through
-  the authed `fetch` (carries cookie/`X-Ops-User` in either auth mode) and triggers a browser download with the
-  real filename. Upload/delete still deferred.
-
-**Previous session (2026-06-12d — Neutral Air Waybill + verified Air field map + LIVE ERP issue + auto-PDF + docs).**
-Driven by the user's head-to-toe test of the **Draft HAWB** review on demoerp booking `HKGAE6060004`
-(job `AEHKG260600006`, ref 62885, HKG->SEL->CHI->LAX). All Air mappings reconciled against live `fm3khkg`
-`awbhead`/`awbdetl`.
-- **HAWB renders as the IATA Neutral Air Waybill** (dedicated layout in `bl-form.js`; the ocean HBL keeps the
-  generic grid). Dynamic **Marks <-> Nature divider** (`goods_split`, draggable, persisted + printed),
-  prepaid/collect **charges summary**, the routing strip, and a **Dimensions** box. Rate line single.
-- **Verified Air field map** (see [docs/SQL-README.md](docs/SQL-README.md) §4): Airport of Destination =
-  `dest_name` (final, not `pod_name`); routing legs **`to1` / `deli` / `to3`** (`deli` = the MIDDLE leg, e.g.
-  CHI); carriers from `carr`|flight-prefix; pieces `t_book_qty`->`t_rece_qty`; kg/lb from `wgt_unit`; Marks =
-  `awbdetl.mark2`; goods = `awbdetl.desc2` (full text, NOT `good_desc2`/`commodity`); Dimensions =
-  `awbdetl.dimension` (gated by `not_show_dim`); Handling = `awbhead.handling`; Accounting = freight term +
-  Destination Agent (`agnt_*`); Notify own box; Issuing Carrier's Agent = own office; WT/VAL & Other PPD/COLL
-  `X` from `frt_terms`/`oth_terms`; declared values + insurance.
-- **Detail-drawer route leg order fixed** (`Get-AirRoutePoints` in `ops-eval.ps1`): pol -> to1 -> **deli** ->
-  to3/dest, so the middle leg (CHI) shows in sequence.
-- **Performance fix** (`Get-ErpCols`): dropped the column-metadata probe. `INFORMATION_SCHEMA`/`sys.columns`
-  for the read-only login on the 465-col `awbhead` runs 40-70s and drops the connection, which aborted the
-  whole ERP seed (drafts came back snapshot-only AND slow). Now trusts the curated want-list. Draft seed
-  ~11-14s+fail -> **~4s**.
-- **LIVE ERP issue proven.** `documentTypeCode` -> **`BL_REVIEW`** (HBL+HAWB) in `erp-api-map.json`; event
-  already `transportBill`/"Transport Bill Confirm". The agreed PDF is now **auto-generated** on Issue
-  (`Doc-RenderPdf`/`Resolve-PdfEngine` -> headless Edge/Chrome print-to-PDF of the offline bill via
-  `BLForm.setDict`; verified 73 KB valid PDF in ~3s). Root cause of "nothing in ERP": **mock mode** - the
-  demoerp config had no `erpApi` block. Added `erpApi` (baseUrl + bearer token) to `ops.config.demoerp.json`;
-  token **verified live** via read-only `/booking/get` (booking HKG2606004 found). **The two buttons:**
-  *Agree - save data to ERP* = `/booking/update` (data); *Issue official document* = `/file/upload`
-  (BL_REVIEW PDF) + `/event/update` (Transport Bill Confirm). To re-issue the mock-issued `AEHKG260600006`,
-  Amend it first.
-- **My-Tasks draft-review alerts** (`Get-DraftAlerts`): drafts in `CUSTOMER_SUBMITTED`/`CUSTOMER_APPROVED`
-  surface in the inbox (with the customer's message), count toward the badge, self-clearing, scoped.
-- **Docs** created under `docs/` (BUSINESS/TECHNICAL/DEVELOPER/SQL-README), mirroring erp-dashboard's structure.
-- Committed: `7c86958` (HAWB layout + field map + perf + alerts). Uncommitted: the deli/desc2/handling
-  follow-ups, auto-PDF, `BL_REVIEW`, docs, and the gitignored `ops.config.demoerp.json erpApi` token.
-
-**Previous session (2026-06-12c — worklist "this week's work" window + HBL seed completion + Qty column).**
-Driven by the user's first head-to-toe run on a fresh demoerp booking (12073 -> job `SEHKG260600006`).
-(1) **Worklist date window redefined**: a row now matches when ANY of `sort_key` (moving), `next_due`
-(work due in the window), or `anchor_date` (created in the window) hits it, plus work **overdue up to 30
-days** always shows. The 30-day bound matters: the live DB held 418/622 active rows with overdue
-`next_due` (zombie jobs never closed in the ERP, some since 2018) that would have drowned the week view -
-older overdue appears only under "All dates". New **🆕 NEW chip** on rows created in the last 7 days;
-date-box/This-week tooltips + empty-state text explain the semantics. (2) **Two real bugs**:
-`seed-alerts.ps1` compared `crtdate<=@a` against a midnight date string, so bookings created TODAY never
-seeded (now `crtdate<DATEADD(day,1,@a)`); `ops-eval.ps1` derived milestone dues from the ERP's 1900-01-01
-"empty date" producing permanently-overdue junk (dates <1990 now treated as no-date; stored junk cleared).
-(3) **HBL seed completion** (every box reconciled against `fm3khkg` SQL on job `SEHKG260600006`): party
-boxes now carry name + FULL address blocks (`shpr_/cgne_/not1_` name+add1..5); **delivery agent** from the
-`agnt_*` block with `custsub` lookup by `agn2_code` as fallback; **forwarding agent = own office** via
-`fm3kco.site` dbname->owncode (HK01 -> fm3khkg -> S0001) then custsub, falling back to the latest blhead
-whose agn2 IS the own office (the S-codes have no reachable custsub master); plus `carr_name`
-(pre-carriage), `rece_name`, `issu_at`, `payable_at`; **marks finally seed** from `blitem.mark2(+mark3)`
-ntext and description falls back `good_desc1 -> desc2(+desc3)` (good_desc1 is often blank). HAWB gets the
-same party/address + `issu_at` treatment. Bug fixed en route: `Doc-FieldDefs` called without its type arg
-nulled the whole enrichment. (4) **Marks overflow / move-to-attachment**: when the ERP text overflows its
-box, marks+description move TOGETHER to rider page 1 with the FULL text - the Description box prints
-`AS PER ATTACHED SHEET`, the Marks box goes BLANK (pointer must not print twice). The editor's "+ Add
-attachment / rider page" button MOVES the current box text onto page 1 the same way (dictionary `moveFrom`
-map), and **removing that page restores the text** into still-blank/pointer boxes. (5) **Qty column
-(packing-list style)**: new `qty_detail` box between Marks and Description on the bill and a matching
-`qty` column on every rider page; all three columns render in the same monospace font/line-height so line
-N aligns on screen and print. The ERP push (`Build-MarksGoods` + `Merge-QtyDesc` in erp-doc-api.ps1)
-assembles `shipMarks`/`goodsDescription` from the real boxes (pointer text skipped) + all rider pages,
-folding the qty column into each description line with padded alignment
-("12 ROLLS KNITTED MATERIAL" / "         100% COTTON").
-
-**Previous session (2026-06-12b — HBL refinements: containers table, rider pages, file attachments, save-on-Agree).**
-Operator-feedback round on the doc-review feature, all mock-verified on fibsbkk (live demoerp retest pending
-the Swivel /booking/update fix). (1) **Seeding**: `num_originals` from `blhead.no_orig` with the **telex
-guardrail** (telex_rel set -> '0'); `freight_terms` box renders `blhead.frt_terms` as "FREIGHT PREPAID" /
-"FREIGHT COLLECT (FOB)" and is **presentation-only** - `incoTermsCode`/`freightTermsCode` are never derived
-from it, only echoed from the live booking at push time (erasing the incoterm on the printout cannot touch
-the ERP). (2) **Structured fields** in `doc_version.fields`: dictionary kinds `table` (HBL `containers`:
-container/seal/type/qty/unit/kgs/cbm, <=50 rows, seeded from `blcont`, replaces the old `container_info`
-text box) and `riders` (`rider_pages`: marks|description attachment pages, printed page-per-page, A4/F4
-toggle via `BLForm.setPrintSize`). Both editable by staff AND customer, cell-level diff highlights,
-canonical serialization keeps "no changes to save" exact. Pushed as API `bookingContainers`
-(containerNo/sealNo/containerTypeCode/quantity - the API item has NO weight/cbm). (3) **Attachment files**
-(`doc_attachment` table, varbinary): staff + customer upload (customer only while SENT, max 5MB,
-pdf/png/jpeg with magic-byte check, 7MB body cap, customer can delete only own files), served via
-`Send-Blob`; ALL live files go to ERP `/file/upload` at issue. (4) **ERP call split**: staff **Agree** now
-runs `/booking/get` read-merge + `/booking/update` (never blocks the agree; result logged as
-`erp_booking_saved`/`erp_error`); **Issue** = per-file `/file/upload` + `/event/update` transportBill
-(+ optional generate). `commodity` truncated to **21** (spec maxLength). Two PS 5.1 traps fixed:
-`RunQ` param binding used a `$(if...)` subexpression that ENUMERATED `byte[]` into Object[] ("No mapping
-exists..."); `Get-ErpCols` cache key now includes the want-list (erp-detail vs doc-seed asked different
-columns of the same table and poisoned each other's cache).
-
-**Previous session (2026-06-12 — draft HBL/HAWB customer review loop).** Built the full
-draft-document agreement workflow (plan: `.claude/plans/` "draft HBL/HAWB customer review"): staff create a
-draft House BL / HAWB seeded from the shipment snapshot + a bounded ERP read (`Doc-ErpSeed`, same pattern as
-erp-detail), send the customer a **tokenized link** (`/bl-review/<token>`, no login, SHA-256 at rest, 14d
-expiry, revoke-on-resend/issue), the customer **edits the bill on screen** (`bl-review.html` + shared
-`bl-form.js` renderer, layout from `doc-fields.json`), staff review a **field-by-field diff**
-(`doc-editor.html`), iterate versions until **approve → agree → issue** via `erp-doc-api.ps1`
-(mapped to the **Swivel 3rd-party ERP API**, see below; mock mode writes `erp-mock/issue-<id>.json`); after issue,
-edits require an **amendment** (`amend_count`, fee flagged). 4 new erpops tables (`doc_draft`, `doc_version`,
-`doc_review_token`, `doc_event_log` — append-only audit with IP), staff endpoints `/api-ops/doc*`, public
-endpoints `/api-doc/*` (token-shape regex before any SQL, 256KB body cap, single generic failure message),
-drawer **📄 Draft review** panel in ops.js. **Proven end-to-end** on local fibsbkk data: Sea
-`SIBKK211000012` (full lifecycle incl. the MADE IN TAIWAN → "MADE IN TAIWAN, CHINA" correction cycle, mock
-issue, amendment; event log + demo doc left in local erpops) and Air `AIBKK210200001`; every seeded field
-reconciled against direct `blhead`/`blcont`/`blitem` / `awbhead`/`awbdetl` SQL.
-
-**ERP integration = the Swivel 3rd-party ERP API** (docs: documents.swivelsoftware.com/3rd-erpapi.html, spec
-`3rd-erpapi.json`, base `https://demoerp-api.swivelsoftware.com`, **bearer token** from Swivel). Issue runs
-4 calls in `erp-doc-api.ps1`: **`/booking/update`** (agreed data: `bookingParty` flat keys
-`shipperPartyName/Address`, `consigneePartyName/Address`, `notifyPartyParty*` = the address blocks;
-`shipMarks`, `goodsDescription`, vessel/voyage, `incoTermsCode`, POL/POD code+name - both REQUIRED, plus
-`partyGroupCode`/`serviceCode`/`commodity`), optional **`/file/upload`** (operator-attached agreed PDF,
-base64, `documentTypeCode`), **`/event/update`** (`status: transportBill` = "Transport Bill Confirm",
-`3rdBookingID`=doc guid), optional **`/document/generate`**. Required fields are validated before any real
-call; party boxes split first-line=name / rest=address; official `erp_doc_no` = the agreed house number.
-Deployment codes live in **`erp-api-map.json`** (tracked: `partyGroupCode`, `forwarderCode`,
-`serviceCodeDefault`, event + document type codes, `bookingOverrides` field:/sa:/const: syntax); the secret
-token in `ops.config.json erpApi.token` (gitignored). Mock payloads verified shape-exact against the spec.
-
-**LIVE full round PROVEN on demoerp (2026-06-12).** Token in `ops.config.network.json` (works; code strips a
-pasted `Bearer ` prefix). Test booking **HK012606010** (job `SEHKG260600005`, HBL `HKGSE6060001`,
-SEMARANG->TACOMA): draft seeded live from `fm3khkg`, full customer round (incl. the MADE IN TAIWAN ->
-"MADE IN TAIWAN, CHINA" correction), **ISSUED for real**: `/file/upload` ok (agreed PDF in ERP files),
-`/event/update` ok (`transportBill` stamped). Live-call findings baked into `erp-doc-api.ps1`:
-(1) `Invoke-RestMethod` returns a JSON array as ONE object - assign-then-`@()` (same family as the
-ConvertFrom-Json trap); (2) do NOT send `carrierCode`/`vesselName` on update (carrier master rejects raw
-codes; vessel triggers schedule rebuild); (3) **`3rdBookingID` is a LOOKUP key** (Shipment Reference ID) -
-sending our doc guid made upload/event 422 ("No corresponding data"-style), key by `houseNo`+`bookingNo`
-instead; (4) `ErpErr` rewinds the consumed response stream so the ERP's real validation text reaches the
-event log; (5) read-merge-write: `/booking/get` (POST works) before update - abort if booking absent (update
-would CREATE one), reuse live `serviceCode`.
-**Raise with Swivel:** (a) `/booking/update` on demoerp rejects EVERY payload with
-"Departure date not active yet, Invalid carrier code" - payload-invariant (fails even with required-only
-fields, master-listed carrier APLU, future ETD+ETA) -> `bookingUpdateMode: best-effort` in
-`erp-api-map.json` logs the rejection and continues with upload+event; flip to `strict` once fixed.
-(b) `/event/get` returns a server SQL error ("Ambiguous column name 'seq'"). (c) **RESOLVED 2026-06-13:**
-`/file/enquiry` (and `/file/download`) key on **`3rdBookingID`** (= our booking number / `sono`), NOT
-`bookingNo`/`houseNo` (those return "No corresponding data"); used by the new ERP-files browse panel.
-
-**Open items:** Swivel answers above, public exposure (reverse proxy for `/bl-review/*` + `/api-doc/*` only)
-+ `publicBaseUrl` (configurable, never hard-coded), optional SMTP (today: copy link / mailto prefill).
-
-**Previous session (2026-06-11b — demoerp connected + Sea worklist fixed).** Brought up the **demoerp**
-environment end-to-end and fixed the all-Red Sea worklist. Commits on `main`: **`90bc63b`** (Sea fix) + **`734b7f1`**
-(gitignore `.claude/`).
-
-- **demoerp connected (two-server).** Auto-discovered `192.168.5.2`: the SQL login **`dashboard`** can read **only the
-  fm3k group** (15 DBs); every `pgs*` DB is **denied**. So **demoerp = the fm3k group** (12 stations + `fm3kco` master)
-  — the same group as the old "Network" env. The login **can't `CREATE DATABASE`** there → **two-server mode**: read
-  fm3k* remotely, write the ops DB **`demoerp`** locally on **`localhost\SQLEXPRESS`** (SQL Server 2025). Rewrote the
-  gitignored **`ops.config.demoerp.json`** with the real DBs (station codes/names taken from `fm3kco.site`), ran
-  `setup-ops.ps1`, seeded milestone config + all 12 stations (Sea+Air). Login as `mandy` (admin), worklist serves on **:8079**.
-- **VPN route fix (Surfshark coexistence).** The Swivel tunnel now pushes `192.168.0.0/21`, but Surfshark plants a
-  competing `/21` (metric 1) that black-holes `192.168.5.2`. Fix **without** disconnecting Surfshark: add a
-  more-specific route — `New-NetRoute -DestinationPrefix '192.168.5.0/24' -InterfaceIndex 5 -NextHop 10.8.1.13 -RouteMetric 1`
-  (elevated; longest-prefix-match wins). Captured as a **local skill** `.claude/skills/swivel-vpn/` (gitignored; a
-  `-Check`/`-Fix` helper). The Swivel client is **OpenVPN Connect**; use the `VPNConfig_2026_splittunnel.ovpn` profile.
-- **Sea worklist all-Red -> realistic (committed `90bc63b`).** SQL reconciliation found two causes: (1) **bound-mapping
-  bug** — Export milestones keyed off the dead `_1` leg; `onboard1` is 0% populated while `onboard2` is 95%; and (2)
-  **sparse operational fields** (`ts_blno`/`edidate`/`atd_date` ~0%) left pre-departure milestones perpetually overdue.
-  Fix in `ops-eval.ps1` (+ `seed-milestone-config.ps1`, `seed-alerts.ps1`): a bound-aware **`onboard`** field
-  (Export->`onboard2`, Import->`onboard1`) **plus a departed/arrived supersede** — pending booking/etd milestones close
-  once the leg has sailed, eta milestones once arrived; `atd`/`delivery` stay open (the cash-leak items the tool exists
-  to surface), marked `done_by='superseded'`. Plus an **ETA date-sanity guard** (null any arrival <= departure). Result:
-  Sea **366R/0G -> 344G/22R**, **0** impossible ETD>=ETA rows; pilot `SEHKG260600003` reconciled (M1b via `data:onboard`,
-  M6/M7/M9 superseded). The 22 reds are legitimate overdue invoice/delivery on old shipments.
-
-**Open items for next chat:** (a) **`job_no` collapse** — the seed *processes* 120 shipments/station but stores ~30
-distinct rows: many raw `blhead` rows have a **blank `jobn`** so they upsert onto the same key. Investigate the job_no
-derivation so all ~120 surface as distinct cards. (b) `eval-shipment.ps1` (standalone diagnostic) still duplicates the
-old `onboard1` logic — optional consistency follow-up. (c) demoerp ops DB lives on **this PC's** `localhost\SQLEXPRESS`;
-for office use, point `opsServer` at an office-reachable instance and re-run `setup-ops.ps1` + seeders there.
-
-**Prior session (2026-06-11a, pgs env).** Worked against the **pgs** ERP group, not the fibsbkk/fm3k envs in
-the table below — the working-tree `ops.config.json` points at **`18.136.126.101,1438`** (SQL login `swivel`), opsDb
-**`erpops`**, 23 `pgs*` stations. Data is a **frozen snapshot**: `shipment_alerts.sort_key` spans **2020-11-18 →
-2023-05-12**, all 2,181 rows **Sea** (1,752 Export / 429 Import); **zero Air rows** (Air ingest still broken —
-`awbhead` missing `comp_date`). Done this session:
-
-- **Auth bootstrapped.** Created gitignored `users.json` with the first admin **`mandy`** (password stored only in the gitignored `users.json`; role admin,
-  `admin:true`, empty stations/access = unrestricted). App is now in **real-auth mode** (login page on, sessions).
-  Passwords are `SHA256("salt:password")`; new users get hashed automatically via `admin-ops.html`.
-- **Fixed worklist 500 (schema drift).** The pulled `serve-ops.ps1` worklist SELECT referenced 6 columns missing from
-  the live `erpops.shipment_alerts` (`commodity, sono, route_summary, available_date, eta_delivery, goods_delivery`).
-  Fix: re-ran idempotent **`setup-ops.ps1`** to ALTER-add them. ⚠ These 6 (+`route_json, detail_json, erp_ref`) are
-  **NULL on the existing 2,181 rows** — re-run `seed-alerts.ps1 -Mode Sea` to populate route/commodity detail on cards.
-- **Admin no longer gated by erpUser** (`serve-ops.ps1` `Handle-Worklist`): an **admin** role sees every shipment on the
-  `mine` lens without owning the ERP `pic_user` — condition is `lens='all' OR (lens!='user' AND Cur-Tier='admin')`.
-  The teammate (`user`) lens still narrows to the chosen person; operators unchanged.
-- **As-of testing clock** (config-driven, live-safe). New `ops.config.json` key **`asOfDate`** (yyyy-mm-dd). When set,
-  the app treats it as "today" for **all operational date logic** (worklist date window, inbound recency, task overdue);
-  empty/absent = real today (program logic identical). Server: `$AsOfDate` + `Today-Str`/`Today-Date`, used at the tasks
-  `today`, inbound recency, and exposed as `today` in `/api-ops/me`. Client: `currentWeek()` uses `ME.today` instead of
-  the browser clock. **Set to `2023-04-15`** so the 2023 snapshot behaves like a live day. *(Verified: `/me today`=2023-04-15;
-  worklist `mine`==`all`==2181; default week 04-10..04-16 → 342 Sea rows; a 2026 window → 0.)* Files syntax-clean
-  (`PSParser` + `node --check`); server running on **8078**.
-- **demoerp env scaffolded but NOT usable yet.** New gitignored **`ops.config.demoerp.json`** (server `192.168.5.2`,
-  SQL login `dashboard` / `SwivelDash-8704`, port **8079**) + **`restart-ops-demoerp.bat`**. Blocked: `192.168.5.2` is
-  **unreachable** from this PC (different subnet, not via the Swivel split-tunnel — needs LAN/VPN to `192.168.5.x`). Its
-  `opsDb`/`masterDb`/`stations[]` are **placeholders copied from pgs** — auto-discover the real DB list once reachable,
-  then run `setup-ops.ps1` against it.
-- **VPN/network gotchas (cost real time — record for next time).** The SQL host is reached only over the **Swivel
-  OpenVPN** split-tunnel (routes just `18.136.126.101/32`). **Surfshark conflicts two ways:** (1) its running OpenVPN
-  tunnel makes OpenVPN Connect throw the *phantom* `PRE_CONNECT_CHECK_FAILURE: VPN Connection is being utilised by
-  another Windows user` (only one Windows user is actually logged in) — fix: **disconnect Surfshark in its app** (killing
-  the service just auto-respawns); (2) Surfshark plants a Wi-Fi `/32` route to the SQL host (metric 55) that **beats** the
-  tunnel route (257) and black-holes traffic — fix: `Remove-NetRoute -DestinationPrefix '18.136.126.101/32' -InterfaceIndex 8`.
-
-**Open items for the new chat:** (a) re-seed Sea to fill the 6 NULL columns; (b) Air ingest still produces 0 rows;
-(c) demoerp needs network access + DB-layout discovery; (d) temp VPN-fix scripts/logs left in `C:\Users\mandy\`
-(`vpn-*.ps1`/`.log`) — deletable. Nothing committed this session (changes in tracked `serve-ops.ps1`, `ops.js`;
-`ops.config.json`/`users.json`/`ops.config.demoerp.json` gitignored).
-
-**Prior (admin page):** **admin page now manages milestones, not just users.** `admin-ops.html` is split into
-two tabs — **Users** (with a live search box over login/name/email/station/team/ERP-name, for ~500-user scale) and
-**Milestones & alerts** (CRUD over `milestone_def`: name, mode/bound/seq/phase, active, and the **alert timing** —
-`baseline` / `fixed` offset / `none` — that drives every operator's Green/Amber/Red). Backed by admin-gated
-`/api-ops/admin/milestones` (GET/POST) + `/admin/milestone-delete`; edits apply at a shipment's **next evaluation
-run**, not retroactively. Header **Admin** link (admins only). Two **restart bats** (`restart-ops-network.bat` 8079 /
-`restart-ops-local.bat` 8078) stop-then-start the web service, port-scoped, excluding `$PID`. **Encoding fix:** all
-config/JSON reads use `[IO.File]::ReadAllText` (PS 5.1's `Get-Content -Raw` decodes BOM-less UTF-8 as ANSI →
-mojibake in the subtitle); `.ps1` kept ASCII-only. Last commit on `main`: `bade065`.
-
-**Prior milestone (12-station seed + Air UX):** all **12 fm3k stations** seeded into `erpops_net`; station picker +
-filter bar (week-default date window, company-name search, POL/POD); **schema-drift resilient** seeding (`Filter-Cols`).
-
-**This session's work (cross-station inbound feed made real + Air-freight UX):**
-- **Convention join RESOLVED** — the feed routes a booking to its destination station via `fm3kco.site.owncode`→`location`
-  (each office's system customer code, e.g. `S0001`=HK, carried on `agn2_code`/`roagent`/`rcustomer`). Replaced the old
-  `asw_station_list.FM3000_CODE` guess (wrong code space). Feed is keyed on **`sono`/`booking`** (the SO number, stable
-  from booking stage when `blno`/`mawb` are still empty). `bill_type='B'` publisher filter removed.
-- **Inbound panel is consignee-facing** — new feed columns (consignee, cargo_type FCL/LCL, service, container_no, po_no,
-  spot_id, booking_qty/wgt, house_bill); card led by `cgne:`, prominent cargo-ready/ETD dates, ref line; **grouped by
-  stage** (🆕 new booking vs 🚢 scheduled) for sea, **by flight no** for air; **recency filter** (ETD today+ OR booked
-  ≤90d) with a **show-all** toggle; **dedup vs Arrivals** (suppress a feed row whose origin HBL already exists as a local
-  import job — needs live EDI-linked data to fire).
-- **Field-mapping fixes (also fix the worklist):** Sea ETD = `blhead.departure2` (mandatory; `departure1` is dead);
-  Air Incoterm = `awbhead.routing` (EXW/CIF…, not `frt_terms` PP/CC); Air cargo falls back to actual `t_rece_qty`/`ttl_cwt`
-  when `t_book_*` are empty.
-- **Worklist UX:** milestone update-marker (🔄) shows the milestone **name** not the code; **Air groups by MAWB** (flights
-  repeat weekly); no-MAWB bucket sorts by routing+consignee for consolidation; import master = OBL/MAWB with job-no fallback;
-  a bare milestone tick shows a quiet 🔄 marker, not a misleading 💬.
+## Architecture & key decisions
 
 ```
-station ERP DBs (READ-ONLY)                                  erpops (operational state, writable)
-  Sea: blhead / blcont / PIC      --- ops-eval.ps1 ------>    shipment_alerts, milestone_def (mode Sea|Air),
-  Air: awbhead                       (mode-aware evaluator)   milestone_evidence_map, …
-        |  (seed-alerts.ps1 -Mode Sea|Air = listener stand-in)        |  serve-ops.ps1 (HttpListener + JSON API)
-        |                                                             v
-        '------- READ ONLY, never written -------          browser (index.html / ops.js)  — reads only erpops
+station ERP DBs (READ-ONLY) --seed-alerts.ps1 (listener stand-in) / Task Scheduler--> erpops
+                                                                          |  server/ (ASP.NET Core .NET 10, JSON API)
+                                                                          v
+                                                                      browser (index.html / ops.js / i18n.js)
 ```
 
-**Two-server mode (added):** the read-only ERP and the writable `erpops` may live on **different** servers.
-Config gains optional `opsServer`/`opsAuth`/`opsUser`/`opsPassword` (fall back to the source connection when
-absent — single-server configs unchanged). All scripts route `master`+ops-DB to the ops server, everything else
-to the source. Used so the network ERP (read-only login) is read remotely while `erpops` is created locally.
+- **Why .NET.** The legacy PowerShell `serve-ops.ps1` was single-threaded for correctness — per-user row-level
+  scope lived in shared `$script:` state, so serving concurrently would leak one user's scope into another's query
+  (an auth-bypass). The .NET port resolves scope into a **per-request `ReqState`** (the structural fix) and bounds
+  concurrent SQL with a **`dbGate` semaphore** (default 16).
+- **Two-server mode.** Read the remote `fm3k*` ERP, write `erpops` locally (the network ERP login can't
+  `CREATE DATABASE`). Config `opsServer`/`opsAuth`/`opsDb`.
+- **Multi-customer = one deploy per customer** — one IIS site + one `ops.config.<tenant>.json` + one `erpops` DB;
+  nothing hardcoded.
+- **ERP field map verified** against live SQL — see [7-SQL-REFERENCE.md](docs/7-SQL-REFERENCE.md). Reconcile any new
+  field against live SQL before trusting it (house rule).
+- **Schema:** ~27 tables in `erpops` (idempotent `setup-ops.ps1`); 37 `milestone_def` rows. Full table list +
+  ERP field map in [7-SQL-REFERENCE.md](docs/7-SQL-REFERENCE.md).
 
-## Two test environments
+## Environments
 
-| Env | Source ERP | Data | opsDb | Port | Notes |
-|---|---|---|---|---|---|
-| **Local** | `fibsbkk` on `localhost\SQLEXPRESS` (Win auth) | **frozen 2021** snapshot; as-of `2021-11-27` | `erpops` (local) | 8078 | Only `fibsbkk` has the real 381-col schema; `fibsdemo_*` are stripped. Sea/BKK. Milestone fields empty → all-Red. |
-| **Network** | `fm3k*` on `192.168.5.2` (SQL login `dashboard`, read-only) | **LIVE to today**; as-of = today | `erpops_net` (local, two-server) | 8079 | **12 stations seeded** (YVR SHA HAM HKG JKT NRT JNB SIN BKK TPE LAX SGN), 618 rows. 414–420-col schemas vary by office → `Filter-Cols`. Login can't `CREATE DATABASE` → two-server mode. |
-| **demoerp** (current) | `fm3k*` on `192.168.5.2` (SQL login `dashboard`, read-only) | **LIVE to today** | `demoerp` (local `localhost\SQLEXPRESS`, two-server) | 8079 | Same fm3k group as Network, own ops DB. Config `ops.config.demoerp.json`; reach `192.168.5.2` over Swivel VPN — see the `swivel-vpn` skill for the Surfshark route fix. Sea fix (`90bc63b`) applied + all 12 stations seeded → Sea 344G/22R. |
+| Env | Source ERP | Ops DB | Web tier | Notes |
+|---|---|---|---|---|
+| **demoerp** (current) | `fm3k*` on `192.168.5.2` over the Swivel VPN (read-only `dashboard`) | `demoerp` on local `localhost\SQLEXPRESS` (two-server) | .NET on :8079 | Primary working env on this PC. `erpApi.mock` toggled per test. |
+| **Network** | live `fm3k*` (two-server) | `erpops_net` (local) | .NET / legacy PS | 12 stations. |
+| **Local** | frozen `fibsbkk` snapshot | `erpops` (local) | legacy PS | Historical; sparse fields → skews Red. |
 
-**Stations & access.** Group offices are same-ERP databases `fm3k<code>` on `192.168.5.2`. Seeded: 12 (above).
-**Excluded:** `fm3kco` is the master DB (no `blhead`). **Blocked — need a DBA grant:** the `dashboard` login is
-**denied read** on `demoerp` and `fm3kjfk`; both can be added as stations once read access is granted. Each station
-is seeded with its own `-StationCode` (3-letter office code, e.g. `HKG`, `SHA`); the station picker reads the list
-from config (`stations[]`) via the config payload.
-
-Configs are gitignored: `ops.config.json` (local), `ops.config.network.json` (network), `.env.txt` (creds the
-user pasted). Only `*.example.json` is tracked.
-
-## Key findings (these shaped the build)
-
-1. **Snapshot vs live.** `fibsbkk` is a frozen 2021 copy with empty operational fields (worklist skews Red);
-   `fm3khkg` is live with fields populated (realistic Green/Amber/Red). Same code, different data maturity.
-2. **Milestone completion resolves in priority order** (sparse data handled by design, not a blocker):
-   **(1) ERP data** (`complete_rule` over real columns; qualification is data-driven) → **(2) PIC/EDI evidence**
-   (configured `documentTypeCode`) → **(3) planned due-window** (baseline or fixed offset) → **(4) manual Tick &
-   Confirm** (operator closes even with no data; un-tickable).
-3. **Air freight is a separate table.** Sea = `blhead` (+`blcont` containers); Air = **`awbhead`** (465 cols).
-   Air operator-shipments = `awb_type IN('H','S')` (H=house, S=direct; M=consol master & B=booking pipeline
-   excluded). `carr` (carrier code) is **always empty** → conveyance = vessel/voyage (sea) and **`flight1`** (air);
-   for a **consolidated** house `flight1` is blank and the flight lives on the **MASTER** (`awb_type M/B`) row,
-   looked up by MAWB. The airline code is in `rout_by_1` (not a substitute for the flight number).
-4. **Carrier code & ETA are sparse/empty** in these copies; consignee/shipper **names** are ~100%. Container data
-   (`blcont`) is rich for sea FCL; air uses pieces/weight (`t_book_qty`/`t_book_wgt`).
-5. **Cross-station factory-booking** (advice, not yet built): at booking time there's no HBL/MBL, only the
-   destination **station/site code** stamped on the origin's booking (`dest`/`agn2_code`). The plan: each origin
-   publishes its outbound bookings into a shared `erpops` feed keyed by destination code; the import station reads
-   only `erpops` (no cross-DB query on the request path). Needs a station-code identity directory.
-
-## What's built
-
-| File | Role | State |
-|---|---|---|
-| `setup-ops.ps1` | Creates `erpops` + base tables + `company_dim`; in-place ALTERs add worklist enrichment columns (consignee/shipper name+contact, vessel_voyage, container_summary/count, total_weight/cbm, arrival_state, sort_key) **plus the display/filter set: house_bill, master_bill, incoterm, cust_ref, container_no, liner_so, cargo_ready, shipper_code, consignee_code, ctrl_code, pol, pod** and `milestone_def.mode` | ✅ idempotent, two-server |
-| `seed-milestone-config.ps1` | Config-as-data: **37** `milestone_def` rows — Sea (23, Export+Import) + **Air (14)** with `mode` — + starter evidence map | ✅ |
-| `ops-eval.ps1` | Pure evaluator: `New-ShipContext` (sea) + **`New-AirContext`** (air); `Eval-Milestones` filters defs by bound **and mode**; planned-due anchor is mode-aware | ✅ |
-| `eval-shipment.ps1` | Read-only one-shot card for one shipment (two-server aware) | ✅ |
-| `seed-alerts.ps1` | Listener stand-in. **`-Mode Sea|Air`**: reads `blhead`/`blcont` or `awbhead`, batches PIC + consignee/shipper contacts, computes arrival bucket + cargo profile + conveyance, pulls **house/master bill, incoterm, container/liner-SO, cargo-ready, role codes + POL/POD**, resolves company **names** via a single chunked `custsub.code2` clustered seek (never the heavy party views) → `company_dim`, resolves **vessel code→name** via a chunked `veslmstr.code` seek (bound-aware: sea Export reads `vessel_2/voyage_2`, Import `vessel_1/voyage_1`), upserts `shipment_alerts`. **`Filter-Cols`** intersects wanted columns with the station's `INFORMATION_SCHEMA` so schema-variant offices (e.g. HAM `blhead` lacks `picuser`) seed without failing | ✅ |
-| `serve-ops.ps1` | Web service: worklist (arrival-grouped, `&station=` filter), shipment detail, notes/arrangements/reminders, **enriched My-Tasks**, manual milestone-close, **`/api-ops/companies` (name type-ahead), `/api-ops/ports` (POL/POD lists)**. Config payload returns `stationCode` + `stations[]` + `linkEnabled`. **Auth: login by EMAIL** (`Get-OpsUserByEmail` + the `New-OpsSession` seam; username fallback; `users.json` present → login/sessions/scope, absent → open/demo) + **SWIVEL L!NK** OAuth seam (`/api-ops/link-oauth-login`, env-gated, federates on email, auto-provision). Per-station ERP routing via `Resolve-ForwarderCode`→`Get-StationOwnCode` (`fm3kco.site` owncode). Admin-gated `/api-ops/admin/*`: **`users`** (now incl. `authProvider`), **`milestones`**, **`evidence`**, and **`erp-settings`** (`Set-ErpApiMap` — partyGroupCode/forwarderCode). **Upload-to-clear**: `/api-ops/erp-file-upload`. Config/JSON read via `[IO.File]::ReadAllText` (UTF-8 safe). Reads only `erpops` | ✅ |
-| `admin-ops.html` | Admin-only page, **four tabs**: **Users** (add/edit + live search; email is the required sign-in key, a **Sign-in** column + `authProvider` selector, "User name" = internal id), **Milestones & alerts** (CRUD over `milestone_def` + alert timing), **Documents** (CRUD over `milestone_evidence_map` pic_doctype rows = ERP Document Type codes), and **ERP API** (`partyGroupCode` + fallback `forwarderCode`, via `/api-ops/admin/erp-settings`). Non-admins 403 | ✅ |
-| `login.html` / `users.example.json` | Login page (**Email + password**) + user-record template incl. `authProvider`; logins are the gitignored `users.json` | ✅ |
-| `restart-ops-network.bat` / `restart-ops-local.bat` | One-double-click **restart** of the web service (8079 network / 8078 local): stop-then-start, **port-scoped**, kill excludes `$PID` | ✅ |
-| `seed-ports.ps1` | Seeds the POL/POD port list for the filter dropdowns | ✅ |
-| `index.html`/`ops.js`/`styles.css` | UI: 🚢Sea/✈Air toggle, Import/Export toggle, **station picker**, **filter bar** (text `yyyy-mm-dd` date window default = current week, **company name** type-ahead across any role, POL/POD), **vessel/flight-grouped** collapsible worklist, mini-cards (house bill, container/liner-SO, incoterm, cust-ref), shipment drawer w/ milestones + **🔔 Remind-me** + **Arrangements** panel, custom in-page dialogs (no native `prompt`), My-Tasks | ✅ |
-| `ops.config.example.json` | Config template | ✅ |
-| `setup-ops.ps1` (feed) | +4 tables for the cross-station feed: `station_dim`, `station_route_map`, `inbound_booking_feed`, `feed_watermark` | ✅ idempotent |
-| `seed-station-map.ps1` | Seeds `station_dim` from `asw_station_list` + builds `station_route_map` from the **authoritative intercompany convention** `fm3kco.site.owncode`↔`location` (e.g. `S0001`→`HKG`) — the office's system customer code, carried on a booking's `agn2_code`/`roagent`/`rcustomer` — with POD fallback + **unmapped-code discovery report** | ✅ |
-| `publish-bookings.ps1` | **Publisher** (one origin/invocation): reads outbound shipments (`bound='O'`, **no bill/awb-type filter** — destination office decides cross-station, not the doc stage) destined to another station, resolves `dest_station` via `station_route_map`, keys the feed on **`sono`/`booking`** (the SO number, stable from booking stage when `blno`/`mawb` are still empty), UPSERTs `inbound_booking_feed`; **incremental** via `feed_watermark` | ✅ |
-| `serve-ops.ps1` (feed) | `/api-ops/inbound` (reads only the feed by `dest_station=stationCode`) + `/api-ops/inbound-assign` (local assign → threads a `FEED:` note into the assignee's My-Tasks); `stationCode` in config payload | ✅ |
-| `ops.js`/`index.html` (feed) | **📥 Inbound bookings (pre-arrival)** panel (Import bound only): light-grouped cards (source station, shipper, controlling customer, agent, POL→POD, ETD/cargo-ready) with **Assign** → roster picker | ✅ |
-| `register-ops-tasks.ps1` | Task Scheduler: `publish-bookings` per station (Sea 3×/day, Air 2h, **staggered**) + weekly `seed-station-map` | ✅ |
-| `erp-edit.html`/`erp-edit.js`/`erp-edit-fields.json` | **Staff-internal ERP data-correction editor** (pop-out from the worklist drawer). HBL/AWB-grid layout; fixes bad source data (DUMMY/ZZZ codes, addresses, dates, carrier, container counts) and pushes **only changed fields** to Swivel `/booking/update`. Field dictionary mirrors `doc-fields.json`; every write key verified against the OpenAPI spec | ✅ verified live + screenshots |
-| `serve-ops.ps1` (erp-edit) | `Handle-ErpEditSeed` (bound-aware ETD/ETA + vessel/voyage derivation, master-name resolve), `Handle-ErpMasterSearch` (live custsub/port/service/liner + Incoterms list), `Save-ErpEdit` (authoritative re-read, diff, audit) + routes `/api-ops/erp-edit`, `/erp-master`, `/erp-edit-save` | ✅ |
-| `erp-doc-api.ps1` (erp-edit) | `Build-ErpPatchPayload` (only-changed; `bookingParty` nesting; bool/number/date/`bookingReference`/container-array handling; ETD+flight-time fold into `departureDateEstimated`) + `Invoke-ErpEditPush` (mock + live read-merge-write existence guard, best-effort) | ✅ |
-| `setup-ops.ps1` (erp-edit) | +`erp_edit_log` audit table (job_no, before→after `changed_json`, erp_status/steps/error), idempotent | ✅ |
-
-**Cross-station inbound booking feed (key finding 5) — built (publish/subscribe fan-in).** An origin station's
-scheduled `publish-bookings.ps1` writes its cross-station bookings into the central `erpops.inbound_booking_feed`
-tagged with `dest_station`; the importing station's app reads ONLY rows addressed to it (`dest_station=stationCode`,
-indexed seek) and assigns them locally. No station ever queries another station's ERP; the request path never
-touches the ERP. Scales linearly with stations (each publishes its own delta).
-**Route map (convention join — CONFIRMED on live `fm3k*`):** the destination office is carried on the origin's
-booking as the destination **agent code** (`agn2_code`, primary) / **R-O agent** (`roagent`) / controlling customer
-(`rcustomer`), holding that office's **system customer code** (e.g. `S0001`=HK). `fm3kco.site` maps
-`owncode`→`location` (the 3-letter StationCode), so `S0001`→`HKG`. Verified end-to-end: SIN booking `SINHKG000002`
-(`agn2_code=S0001`, `SGSIN→HKHKG`, no bill yet) surfaces under HKG's `/api-ops/inbound`. (The old guess via
-`asw_station_list.FM3000_CODE` was a different code space and never matched — replaced. The frozen `fibsbkk`
-snapshot still has no intragroup bookings, so its local testing keeps the POD-fallback `AUSYD→SYD`.)
-
-**Not yet built:** real `listener-engine.ps1` (scheduled), `baseline-refresh.ps1` (3-yr lane averages that back the
-`baseline` alert timing — until it exists, `baseline` milestones fall back to fixed/none), and `pic_user`↔app-user
-mapping. (**Built since last summary:** `admin-ops.html` + real auth + milestone-admin + restart bats.)
-
-**Feed reconciliation (Phase 5) — mechanism in place, needs live data.** `/api-ops/inbound` already suppresses a feed
-row whose **origin HBL** matches a local import job (`shipment_alerts.house_bill`, bound=Import) — so received shipments
-show under Arrivals, not Inbound. In the current ERP **copy** the bookings and import jobs are independent fabricated
-records (different HBL numbers) so it matches 0; on live EDI-linked data (import job carries the origin HBL) it will fire.
-If the live import job stores the origin HBL in another column (or you prefer MBL / origin-office+job), point the match there.
-
-**Loose ends when resuming:**
-- **All 12 stations published to the feed (Sea+Air)** and **worklist re-seeded** on the fixed code (`departure2` ETD,
-  `routing` Air incoterm, actual air cargo). Feed default-hides stale via the recency window; use **show all** to see history.
-- **10 stale `HK01` rows** in `erpops_net.shipment_alerts` — harmless; a `DELETE … WHERE station='HK01'` was blocked by the
-  auto-permission classifier, so still present. Clear when convenient (data only, not in git).
-- **`JNB`** publishes 0 cross-station rows ("no route rules") — its intragroup bookings are Air-only and don't hit the Sea
-  route discovery; run `seed-station-map.ps1 -Mode Both` to cover it.
-- **`demoerp` / `fm3kjfk`** await a DBA read grant for the `dashboard` login before they can be seeded as stations.
-- UI changes are **API-/data-verified but not browser-clicked** in this env (no Node/browser) — give them a click on :8079.
-
-## Proven behaviour (tested live)
-
-- **Worklist is arrival-driven, grouped by vessel/voyage (sea) or airline+flight (air)** — not one card per
-  shipment. Sea group headers show the **vessel NAME** (resolved from `veslmstr`), not the raw code — bound-aware:
-  Export reads the ocean vessel `vessel_2/voyage_2`, Import the arriving vessel `vessel_1/voyage_1` (e.g.
-  `🚢 YM WISH / 038W`); this also lifts sea vessel coverage from ~12% (old `vessel_1`-only) to ~100%. Import
-  buckets: **Arrived / Arriving / Planning**; Export: **No-space / Customs-window / Cargo-pending
-  / On-track**. Each conveyance gets ONE derived status (a vessel isn't split across buckets). Collapsible groups +
-  collapse-all. Sorted ETA-first, falling back to time-in-transit.
-- **Richer cards:** consignee/shipper name, cargo profile (FCL `2×40HC`; LCL weight+CBM; **air `N pcs · kg`**),
-  conveyance, arrival chip, R/A severity, notes flag, plus **origin-office house bill** (the doc the customer
-  received — shown for import, not the internal job no), **container / liner-SO** (to tell near-identical sea
-  arrivals apart), **incoterm** (delivery responsibility), and **customer ref / PO** (`spotid`).
-- **Filters & multi-station (tested):** station picker filters the worklist to one office (`?station=SHA` → 124
-  SHA-only rows; config returns 12 stations). Date window defaults to the **current week** (This-week / All-dates
-  buttons). **Company filter is name-searchable** (type-ahead against `company_dim`, never the 300k master) and
-  matches a company in **any** role — shipper, consignee, agent, or controlling customer. POL/POD dropdowns let an
-  operator surface, e.g., all China-origin shipments first.
-- **Arrangements panel** (per shipment): who-to-contact (consignee/shipper + `tel:`/`mailto:` from the ERP views),
-  and operator-recorded Trucker/Broker/Warehouse/Customer tasks with status — stored in the JSON note store as
-  `kind='arrangement'` (no ERP write).
-- **My-Tasks reworked:** "Reminders from others" (@-mentions) + "My follow-ups" (notes/reminders you raised);
-  excludes completion records; cards enriched with consignee + shipment info; **🔔 Remind-me with a due date**
-  (overdue/today highlighted, badge counts them); compact cards (click to open, ✓ to clear).
-- **Manual Tick & Confirm** flips the rollup, threads a note, is un-tickable. Custom themed dialog (no
-  "localhost says" browser prompt).
-- **Air & Sea both seed and render**; cross-mode `job_no` distinct (air `AEHKG`/`AIHKG`, sea `SEHKG`/`SIHKG`).
+Legacy PowerShell server `serve-ops.ps1` reads the same `erpops` DB and is kept for rollback (`restart-ops-*.bat`).
 
 ## How to run
 
-```powershell
-# --- LOCAL (frozen 2021 snapshot, BKK, sea) ---
-.\setup-ops.ps1                                                            # create erpops (idempotent)
-.\seed-milestone-config.ps1
-.\seed-alerts.ps1 -Station fibsbkk -StationCode BKK -AsOf 2021-11-27 -Limit 120
-.\serve-ops.ps1                                                            # http://localhost:8078/
-
-# --- NETWORK (live fm3k*, two-server: read network ERP, write local erpops_net) ---
-.\setup-ops.ps1            -ConfigPath .\ops.config.network.json
-.\seed-milestone-config.ps1 -ConfigPath .\ops.config.network.json
-$today = (Get-Date).ToString('yyyy-MM-dd')
-# Seed all 12 stations (db fm3k<code> -> StationCode <CODE>), both modes:
-$stations = @{ YVR='fm3kyvr'; SHA='fm3ksha'; HAM='fm3kham'; HKG='fm3khkg'; JKT='fm3kjkt'; NRT='fm3knrt';
-               JNB='fm3kjnb'; SIN='fm3ksin'; BKK='fm3kbkk'; TPE='fm3ktpe'; LAX='fm3klax'; SGN='fm3ksgn' }
-foreach ($code in $stations.Keys) {
-  foreach ($m in 'Sea','Air') {
-    .\seed-alerts.ps1 -ConfigPath .\ops.config.network.json -Station $stations[$code] -StationCode $code -Mode $m -AsOf $today -Limit 120
-  }
-}
-.\serve-ops.ps1            -ConfigPath .\ops.config.network.json -Port 8079   # http://localhost:8079/
-# In the UI: pick the All lens, use the station picker to focus one office; toggle 🚢Sea/✈Air, Import/Export,
-# and the filter bar (date window, company name, POL/POD).
-
-# --- CROSS-STATION INBOUND BOOKING FEED ---
-.\setup-ops.ps1                          # creates the 4 feed tables (idempotent)
-.\seed-station-map.ps1                    # station_dim + route map; prints UNMAPPED codes to curate
-.\publish-bookings.ps1 -Station fibsbkk -StationCode BKK -Mode Sea   # publish BKK's cross-station bookings
-# Importer view: set "stationCode" in config to the destination station; the 📥 Inbound panel (Import bound)
-# shows rows where dest_station=stationCode. Locally the POD rule AUSYD->SYD routes BKK bookings to "SYD".
-# Schedule it all: .\register-ops-tasks.ps1   (publish per station, staggered; weekly map refresh)
-
-# --- RESTART the web service after a code/config change (stop-then-start, port-scoped) ---
-# Double-click restart-ops-network.bat (8079, ops.config.network.json) or restart-ops-local.bat (8078, ops.config.json).
-# Switching machines/DBs: copy a config to ops.config.<env>.json and point a bat (or -ConfigPath) at it; env DB_* override too.
-```
-
-## Deploy: ASP.NET Core (.NET 10) to demoerp on IIS
-
-The web tier is ported to ASP.NET Core (`server/`, project `Ops.csproj`, `net10.0`, in-process ANCM). demoerp is
-the IIS-hosted target: `server\publish\` served by IIS site/pool **`erpops-demoerp`** on **http://localhost:8080**
-(8079 is the dev PS HttpListener instance; the `port` in config is informational for a self-hosted run only).
-
-**Readiness (verified 2026-06-16):** code is publish-ready — `dotnet publish -c Release -o publish` builds clean
-(exit 0) and emits a valid IIS artifact: `Ops.dll`, `Microsoft.Data.SqlClient.dll`, locale satellites, and a
-`web.config` with the `AspNetCoreModuleV2` in-process handler. `.NET 10 SDK 10.0.301` + ASP.NET Core runtime
-`10.0.9` are installed.
-
-**Config — two-server split** (`ops.config.demoerp.json`, gitignored; pool sets `OPS_CONFIG` to it):
-- **Ops DB** `demoerp` on `localhost\SQLEXPRESS`, `opsAuth=integrated` — no password; the deploy script grants
-  `db_owner` on `demoerp` to the pool identity `IIS APPPOOL\erpops-demoerp`.
-- **Source ERP** `fm3k*` on the VPN'd SQL host, `auth=sql` (read-only) — set `user`/`password` before go-live.
-- Fill in real `stations[].database` names and confirm `stationCode`; `erpApi.mock=true` keeps doc-issue offline
-  until a token is set. `Config.cs` resolves the repo root from `OPS_ROOT` (the pool env), else walks up to find
-  the config file.
-
-**Prerequisites / blockers on a fresh machine:**
-- **IIS + ASP.NET Core Hosting Bundle (ANCM)** must be installed, and the `erpops-demoerp` site/pool created — run
-  the one-time, **elevated** `deploy-local-iis-demoerp.ps1` (enables IIS features, installs the Hosting Bundle via
-  winget, grants the pool SQL `db_owner` + NTFS rights, creates the pool/site on 8080). `redeploy-demoerp.bat` does
-  **not** bootstrap these — it assumes they exist.
-- **`ops.config.demoerp.json`** must exist in the repo root (gitignored → absent on a fresh clone; the app throws
-  `FileNotFoundException` at startup without it).
-- **`setup-ops.ps1`** must have created the `demoerp` schema on `localhost\SQLEXPRESS`.
-- **`users.json`** absent → app runs in **open/no-auth mode** (anyone auto-sessioned); add it for real auth.
-  (`roles.json` is not used — roles live inline on each user record.)
+Full matrix in [2-SETUP-NEW-CUSTOMER.md](docs/2-SETUP-NEW-CUSTOMER.md). Quick (demoerp, one command per stage):
 
 ```powershell
-# --- demoerp: ONE-TIME IIS bootstrap (elevated PowerShell) ---
-powershell -ExecutionPolicy Bypass -File .\deploy-local-iis-demoerp.ps1   # IIS + Hosting Bundle + pool/site on 8080
-.\setup-ops.ps1 -ConfigPath .\ops.config.demoerp.json                     # create the demoerp schema (idempotent)
-
-# --- demoerp: REDEPLOY after a code change ---
-.\redeploy-demoerp.bat        # app_offline -> dotnet publish -c Release -o publish -> recycle pool -> http://localhost:8080/
-# Secrets check: http://localhost:8080/ops.config.json must return 404.  HTTP 500.3x/500.19 => Hosting Bundle
-# installed before IIS: run dotnet-hosting...exe /repair (or re-run deploy-local-iis-demoerp.ps1). VPN must be up.
+.\.claude\skills\swivel-vpn\scripts\swivel-vpn.ps1 -Check         # VPN up (remote only)
+.\first-install\setup-database.bat -ConfigPath .\ops.config.demoerp.json   # ops DB + all tables + milestone config (detector-guarded)
+cd server; $env:OPS_CONFIG='ops.config.demoerp.json'; $env:OPS_ALLOW_SEED='1'; dotnet run -c Release   # .NET web tier (first start seeds default admin)
+# ...back in repo root, with the app started:
+.\seed-data.bat -ConfigPath .\ops.config.demoerp.json             # live-ERP fill (all stations x Sea/Air)
 ```
+
+- **Update an existing site:** `update-customer.bat` (see [3-DEPLOY-UPDATES.md](docs/3-DEPLOY-UPDATES.md)). Do **not**
+  re-run `first-install\setup-database.bat` on a live site.
+- **Restart after a change:** `.cs` → rebuild/restart (`redeploy-demoerp.bat` for IIS); client `.html/.js/.css`
+  are static (reload only); legacy PS → `restart-ops-*.bat`.
+- **Sanity checks before declaring done:** `.cs` → `dotnet build` (0 warnings); `.ps1` → `[PSParser]::Tokenize`;
+  `.js` → `node --check`. Test on a temp port so a running instance isn't disturbed.
+
+---
 
 ## Constraints (do not violate)
 
-- **`Packet Size=512`** on every SQL connection string (VPN MTU).
-- HttpListener server is **single-threaded**; UI/request paths read only the small `erpops` tables, never the ERP.
-  All heavy ERP joins (containers, contacts) happen in `seed-alerts` off the request path.
-- **Source ERP DBs are READ-ONLY** — all writes go to `erpops`/`erpops_net` or the gitignored JSON note store.
-- **Secrets gitignored** (`ops.config.json`, `ops.config.*.json`, `.env*`, `users.json`, `roles.json`,
-  `ops-lists/`, `*.log`); verify with `git status` before any commit. Only `*.example.json` is tracked.
-- PS 5.1 traps: coerce `$null`→`[DBNull]::Value` for SQL params; serialize JSON-store records individually (never
-  hand `ConvertTo-Json` a whole array). Client coerces 0/1-row arrays via `arr()`; responses are `no-store`.
+- **`Packet Size=512`** on every SQL connection string (the VPN's small MTU black-holes default 8 KB TDS packets).
+- **The .NET server is multi-threaded** with `dbGate` + per-request `ReqState`. The UI/request paths read only the
+  small `erpops` tables, never the ERP; heavy ERP joins happen in `seed-alerts` off the request path. (The legacy
+  PS server was single-threaded — that constraint applies only if you run it.)
+- **Source ERP DBs are READ-ONLY** — all writes go to `erpops` only. Never `INSERT`/`UPDATE`/`ALTER` an ERP table.
+- **Secrets are gitignored** (`ops.config*.json`, `users.json`, `roles.json`, `ops-lists/`, `*.log`, `erp-mock/`,
+  `backups/`); verify with `git status` before any commit. Only `*.example.json` is tracked.
 - **Read config/JSON with `[IO.File]::ReadAllText`, not `Get-Content -Raw`** — PS 5.1 decodes a BOM-less UTF-8 file
-  as ANSI, so `—`/`·` arrive as mojibake (`â€”`/`Â·`). Keep `.ps1` source **ASCII-only**: a non-ASCII byte in a
-  BOM-less script can terminate a string and cause a runtime parse error. New HTML pages need `<meta charset="utf-8">`.
-- **Dates are ISO `yyyy-mm-dd` everywhere** (e.g. `2023-12-31`) — never the locale `mm/dd/yyyy`, and **no native
-  `<input type="date">`** (locale format + unwanted calendar popup). Use a `text` input with `placeholder="yyyy-mm-dd"`
-  + a `^\d{4}-\d{2}-\d{2}$` guard; SQL `CONVERT(...,23)`; PowerShell `.ToString('yyyy-MM-dd')`.
-- Verify any computed light/KPI against a direct read-only SQL query of the source ERP before declaring done.
+  as ANSI (mojibake `â€”`/`Â·`). Keep `.ps1` source **ASCII-only** (a non-ASCII byte can terminate a string →
+  runtime parse error). New HTML pages need `<meta charset="utf-8">`.
+- **Cross-DB collation:** the ops DB is Latin1, station DBs are Chinese_HK — text joins across DBs need
+  `COLLATE DATABASE_DEFAULT`.
+- **Dates are ISO `yyyy-mm-dd` everywhere** — never the locale `mm/dd/yyyy`, and **no native `<input type="date">`**
+  (locale format + unwanted calendar popup); use a `text` input with `placeholder="yyyy-mm-dd"` + a regex guard.
+- **All SQL is parameterised** (`SqlParameter`/`@name`); route every data read through the row-level scope clause.
+- **When killing test servers by command-line match, exclude `$PID`** or you kill your own shell.
+- Commit only when asked; never commit secrets.

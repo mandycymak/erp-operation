@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  seed-data.bat  -  fill LIVE data after setup-database.bat + first app start.
+REM  seed-data.bat  -  fill LIVE data after first-install\setup-database.bat + first app start.
 REM ----------------------------------------------------------------------------
 REM  Runs the read-from-ERP seeders in order, looping every configured station x
 REM  Sea/Air: station map, port + liner masters, the cross-station inbound feed,

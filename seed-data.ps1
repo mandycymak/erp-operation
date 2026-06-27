@@ -7,7 +7,7 @@
     4. publish-bookings.ps1  (cross-station inbound feed) per station x mode
     5. seed-alerts.ps1       (the worklist; listener stand-in) per station x mode, -AsOf today
   These read the READ-ONLY source ERP over the Swivel VPN, so the VPN MUST be up. They write only the ops DB.
-  Idempotent: re-running refreshes in place. Schema must already exist (run setup-database.bat first).
+  Idempotent: re-running refreshes in place. Schema must already exist (run first-install\setup-database.bat first).
   Usage: .\seed-data.ps1 [-ConfigPath .\ops.config.json] [-Limit 120]
 #>
 param(

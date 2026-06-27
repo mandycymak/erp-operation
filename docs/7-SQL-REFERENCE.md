@@ -3,7 +3,7 @@
 **Audience:** developers and SQL analysts who need to understand the `erpops` operational schema, how it is
 populated from the source ERP, and the **field map** from logical document boxes to real ERP `table.column`.
 
-This is the companion to [DEVELOPER-GUIDE.md](DEVELOPER-GUIDE.md). It documents two things: (1) the small,
+This is the companion to [6-DEVELOPER-GUIDE.md](6-DEVELOPER-GUIDE.md). It documents two things: (1) the small,
 writable `erpops` state database the app reads, and (2) the **read-only** source ERP columns the listener /
 seeder / draft-document engine pull from. The field map is the project's main unknown — every mapping below
 was **verified by a direct SQL query** against a live station before it was trusted.
@@ -325,7 +325,7 @@ S=direct; M=consol master, B=booking pipeline excluded). The line items are in `
 > permission checks) and can drop the connection, while the keyed data SELECT is ~0.3 s. The seeder
 > (`Get-ErpCols`) therefore **does not probe column metadata** — it trusts the curated want-list and lets a
 > genuinely-missing column degrade gracefully. Never put a metadata query on a request path. See
-> [DEVELOPER-GUIDE.md §4](DEVELOPER-GUIDE.md).
+> [6-DEVELOPER-GUIDE.md §4](6-DEVELOPER-GUIDE.md).
 
 ---
 

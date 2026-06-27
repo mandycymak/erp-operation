@@ -99,7 +99,7 @@ public static class Auth
                 if (_snap.Users.Count == 0)
                     throw new InvalidOperationException(
                         "Cannot load users from SQL and have no cached snapshot. Is the ops DB up, and have the " +
-                        "dbo.app_user / dbo.app_user_scope tables been created (run setup-ops.ps1 / setup-database.bat)? " +
+                        "dbo.app_user / dbo.app_user_scope tables been created (run setup-ops.ps1 / first-install\\setup-database.bat)? " +
                         "Inner: " + ex.Message, ex);
                 Console.Error.WriteLine("[Auth] users reload failed; keeping previous snapshot: " + ex.Message);
             }

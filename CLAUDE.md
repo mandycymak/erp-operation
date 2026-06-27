@@ -71,7 +71,7 @@ built), `eval-shipment.ps1`, `seed-ports.ps1`, `erp-doc-api.ps1` (ERP push paylo
 (`roles.json` is not used — roles live inline per user); copy from `ops.config.example.json` / `users.example.json`;
 env `DB_*`/`OPS_*` override. `erp-api-map.json` (tracked) holds non-secret ERP deployment codes.
 
-**Deploy / ops:** `deploy-local-iis-demoerp.ps1` (one-time elevated IIS bootstrap), `redeploy-demoerp.bat`,
+**Deploy / ops:** `first-install/deploy-local-iis-demoerp.ps1` (one-time elevated IIS bootstrap), `redeploy-demoerp.bat`,
 `restart-ops-{network,local,demoerp}.bat`, `docs/` (BUSINESS/TECHNICAL/DEVELOPER-GUIDE, SQL-README, IIS-DEPLOY, CUTOVER).
 
 ## Reuse, don't reinvent (sibling: `..\erp-dashboard`)
@@ -105,7 +105,7 @@ These are proven and lift over almost verbatim — read them in `..\erp-dashboar
   ASCII-only.
 - **The source station ERP DBs are READ-ONLY.** All writes go to `erpops` only. Never `INSERT`/`UPDATE`/`ALTER` an ERP table.
 
-## How to run (see PROJECT-SUMMARY.md "How to run" + docs/TECHNICAL-GUIDE.md for the full matrix)
+## How to run (see PROJECT-SUMMARY.md "How to run" + docs/2-SETUP-NEW-CUSTOMER.md for the full matrix)
 
 1. **VPN must be up** — the source ERP (`192.168.5.2`) is only reachable through the Swivel OpenVPN connection. If
    queries time out, check the VPN first (see the `swivel-vpn` skill for the Surfshark route conflict fix).
@@ -134,7 +134,7 @@ These are proven and lift over almost verbatim — read them in `..\erp-dashboar
 The app is built; there is no greenfield build order. To resume:
 1. Read **`PROJECT-SUMMARY.md`** (latest-session block at the top = current focus / "RESUME HERE").
 2. The ⚠ ERP field map that BLUEPRINT flagged as the main unknown is **resolved** — the verified ERP `table.column`
-   map lives in **`docs/SQL-README.md`**. Reconcile any new field against live SQL before trusting it (house rule).
+   map lives in **`docs/7-SQL-REFERENCE.md`**. Reconcile any new field against live SQL before trusting it (house rule).
 3. Most work now happens in the .NET `server/`; the client is static (reload, no rebuild). Restart the server after
    a `.cs` change (`restart-ops-*.bat` / `redeploy-demoerp.bat`).
 4. Largest remaining gaps: the scheduled `listener-engine.ps1` and `baseline-refresh.ps1` (see PROJECT-SUMMARY

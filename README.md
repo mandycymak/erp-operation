@@ -11,19 +11,23 @@ and the follow-up / @-mention collaboration subsystem).
 
 ## Documentation
 
-| File | Read it for |
-|---|---|
-| **`BLUEPRINT.md`** | **The authoritative, approved design** — all 6 tables, the milestone matrix, the listener engine, the KPI queries, and the person-focused worklist. Start here. |
-| **`PROJECT-SUMMARY.md`** | **What is actually built and proven** (the session log / status snapshot). Read this when resuming. |
-| `docs/BUSINESS-GUIDE.md` | End-user guide — worklist, drawer, Tick & Confirm, drafts, Edit ERP data, inbound feed, **UI language switch**. |
-| `docs/TECHNICAL-GUIDE.md` | Install / run / config / users & roles / ERP integration / SWIVEL L!NK / VPN / **i18n** / troubleshooting. |
-| `docs/DEVELOPER-GUIDE.md` | Coding standards + back-/front-end conventions, **the .NET web tier**, and **how to add a UI language**. |
-| `docs/SQL-README.md` | The `erpops` schema + the verified ERP source field map. |
-| **`docs/IIS-DEPLOY.md`** | **Deploying the .NET app to a real server (IIS + HTTPS).** Read this to put it in production. |
-| **`docs/ONBOARD-CHECKLIST.md`** | **The one self-contained, step-by-step checklist to deploy + onboard a customer** (config, DB+seed, users, scheduled jobs, backups), with a visible verification after every step. |
-| **`docs/OPERATIONS-RUNBOOK.md`** | **Ongoing support & governance:** the in-app Audit & Health console, log map, troubleshooting, data-retention/growth, backup/restore, safe patching, IIS-vs-container. |
-| **`docs/CUTOVER.md`** | Strangler-flip runbook: retiring `serve-ops.ps1` for the .NET server (parity diff, click-test, L!NK URL flip). |
-| `CLAUDE.md` | Project context for Claude Code: hard constraints (gotchas), the reuse map, repo layout. Auto-loaded in a Claude Code session. |
+The guides under [`docs/`](docs/) are **numbered by lifecycle stage** — start at
+**[`docs/1-OVERVIEW.md`](docs/1-OVERVIEW.md)**, which is also the full documentation map (which doc + which `.bat`
+at each stage). For a map of **every file** in the repo (not just docs), see [`FILES.md`](FILES.md).
+
+| Stage | File | Read it for |
+|---|---|---|
+| **0. Understand** | [`docs/1-OVERVIEW.md`](docs/1-OVERVIEW.md) | What it is, architecture, and the map to every other doc. |
+| **1. Set up a new customer** | **[`docs/2-SETUP-NEW-CUSTOMER.md`](docs/2-SETUP-NEW-CUSTOMER.md)** | The one self-contained first-install playbook (config, DB+seed, IIS+HTTPS, users, scheduled jobs, backups) + install-time reference. |
+| **2. Deploy an update** | **[`docs/3-DEPLOY-UPDATES.md`](docs/3-DEPLOY-UPDATES.md)** | Routine updates to an existing site: `update-customer.bat`, env-var persistence, redeploy + rollback. |
+| **3. Operate & support** | **[`docs/4-OPERATE-SUPPORT.md`](docs/4-OPERATE-SUPPORT.md)** | After go-live: Audit & Health console, log map, troubleshooting, user/role admin, retention, backup/restore. |
+| **Use the app** | [`docs/5-BUSINESS-GUIDE.md`](docs/5-BUSINESS-GUIDE.md) | End-user guide — worklist, drawer, Tick & Confirm, drafts, Edit ERP data, inbound feed, **UI language switch**. |
+| **Change the code** | [`docs/6-DEVELOPER-GUIDE.md`](docs/6-DEVELOPER-GUIDE.md) | Coding standards + back-/front-end conventions, the .NET web tier, adding a UI language. |
+| **Reference: schema** | [`docs/7-SQL-REFERENCE.md`](docs/7-SQL-REFERENCE.md) | The `erpops` schema + the verified ERP source field map. |
+| **Reference: integration** | [`docs/8-API.md`](docs/8-API.md) | The third-party Find API (JWT bearer, natural-language search). |
+| **Design of record** | `BLUEPRINT.md` | The authoritative, approved design — tables, milestone matrix, listener engine, KPI queries. |
+| **Status / session log** | `PROJECT-SUMMARY.md` | What is actually built and proven. Read this when resuming. |
+| **Claude Code context** | `CLAUDE.md` | Hard constraints (gotchas), the reuse map, repo layout. Auto-loaded in a Claude Code session. |
 
 ## Status
 
@@ -49,7 +53,7 @@ from the old `ops-lists/job-notes.json`) so they're searchable like every other 
 scope isolation). The legacy PowerShell `serve-ops.ps1` is kept for rollback. The off-request-path PowerShell
 jobs (`seed-alerts.ps1`, `publish-bookings.ps1`, …) still run under Task Scheduler. The scheduled
 `listener-engine.ps1` is still deferred (`seed-alerts.ps1` stands in for it). See `PROJECT-SUMMARY.md` for the
-running status, `docs/` for the guides, and **`docs/IIS-DEPLOY.md` to deploy**.
+running status, `docs/` for the guides, and **`docs/2-SETUP-NEW-CUSTOMER.md` to deploy**.
 
 ## Architecture
 
@@ -66,5 +70,5 @@ Stack: **ASP.NET Core .NET 10** (web tier; raw ADO `Microsoft.Data.SqlClient`) �
 
 ## Run / deploy (quick pointers)
 - **Dev (Kestrel):** from `server/`, `OPS_CONFIG=ops.config.network.json OPS_HTTP_PORT=8079 dotnet run -c Release` → `http://localhost:8079/`.
-- **Production (IIS + HTTPS):** `dotnet publish -c Release -o publish`, then follow **`docs/IIS-DEPLOY.md`**.
-- **Local IIS rehearsal (demoerp):** run `deploy-local-iis-demoerp.ps1` (elevated) once; redeploy with `redeploy-demoerp.bat`.
+- **Production (IIS + HTTPS):** `dotnet publish -c Release -o publish`, then follow **`docs/2-SETUP-NEW-CUSTOMER.md`**.
+- **Local IIS rehearsal (demoerp):** run `first-install\deploy-local-iis-demoerp.ps1` (elevated) once; redeploy with `redeploy-demoerp.bat`.

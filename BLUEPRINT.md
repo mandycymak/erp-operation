@@ -539,7 +539,7 @@ built. Lift it wholesale, keyed by `job_no` instead of company code:
 > **Status note (post-build):** most of these are resolved — see PROJECT-SUMMARY.md for the live record.
 
 - ~~Real ERP table/column names for every ⚠ field, and where the **PIC table / print_log / sendlog / EDI log /
-  event file** actually live~~ — **RESOLVED.** The verified ERP `table.column` map lives in `docs/SQL-README.md`
+  event file** actually live~~ — **RESOLVED.** The verified ERP `table.column` map lives in `docs/7-SQL-REFERENCE.md`
   (Sea `blhead`/`blcont`/`blitem` + PIC; Air `awbhead`/`awbdetl`). Evidence now keys on the ERP `documentTypeCode`
   via the PIC/`milestone_evidence_map` store, maintained from the admin **Documents** tab.
 - ~~The stable `job_no` key across stations~~ — **RESOLVED** by the synthetic `<STN>-<S|A>-R<ref>` key (see §1.2

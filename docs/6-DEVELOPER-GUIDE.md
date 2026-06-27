@@ -57,7 +57,7 @@ actually built and proven; update it when you ship something.
 | `seed-station-map.ps1` / `publish-bookings.ps1` | the cross-station inbound feed (identity directory + publisher). The publisher **fans out one feed row per involved office** (destination agent / notify / consignee / routing / controlling) and sets the **`offshore`** flag for off-bill-only involvement |
 | **`watch-bookings.ps1`** | new-export-booking watcher → `booking_alert`; resolves the factory(shipper) and alerts via the config `bookingAlert` block |
 | `register-ops-tasks.ps1` | Task Scheduler registration (feed/worklist refresh — worklist now `seed-alerts -Delta`, Air ~5 min / Sea ~15 min — **`Ops Booking Watch`**, **+ the governance jobs `Ops Backup` / `Ops Healthcheck` / `Ops Purge`**) |
-| **`setup-database.bat` / `seed-data.bat` (→ `seed-data.ps1`)** | one-command onboarding: schema+tables+milestone config, then the live-ERP fill looping every station x Sea/Air |
+| **`first-install\setup-database.bat` / `seed-data.bat` (→ `seed-data.ps1`)** | one-command onboarding: schema+tables+milestone config, then the live-ERP fill looping every station x Sea/Air |
 | **`backup-ops.ps1`** | nightly ops-DB `.bak` (COPY_ONLY) + gitignored-secrets copy + prune; non-zero exit on failure |
 | **`ops-healthcheck.ps1`** | the watchdog — checks app/db/tasks/feed/backup/storage/disk/VPN → `health_check_log` + alert (config `alerts`: webhook/SMTP) on failure |
 | **`purge-ops.ps1`** | data retention/aging (config `retention`) + log rotation — keeps the ops DB small over years (`-WhatIf` previews) |
@@ -225,7 +225,7 @@ This is the largest feature; it is keyed by `job_no`/`doc_id`:
   only known codes survive, each clamped to `maxlen`; structured kinds (`table`, `riders`) rebuilt in column
   order. The server **never** trusts a raw client field.
 - **Seed.** `Doc-SaSeed` (snapshot) then `Doc-ErpSeed` (bounded ERP read). The Air mappings live here — see
-  [SQL-README.md §4](SQL-README.md). `Doc-CustLookup` resolves the own office via `fm3kco.site` owncode.
+  [7-SQL-REFERENCE.md §4](7-SQL-REFERENCE.md). `Doc-CustLookup` resolves the own office via `fm3kco.site` owncode.
 - **Versioning.** Every save/submit inserts an immutable `doc_version`; `Doc-Changed` (canonical JSON compare)
   drives the "no changes" guard and the staff diff.
 - **Public path.** `/api-doc/*` validates the token **shape** (regex) before any SQL, caps the body, and
@@ -307,7 +307,7 @@ auto-generated PDF.
 
 ## 6. Data-model cheat-sheet
 
-So your SQL is correct, read [SQL-README.md](SQL-README.md): the `erpops` tables, the **bound-aware** sea
+So your SQL is correct, read [7-SQL-REFERENCE.md](7-SQL-REFERENCE.md): the `erpops` tables, the **bound-aware** sea
 fields (`onboard2`/`departure2`/`vessel_2`), and the verified Air field map (`to1`/`deli`/`to3` routing,
 `dest_name`, `desc2` goods, `mark2` marks, `dimension`, `handling`, `t_rece_qty`, `wgt_unit`, the PPD/COLL
 terms). New HTML pages need `<meta charset="utf-8">`.
@@ -315,7 +315,7 @@ terms). New HTML pages need `<meta charset="utf-8">`.
 Note **`job_note`** (operator notes/arrangements/reminders) is now a **SQL table**, not the old
 `ops-lists/job-notes.json` file — accessed only via `Notes.cs` (`[user]` is bracketed; `mentions` is
 comma-delimited; `created` is an ISO string). It carries no scope columns, so any cross-shipment read of it
-**must** gate on the parent shipment's scope (see the Find note search). See [SQL-README.md §2](SQL-README.md).
+**must** gate on the parent shipment's scope (see the Find note search). See [7-SQL-REFERENCE.md §2](7-SQL-REFERENCE.md).
 
 Two **admin-config** tables drive the ERP-document features: **`milestone_evidence_map`** (`pic_doctype` rows →
 the upload-to-clear doctypes, cached in `DoctypeMap`) and **`doc_generate_map`** (`module`, `document_type_code`,

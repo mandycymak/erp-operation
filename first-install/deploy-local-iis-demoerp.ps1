@@ -26,6 +26,16 @@ if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentit
   Write-Error "Run this in an ELEVATED PowerShell (Administrator)."; exit 1
 }
 
+# 0b. FIRST-INSTALL guard. This RECREATES the IIS app pool + site and RESETS the pool environment
+#     variables (OPS_ROOT / OPS_CONFIG). On an EXISTING customer site that can re-point the app at the
+#     wrong/empty database and make the customer's users look "lost". For a routine update use
+#     ..\update-customer.bat instead - it never touches the pool/env. Require an explicit confirmation.
+Write-Host ""
+Write-Host "  This is the FIRST-INSTALL IIS bootstrap (creates/recreates the pool, site and env vars)." -ForegroundColor Yellow
+Write-Host "  For a routine update of a live site, cancel and run ..\update-customer.bat instead." -ForegroundColor Yellow
+$ans = Read-Host "  Type INSTALL to set up IIS for this site, or press Enter to cancel"
+if ($ans -ne 'INSTALL') { Write-Host "  Cancelled - nothing changed." -ForegroundColor Cyan; exit 0 }
+
 # 1. enable IIS (client-OS optional features). No Managed Code -> no ASP.NET feature needed.
 Step "Enabling IIS Windows features"
 $feats = 'IIS-WebServerRole','IIS-WebServer','IIS-CommonHttpFeatures','IIS-StaticContent','IIS-DefaultDocument',
